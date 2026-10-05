@@ -245,8 +245,8 @@ fn main() {
         print!("{:>18}", format!("{:.2}x", loop_total(0) as f64 / loop_total(vi) as f64));
     }
     println!("\n");
-    for vi in 1..variants.len() {
-        println!("index ({:<10}) {:.3}   (geometric mean of per-scenario speedups; 1.000 = parity with Cargo)", variants[vi].name, index(vi));
+    for (vi, v) in variants.iter().enumerate().skip(1) {
+        println!("index ({:<10}) {:.3}   (geometric mean of per-scenario speedups; 1.000 = parity with Cargo)", v.name, index(vi));
     }
 
     if record {
