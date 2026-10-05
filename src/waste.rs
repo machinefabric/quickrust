@@ -212,8 +212,6 @@ pub fn rebuilds(graph: &Graph, index: &Index, scripts: &[Value]) -> Value {
             }
         } else {
             known += 1;
-            let prior = &prior_list[0];
-            let pf = &prior["fingerprint"];
             let f = &u.fingerprint;
             let components: [(&str, &str, &str); 9] = [
                 ("compiler", "compiler", &f.compiler),
@@ -226,7 +224,11 @@ pub fn rebuilds(graph: &Graph, index: &Index, scripts: &[Value]) -> Value {
                 ("generated-input", "generated", &f.generated),
                 ("dependency", "dependencies", &f.dependencies),
             ];
-            let differing: Vec<&str> = components.iter().filter(|(_, key, now)| pf[*key].as_str() != Some(*now)).map(|(name, _, _)| *name).collect();
+            let diff = |p: &Value| -> Vec<&str> { components.iter().filter(|(_, key, now)| p["fingerprint"][*key].as_str() != Some(*now)).map(|(name, _, _)| *name).collect() };
+            // Several variants of a unit may be known (other features, profiles, flags). The cause is
+            // what separates this build from the nearest of them; ties go to the most recent.
+            let prior = prior_list.iter().min_by_key(|p| diff(p).len()).expect("the list is not empty");
+            let differing = diff(prior);
             let primary = differing.first().copied().unwrap_or("unknown");
             let (content, _) = changed_files(&u.inputs, &prior["inputs"]);
             let evidence = vec![format!("fingerprint components that differ from run {}: {}", util::vstr(prior, "run"), if differing.is_empty() { "none".to_string() } else { differing.join(", ") })];
@@ -649,7 +651,7 @@ pub fn incremental_policy(graph: &Graph, session: &Value) -> Value {
 }
 
 /// Same-repository worktrees and other known workspaces: duplicated units and shared state (FR-120).
-pub fn worktrees(store: &WsStore) -> Result<Value, String> {
+pub fn worktrees(store: &WsStore, cfg: &crate::config::Config) -> Result<Value, String> {
     let root = store.root.as_ref().ok_or("not inside a Cargo workspace")?;
     let root = util::canon(root);
     let git = |dir: &Path, args: &[&str]| -> Option<String> {
@@ -689,6 +691,13 @@ pub fn worktrees(store: &WsStore) -> Result<Value, String> {
     let (mut total_units, mut total_ns, mut total_bytes) = (0u64, 0u64, 0u64);
     for other_root in candidates {
         let other = WsStore::open(Some(&other_root));
+        // Bring the other workspace's unit index up to date with what it has built.
+        if let Some(latest) = other.session_ids().last() {
+            if let Err(e) = crate::analyze::finalize(&other, latest, cfg) {
+                others.push(json!({ "root": path_str(&other_root), "state": "unknown", "error": e }));
+                continue;
+            }
+        }
         let same_repo = match (&this_repo, repo_of(&other_root)) {
             // Repository identity is the shared git directory, never the remote URL (FR-120 validation).
             (Some(a), Some(b)) => Some(*a == b),
@@ -779,7 +788,7 @@ mod tests {
             Ev { name, hash, externs: vec![], extra: vec![], files: vec![("src/lib.rs", "aaaa", 1)], out: "/t/debug/deps", rustc_mtime: 2 }
         }
         fn json(&self) -> Value {
-            let mut args: Vec<String> = vec!["--crate-name".into(), self.name.into(), "--crate-type".into(), "lib".into(), "--emit=dep-info,metadata,link".into(), "-C".into(), format!("extra-filename=-{}", self.hash), "--out-dir".into(), self.out.into()];
+            let mut args: Vec<String> = vec!["--crate-name".into(), self.name.into(), "--crate-type".into(), "lib".into(), "--emit=dep-info,metadata,link".into(), "-C".into(), format!("metadata={}", self.hash), "-C".into(), format!("extra-filename=-{}", self.hash), "--out-dir".into(), self.out.into()];
             for (n, f) in &self.externs {
                 args.push("--extern".into());
                 args.push(format!("{}={}/{}", n, self.out, f));

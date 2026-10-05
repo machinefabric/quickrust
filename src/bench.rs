@@ -218,6 +218,7 @@ fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario
     spec.env = env.to_vec();
     spec.scenario = Some(scenario.clone());
     spec.force_finalize = true;
+    spec.stdout_to_stderr = true;
     let done = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
     let watchdog = opts.timeout.map(|limit| {
@@ -300,7 +301,9 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
     let mut env = opts.env.clone();
     env.push(("CARGO_TARGET_DIR".into(), path_str(&bench_dir)));
     env.push(("CARGO_BUILD_BUILD_DIR".into(), path_str(&bench_dir)));
-    let skip = vec![target_dir.clone()];
+    // Drift detection looks for edits made by someone else during a measurement. The lockfile is
+    // written by Cargo itself (its digest is part of every run's fingerprint), so it is not drift.
+    let skip = vec![target_dir.clone(), root.join("Cargo.lock")];
 
     let id = util::new_id();
     let _signals = crate::proc::hold_signals();
@@ -464,6 +467,7 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
                 spec.env.push((var.into(), util::vstr(&candidate, "build_directory")));
             }
             spec.scenario = Some(json!({ "name": "verification", "experiment": exp.name }));
+            spec.stdout_to_stderr = true;
             let out = session::execute(&spec)?;
             json!({ "performed": true, "passed": out.exit.success(), "exit_code": out.exit.code, "command": verify_args.iter().map(|a| util::lossy(a)).collect::<Vec<_>>() })
         }

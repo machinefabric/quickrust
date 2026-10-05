@@ -131,6 +131,8 @@ impl Args {
         Ok(out)
     }
 
+    /// Next non-option argument. Call only after every value-taking option has been read,
+    /// otherwise an option's value could be mistaken for it.
     fn positional(&mut self) -> Option<String> {
         let i = self.items.iter().position(|a| !a.starts_with('-'))?;
         Some(self.items.remove(i))
@@ -180,6 +182,14 @@ impl Ctx {
     fn report(&self, reference: Option<&str>) -> Result<Value, String> {
         let id = self.store.resolve_run_ref(reference.unwrap_or("latest"), reference.is_none())?;
         analyze::finalize(&self.store, &id, &self.cfg)
+    }
+
+    /// Analyses any recorded run that has not been analysed yet, so the unit index is current.
+    fn finalize_pending(&self) -> Result<(), String> {
+        match self.store.session_ids().last() {
+            Some(latest) => analyze::finalize(&self.store, latest, &self.cfg).map(|_| ()),
+            None => Ok(()),
+        }
     }
 
     fn export(&self, v: &Value) -> Value {
@@ -249,7 +259,8 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
     a.finish()?;
     let ctx = Ctx::load()?;
     if section.as_deref() == Some("worktrees") {
-        let w = waste::worktrees(&ctx.store)?;
+        ctx.finalize_pending()?;
+        let w = waste::worktrees(&ctx.store, &ctx.cfg)?;
         if format == "json" {
             ctx.print_json(&w);
         } else {
@@ -488,18 +499,19 @@ fn cmd_experiment(raw: &[OsString]) -> CmdResult {
         }
         exp.verify = Some(parts);
     }
+    let name = a.opt("--name")?;
+    let opts = bench_options(&mut a, "clean")?;
     let preset = a.positional();
+    a.finish()?;
     if let Some(p) = &preset {
         if p != "codegen" && p != "linker" {
             return Err(format!("unknown experiment kind `{}` (codegen, linker, or none)", p));
         }
     }
-    exp.name = a.opt("--name")?.unwrap_or_else(|| preset.clone().unwrap_or_else(|| "candidate".into()));
+    exp.name = name.unwrap_or_else(|| preset.clone().unwrap_or_else(|| "candidate".into()));
     if !exp.name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') || exp.name.is_empty() {
         return Err(format!("experiment name {:?} may only contain letters, digits, `-` and `_`", exp.name));
     }
-    let opts = bench_options(&mut a, "clean")?;
-    a.finish()?;
     let result = bench::experiment(&exp, &opts, &ctx.store, &ctx.cfg)?;
     if format == "json" {
         ctx.print_json(&result);
@@ -509,23 +521,39 @@ fn cmd_experiment(raw: &[OsString]) -> CmdResult {
     Ok(if result["status"] == json!("invalid") { 1 } else { 0 })
 }
 
-fn subject_from_flags(ctx: &Ctx, a: &mut Args) -> Result<Value, String> {
-    match (a.opt("--run")?, a.opt("--benchmark")?) {
-        (Some(_), Some(_)) => Err("--run and --benchmark are mutually exclusive".into()),
-        (None, Some(b)) => compare::resolve_subject(&ctx.store, &ctx.cfg, &format!("benchmark:{}", b)),
-        (run, None) => Ok(compare::summarize_run(&ctx.report(run.as_deref())?)),
+/// `--run` / `--benchmark` selection, read before positionals.
+struct SubjectFlags {
+    run: Option<String>,
+    benchmark: Option<String>,
+}
+
+impl SubjectFlags {
+    fn read(a: &mut Args) -> Result<SubjectFlags, String> {
+        let s = SubjectFlags { run: a.opt("--run")?, benchmark: a.opt("--benchmark")? };
+        if s.run.is_some() && s.benchmark.is_some() {
+            return Err("--run and --benchmark are mutually exclusive".into());
+        }
+        Ok(s)
+    }
+
+    fn resolve(&self, ctx: &Ctx) -> Result<Value, String> {
+        match &self.benchmark {
+            Some(b) => compare::resolve_subject(&ctx.store, &ctx.cfg, &format!("benchmark:{}", b)),
+            None => Ok(compare::summarize_run(&ctx.report(self.run.as_deref())?)),
+        }
     }
 }
 
 fn cmd_baseline(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
+    let subject = SubjectFlags::read(&mut a)?;
     let ctx = Ctx::load()?;
     let root = ctx.root()?.to_path_buf();
     match a.positional().as_deref() {
         Some("set") => {
             let name = a.positional().ok_or("usage: haul baseline set NAME [--run REF | --benchmark ID]")?;
-            let subject = subject_from_flags(&ctx, &mut a)?;
             a.finish()?;
+            let subject = subject.resolve(&ctx)?;
             if subject["succeeded"] != json!(true) {
                 return Err("refusing to promote a failed run to a baseline".into());
             }
@@ -558,22 +586,25 @@ fn cmd_baseline(raw: &[OsString]) -> CmdResult {
 
 fn cmd_ci(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
+    let format = a.format(&["text", "json"])?;
+    let budgets_file = a.opt("--budgets")?;
+    let baseline_flag = a.opt("--baseline")?;
+    let subject = SubjectFlags::read(&mut a)?;
     if a.positional().as_deref() != Some("evaluate") {
         return Err("usage: haul ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE]".into());
     }
-    let format = a.format(&["text", "json"])?;
+    a.finish()?;
     let ctx = Ctx::load()?;
     let root = ctx.root()?.to_path_buf();
-    let budgets = match a.opt("--budgets")? {
+    let budgets = match budgets_file {
         Some(file) => {
             let path = ctx.cwd.join(&file);
             compare::parse_budgets(&std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {}", path.display(), e))?, &file)?
         }
         None => compare::load_budgets(&root, &ctx.cfg)?,
     };
-    let baseline_name = a.opt("--baseline")?.unwrap_or_else(|| ctx.cfg.str("ci.baseline").to_string());
-    let candidate = subject_from_flags(&ctx, &mut a)?;
-    a.finish()?;
+    let baseline_name = baseline_flag.unwrap_or_else(|| ctx.cfg.str("ci.baseline").to_string());
+    let candidate = subject.resolve(&ctx)?;
     let relative = budgets.budgets.iter().any(|b| b.max_increase_percent.is_some() || b.max_decrease_percent.is_some());
     // A missing baseline is an error only when a budget actually needs one.
     let baseline = match compare::load_baseline(&root, &baseline_name) {
@@ -627,6 +658,7 @@ fn cmd_inventory(raw: &[OsString], gc: bool) -> CmdResult {
         }
     }
     a.finish()?;
+    ctx.finalize_pending()?;
     let roots = build_roots(&ctx)?;
     let known = waste::Index::load(&ctx.store.index_path())?.knowledge(&empty_graph());
     let scans: Vec<Value> = roots.iter().map(|r| inventory::scan(r, &known, &opts)).collect();
@@ -656,10 +688,10 @@ fn cmd_inventory(raw: &[OsString], gc: bool) -> CmdResult {
 
 fn cmd_policy(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
+    let format = a.format(&["text", "json"])?;
     if a.positional().as_deref() != Some("explain") {
         return Err("usage: haul policy explain [--format text|json]".into());
     }
-    let format = a.format(&["text", "json"])?;
     a.finish()?;
     let ctx = Ctx::load()?;
     let settings = ctx.cfg.explain();
@@ -685,10 +717,10 @@ fn cmd_policy(raw: &[OsString]) -> CmdResult {
 
 fn cmd_cache(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
+    let format = a.format(&["text", "json"])?;
     if a.positional().as_deref() != Some("status") {
         return Err("usage: haul cache status [--format text|json]".into());
     }
-    let format = a.format(&["text", "json"])?;
     a.finish()?;
     let ctx = Ctx::load()?;
     let subset = resolve::cargo_config_subset(&ctx.cwd, &[]);

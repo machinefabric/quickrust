@@ -83,6 +83,9 @@ pub fn summary(r: &Value, out: &mut String) {
     let _ = writeln!(out, "  wall time    {}", dur(&m["wall_time_ns"]));
     let _ = writeln!(out, "  critical path {}   (sum of unit time {}, parallelism {})", dur(&m["critical_path_ns"]), dur(&m["sum_unit_time_ns"]), num(&m["average_parallelism"]));
     let _ = writeln!(out, "  units        {} compiled, {} fresh, {} observed", num(&m["units_compiled"]), num(&m["units_fresh"]), num(&m["units_observed"]));
+    if m["build_script_compiler_invocations"].as_u64().unwrap_or(0) > 0 {
+        let _ = writeln!(out, "  script probes {} compiler invocation(s) started by build scripts, {}", num(&m["build_script_compiler_invocations"]), dur(&m["build_script_compiler_time_ns"]));
+    }
     let _ = writeln!(out, "  artifacts    {} allocated", bytes(&m["artifact_allocated_bytes"]));
     if let Some(o) = r["unavailable"].as_object().filter(|o| !o.is_empty()) {
         let _ = writeln!(out, "  unavailable:");
