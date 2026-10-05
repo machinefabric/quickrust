@@ -104,9 +104,11 @@ fn capture(program: &str, args: &[&str], cwd: &Path) -> String {
 
 fn checkout(repo: &Path, into: &Path) {
     fs::create_dir_all(into).unwrap_or_else(|e| fail(&format!("cannot create {}: {}", into.display(), e)));
-    let archive = Command::new("git").current_dir(repo).args(["archive", WORKLOAD_REV]).stdout(Stdio::piped()).spawn().unwrap_or_else(|e| fail(&format!("git archive: {}", e)));
-    let status = Command::new("tar").arg("-x").arg("-C").arg(into).stdin(archive.stdout.unwrap_or_else(|| fail("git archive produced no output"))).status().unwrap_or_else(|e| fail(&format!("tar: {}", e)));
-    if !status.success() {
+    let mut archive = Command::new("git").current_dir(repo).args(["archive", WORKLOAD_REV]).stdout(Stdio::piped()).spawn().unwrap_or_else(|e| fail(&format!("git archive: {}", e)));
+    let stream = archive.stdout.take().unwrap_or_else(|| fail("git archive produced no output"));
+    let untar = Command::new("tar").arg("-x").arg("-C").arg(into).stdin(stream).status().unwrap_or_else(|e| fail(&format!("tar: {}", e)));
+    let archived = archive.wait().unwrap_or_else(|e| fail(&format!("git archive: {}", e)));
+    if !archived.success() || !untar.success() {
         fail(&format!("could not extract workload {} (is the full git history available?)", WORKLOAD_REV));
     }
 }
@@ -227,8 +229,8 @@ fn main() {
     println!();
     for (si, (name, _)) in SCENARIOS.iter().enumerate() {
         print!("{:<22}", name);
-        for vi in 0..variants.len() {
-            print!("{:>12}", secs(medians[vi][si]));
+        for per_variant in &medians {
+            print!("{:>12}", secs(per_variant[si]));
         }
         for vi in 1..variants.len() {
             print!("{:>18}", format!("{:.2}x", speedup(vi, si)));
