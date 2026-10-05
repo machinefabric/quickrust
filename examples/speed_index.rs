@@ -249,6 +249,31 @@ fn main() {
         println!("index ({:<10}) {:.3}   (geometric mean of per-scenario speedups; 1.000 = parity with Cargo)", v.name, index(vi));
     }
 
+    // A ratio of medians means nothing when the samples behind it disagree: on a machine busy with
+    // other work the same build can take 30 s or 120 s. Such a run is shown but never recorded.
+    const MAX_SPREAD: f64 = 0.25;
+    let mut unstable = Vec::new();
+    for (vi, v) in variants.iter().enumerate() {
+        for (si, (name, _)) in SCENARIOS.iter().enumerate() {
+            let s = &samples[vi][si];
+            let (min, max) = (*s.iter().min().unwrap_or(&0), *s.iter().max().unwrap_or(&0));
+            let spread = (max - min) as f64 / medians[vi][si].max(1) as f64;
+            // Sub-second scenarios are dominated by process start-up jitter and are not gated.
+            if medians[vi][si] >= 1_000_000_000 && spread > MAX_SPREAD {
+                unstable.push(format!("{} / {}: {} … {} (spread {:.0}%)", v.name, name, secs(min), secs(max), spread * 100.0));
+            }
+        }
+    }
+    if !unstable.is_empty() {
+        println!("\nUNSTABLE RUN — samples of the same scenario differ by more than {:.0}%:", MAX_SPREAD * 100.0);
+        for u in &unstable {
+            println!("  {}", u);
+        }
+        println!("The machine was doing other work. These numbers are not a measurement; rerun when it is idle{}.", if reps < 5 { " and with more --reps" } else { "" });
+        let _ = fs::remove_dir_all(&work);
+        std::process::exit(if record { 1 } else { 0 });
+    }
+
     if record {
         let rev = capture("git", &["rev-parse", "--short", "HEAD"], &repo);
         let dirty = !capture("git", &["status", "--porcelain"], &repo).is_empty();
