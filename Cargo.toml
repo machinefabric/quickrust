@@ -1,0 +1,37 @@
+[package]
+name = "haul"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Drop-in Cargo replacement: an orchestration, observability and policy layer around upstream Cargo"
+license = "MIT OR Apache-2.0"
+default-run = "haul"
+
+[lib]
+name = "haul"
+path = "src/lib.rs"
+
+# `haul` is a multi-call binary: invoked under the name `cargo` it is the
+# compatibility shim. No bin target is named `cargo` on purpose, so that
+# `cargo install` can never overwrite rustup's proxy; use `haul install-shim`.
+[[bin]]
+name = "haul"
+path = "src/bin/haul.rs"
+
+[[bin]]
+name = "haul-rustc-wrapper"
+path = "src/bin/haul-rustc-wrapper.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+debug = false
+strip = true
