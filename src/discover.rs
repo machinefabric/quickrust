@@ -142,7 +142,8 @@ pub fn source_state(root: &Path, skip: &[PathBuf]) -> Value {
     })
 }
 
-/// Digest over `(relative path, size, mtime)` of the source tree, skipping VCS and build output.
+/// Digest over `(relative path, size, mtime)` of the source tree, skipping VCS, build output
+/// and the given files or directories.
 pub fn source_snapshot(root: &Path, skip: &[PathBuf]) -> (String, u64) {
     let mut entries: Vec<String> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -159,6 +160,9 @@ pub fn source_snapshot(root: &Path, skip: &[PathBuf]) -> (String, u64) {
                 }
                 stack.push(p);
             } else if md.is_file() {
+                if !skip.is_empty() && skip.contains(&canon(&p)) {
+                    continue;
+                }
                 let rel = p.strip_prefix(root).unwrap_or(&p);
                 entries.push(format!("{}\t{}\t{}", rel.display(), md.len(), util::mtime_ns(&md)));
             }
@@ -176,6 +180,22 @@ fn field<'a>(verbose: &'a str, key: &str) -> Option<&'a str> {
 /// Cargo and rustc identity. `rustc_hint` is the compiler path Cargo actually
 /// invoked (observed by the wrapper); when present it is the execution truth.
 pub fn toolchain_fingerprint(cfg: &Config, cwd: &Path, toolchain: Option<&str>, rustc_hint: Option<&str>) -> Value {
+    // Analysing a backlog of runs asks for the same compiler many times; the answer for an
+    // observed compiler binary does not change within one process.
+    static MEMO: std::sync::Mutex<Vec<(String, Value)>> = std::sync::Mutex::new(Vec::new());
+    let Some(hint) = rustc_hint else { return probe_toolchain(cfg, cwd, toolchain, None) };
+    let key = format!("{}|{}", hint, toolchain.unwrap_or(""));
+    if let Some((_, v)) = MEMO.lock().ok().and_then(|m| m.iter().find(|(k, _)| *k == key).cloned()) {
+        return v;
+    }
+    let v = probe_toolchain(cfg, cwd, toolchain, Some(hint));
+    if let Ok(mut m) = MEMO.lock() {
+        m.push((key, v.clone()));
+    }
+    v
+}
+
+fn probe_toolchain(cfg: &Config, cwd: &Path, toolchain: Option<&str>, rustc_hint: Option<&str>) -> Value {
     let direct = |program: &Path, args: &[&str]| {
         let mut c = Command::new(program);
         c.args(args).current_dir(cwd).stdin(Stdio::null());

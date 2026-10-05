@@ -35,11 +35,14 @@ pub struct Spec {
     /// Finalize synchronously regardless of configuration.
     pub force_finalize: bool,
     pub cwd: Option<PathBuf>,
+    /// Send the delegated command's stdout to our stderr. Used by management commands
+    /// (benchmarks, experiments) whose own stdout carries their result.
+    pub stdout_to_stderr: bool,
 }
 
 impl Spec {
     pub fn new(args: Vec<OsString>, mode: Mode) -> Spec {
-        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None }
+        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None, stdout_to_stderr: false }
     }
 }
 
@@ -425,9 +428,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     cmd.env(crate::ENV_SESSION, &id);
     cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}", std::process::id(), id));
 
-    let tee = cfg.str("measurement.cargo-json") == "auto" && inv.json_messages && inv.family.builds() && !std::io::stdout().is_terminal();
+    let tee = !spec.stdout_to_stderr && cfg.str("measurement.cargo-json") == "auto" && inv.json_messages && inv.family.builds() && !std::io::stdout().is_terminal();
     if tee {
         cmd.stdout(Stdio::piped());
+    } else if spec.stdout_to_stderr {
+        cmd.stdout(Stdio::from(std::io::stderr()));
     }
     for w in &plan.warnings {
         eprintln!("haul: warning: {}", w);
@@ -543,6 +548,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             Ok(Ok(mut report)) => {
                 if enforce {
                     let (code, budget) = crate::compare::enforce_on_build(&store, &cfg, &report);
+                    report["run"]["result"]["policy"] = budget["result"].clone();
                     report["budget"] = budget;
                     outcome.policy_exit = code;
                 }

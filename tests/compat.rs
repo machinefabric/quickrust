@@ -341,10 +341,17 @@ fn qa018_json_message_stream_is_byte_identical_and_observed() {
     let wrapped = ok(sb.cargo(&ws).args(args));
     ok(sb.upstream(&ws).arg("clean"));
     let native = ok(sb.upstream(&ws).args(args));
-    for (w, n) in stdout(&wrapped).lines().zip(stdout(&native).lines()) {
-        assert_eq!(w, n, "JSON message differs from upstream");
-    }
-    assert_eq!(wrapped.stdout, native.stdout, "JSON stream differs from upstream");
+    // Upstream Cargo itself emits independent units in a different order from run to run (even
+    // with -j1), so the oracle is the multiset of lines: every message byte-identical, none
+    // added, none missing, and the stream ending with Cargo's own `build-finished`.
+    let sorted = |o: &std::process::Output| {
+        let mut lines: Vec<String> = stdout(o).lines().map(str::to_string).collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&wrapped), sorted(&native), "JSON messages differ from upstream");
+    assert_eq!(wrapped.stdout.len(), native.stdout.len(), "framing (line terminators) must match");
+    assert_eq!(stdout(&wrapped).lines().last(), stdout(&native).lines().last());
     for line in stdout(&wrapped).lines() {
         let v: Value = serde_json::from_str(line).unwrap_or_else(|e| panic!("non-JSON line on stdout: {:?} ({})", line, e));
         assert!(v["reason"].is_string(), "foreign object on Cargo's stdout: {}", line);

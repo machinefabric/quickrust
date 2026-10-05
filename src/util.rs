@@ -181,11 +181,26 @@ impl Tokenizer {
         let mut out = s.to_string();
         for (prefix, tok) in &self.pairs {
             if out.contains(prefix.as_str()) {
-                out = out.replace(prefix.as_str(), tok);
+                out = replace_path_prefix(&out, prefix, tok);
             }
         }
         out
     }
+}
+
+/// Replaces `prefix` where it is a whole path prefix: `/a/repo` must not match inside `/a/repo-feature`.
+fn replace_path_prefix(s: &str, prefix: &str, token: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find(prefix) {
+        let after = &rest[pos + prefix.len()..];
+        let continues_name = after.chars().next().map(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '~' | '+')).unwrap_or(false);
+        out.push_str(&rest[..pos]);
+        out.push_str(if continues_name { prefix } else { token });
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 
 pub fn is_secret_name(name: &str) -> bool {
@@ -477,6 +492,15 @@ mod tests {
         assert_eq!(r[1], "https://<redacted>@example.com/x");
         let r = redact_args(&["build".into(), "--features".into(), "a,b".into()]);
         assert_eq!(r, vec!["build", "--features", "a,b"]);
+    }
+
+    #[test]
+    fn tokenizer_respects_path_boundaries() {
+        assert_eq!(replace_path_prefix("/a/repo/src", "/a/repo", "$W"), "$W/src");
+        assert_eq!(replace_path_prefix("/a/repo", "/a/repo", "$W"), "$W");
+        assert_eq!(replace_path_prefix("/a/repo-feature/src", "/a/repo", "$W"), "/a/repo-feature/src");
+        assert_eq!(replace_path_prefix("file:///a/repo#0.1.0 and /a/repo.bak", "/a/repo", "$W"), "file://$W#0.1.0 and /a/repo.bak");
+        assert_eq!(replace_path_prefix("-L /a/repo/t -L /a/repo2/t", "/a/repo", "$W"), "-L $W/t -L /a/repo2/t");
     }
 
     #[test]

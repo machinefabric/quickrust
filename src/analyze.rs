@@ -127,6 +127,10 @@ fn input_map(v: &Value) -> BTreeMap<String, (String, u64)> {
 }
 
 /// Builds a unit from one wrapper `compile` event by reading rustc's own arguments.
+///
+/// Returns `None` for compiler invocations that are not Cargo build units: build scripts
+/// run rustc themselves (through the same wrapper) to probe compiler features. Cargo passes
+/// `-C metadata=…` for every unit it schedules; a probe never has it.
 pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<Unit> {
     let args: Vec<&str> = ev["args"].as_array()?.iter().filter_map(Value::as_str).collect();
     let mut u = Unit { role: "unknown".into(), ..Default::default() };
@@ -134,6 +138,7 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
     let mut emit = String::new();
     let mut edition = String::new();
     let mut test = false;
+    let mut cargo_unit = false;
     let mut profile_parts: Vec<String> = Vec::new();
     let mut flag_parts: Vec<String> = Vec::new();
     let mut feature_decl: Vec<String> = Vec::new();
@@ -191,7 +196,7 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
                 let (k, v) = c.split_once('=').map(|(k, v)| (k, v.to_string())).unwrap_or((c.as_str(), "true".to_string()));
                 match k {
                     "extra-filename" => extra = v,
-                    "metadata" => {}
+                    "metadata" => cargo_unit = true,
                     "incremental" => {
                         u.incremental = true;
                         profile_parts.push("incremental=on".into());
@@ -229,7 +234,7 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
             _ => {}
         }
     }
-    if u.crate_name.is_empty() {
+    if u.crate_name.is_empty() || !cargo_unit {
         return None;
     }
     let env = &ev["env"];
@@ -342,8 +347,19 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
         f.generated.as_str(),
         f.dependencies.as_str(),
     ]));
-    // Portable identity: equal across checkouts when Cargo itself assigned the same unit hash.
-    u.portable_id = util::digest_parts(identity.iter().copied().chain([u.stem.as_str(), f.compiler.as_str(), f.target.as_str(), f.profile.as_str(), f.features.as_str(), f.rustflags.as_str()]));
+    // Portable identity: equal across checkouts when Cargo assigned the same unit hash and the
+    // inputs have the same content. Cargo hashes workspace members by their path relative to the
+    // workspace root, so two worktrees share unit hashes even when their sources differ.
+    u.portable_id = util::digest_parts(identity.iter().copied().chain([
+        u.stem.as_str(),
+        f.compiler.as_str(),
+        f.target.as_str(),
+        f.profile.as_str(),
+        f.features.as_str(),
+        f.rustflags.as_str(),
+        f.source.as_str(),
+        f.generated.as_str(),
+    ]));
     Some(u)
 }
 
@@ -695,29 +711,37 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
     };
     let rustc_hint = events.first().and_then(|e| e["rustc"].as_str()).map(str::to_string);
     let parsed: Vec<Unit> = events.iter().filter_map(|e| parse_unit(e, sccache_active, &tok)).collect();
-    let unparsed = events.len() - parsed.len();
+    // What is left are compilers started by build scripts to probe the toolchain: real cost, not units.
+    let script_probes = events.len() - parsed.len();
+    let script_probe_ns: u64 = events.iter().filter(|e| parse_unit(e, sccache_active, &tok).is_none()).filter_map(|e| e["dur_ns"].as_u64()).sum();
     let (mut graph, mut scripts) = build_graph(parsed, start, start + wall, &index.by_stem());
     let cp = critical_path(&graph);
     for (i, _) in &cp.path {
         graph.units[*i].on_critical_path = true;
     }
 
-    // Workspace and toolchain discovery (FR-010).
+    // Workspace and toolchain discovery (FR-010). Cargo metadata and VCS state describe the tree
+    // as it is now, so they are only attached to a run the tree still reflects.
     let toolchain_override = session["command"]["toolchain_override"].as_str();
     let manifest_path = session["command"]["manifest_path"].as_str().map(PathBuf::from);
-    let meta = match (&ws_root, cwd.is_dir()) {
-        (Some(_), true) => match discover::metadata(cfg, &cwd, toolchain_override, manifest_path.as_deref()) {
+    const MOVED_ON: &str = "a later run was recorded before this one was analysed; the working tree no longer reflects it";
+    let meta = match (&ws_root, cwd.is_dir(), filesystem_current) {
+        (Some(_), true, true) => match discover::metadata(cfg, &cwd, toolchain_override, manifest_path.as_deref()) {
             Ok(m) => Some(m),
             Err(e) => {
                 unavailable(&mut missing, "workspace", format!("cargo metadata failed: {}", e));
                 None
             }
         },
-        (Some(_), false) => {
+        (Some(_), true, false) => {
+            unavailable(&mut missing, "workspace", MOVED_ON);
+            None
+        }
+        (Some(_), false, _) => {
             unavailable(&mut missing, "workspace", "the session's working directory no longer exists");
             None
         }
-        (None, _) => {
+        (None, _, _) => {
             unavailable(&mut missing, "workspace", "the command did not run inside a Cargo workspace");
             None
         }
@@ -725,10 +749,10 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
     let snapshot = meta.as_ref().map(|m| discover::workspace_snapshot(&m.value));
     let target_dir = snapshot.as_ref().and_then(|s| s["target_directory"].as_str()).map(PathBuf::from);
     let build_dir = snapshot.as_ref().and_then(|s| s["build_directory"].as_str()).map(PathBuf::from);
-    let source = match (&ws_root, &target_dir) {
-        (Some(root), td) if root.is_dir() => {
-            let mut s = discover::source_state(root, &td.iter().cloned().collect::<Vec<_>>());
-            // The revision read during the build is the build-time truth; analysis may run later.
+    // The revision read during the build is the build-time truth; dirtiness can only be observed now.
+    let source = match &ws_root {
+        Some(root) if root.is_dir() && filesystem_current => {
+            let mut s = discover::source_state(root, &target_dir.iter().cloned().collect::<Vec<_>>());
             if let Some(head) = session["git_head"].as_str() {
                 s["revision_at_build"] = json!(head);
                 if s["revision"].as_str().map(|r| r != head).unwrap_or(false) {
@@ -737,7 +761,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
             }
             s
         }
-        _ => json!({ "vcs": null, "revision": null, "dirty": null }),
+        _ => json!({ "vcs": if session["git_head"].is_string() { json!("git") } else { Value::Null }, "revision": session["git_head"], "revision_at_build": session["git_head"], "dirty": null, "unavailable": { "dirty": MOVED_ON } }),
     };
     let toolchain = discover::toolchain_fingerprint(cfg, if cwd.is_dir() { &cwd } else { Path::new(".") }, toolchain_override, rustc_hint.as_deref());
     let environment = discover::environment_fingerprint(build_dir.as_deref().or(target_dir.as_deref()));
@@ -837,7 +861,6 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
     let partial_reasons: Vec<String> = [
         (session["state"] != json!("completed")).then(|| format!("the command ended in state `{}`", util::vstr(&session, "state"))),
         (graph.unresolved_externs > 0).then(|| format!("{} extern argument(s) could not be mapped to an artifact", graph.unresolved_externs)),
-        (unparsed > 0).then(|| format!("{} rustc invocation(s) could not be interpreted", unparsed)),
         scripts.iter().any(|s| s["ran_in_session"] == json!(true) && s["duration_ns"].is_null()).then(|| "a build script ran without a measurable duration".to_string()),
         (!instrumented && builds).then(|| "no rustc-level events were recorded".to_string()),
     ]
@@ -869,7 +892,6 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
         })
         .collect();
 
-    let policy_result = "pass";
     let mut report = json!({
         "schema_version": crate::SCHEMA_VERSION,
         "run": {
@@ -887,7 +909,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
                 "profile": if session["command"]["release"] == json!(true) { "release" } else { "dev" },
                 "targets": session["command"]["targets"],
             },
-            "result": { "cargo_exit_code": session["result"]["exit_code"], "signal": session["result"]["signal"], "policy": policy_result },
+            "result": { "cargo_exit_code": session["result"]["exit_code"], "signal": session["result"]["signal"], "policy": "not-evaluated" },
             "scenario": session["scenario"],
             "upstream": session["upstream"],
             "wrappers": session["wrappers"],
@@ -928,6 +950,8 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
             "units_fresh_referenced": if instrumented { json!(fresh_referenced) } else { Value::Null },
             "build_scripts_run": if instrumented { json!(scripts.iter().filter(|s| s["ran_in_session"] == json!(true)).count()) } else { Value::Null },
             "probe_invocations": probes,
+            "build_script_compiler_invocations": if instrumented { json!(script_probes) } else { Value::Null },
+            "build_script_compiler_time_ns": if instrumented { json!(script_probe_ns) } else { Value::Null },
             "output_bytes_written": if instrumented { json!(compiled.iter().filter_map(|u| u.output_bytes).sum::<u64>()) } else { Value::Null },
             "artifact_logical_bytes": sum_inv("logical_bytes"),
             "artifact_allocated_bytes": sum_inv("allocated_bytes"),
@@ -992,7 +1016,7 @@ mod tests {
     }
 
     fn event(name: &str, hash: &str, externs: &[(&str, &str)], extra: &[&str], dur: u64, rmeta: Option<u64>) -> Value {
-        let mut args: Vec<String> = vec!["--crate-name".into(), name.into(), "--edition=2021".into(), "src/lib.rs".into(), "--emit=dep-info,metadata,link".into(), "-C".into(), format!("extra-filename=-{}", hash), "--out-dir".into(), "/t/debug/deps".into()];
+        let mut args: Vec<String> = vec!["--crate-name".into(), name.into(), "--edition=2021".into(), "src/lib.rs".into(), "--emit=dep-info,metadata,link".into(), "-C".into(), format!("metadata={}", hash), "-C".into(), format!("extra-filename=-{}", hash), "--out-dir".into(), "/t/debug/deps".into()];
         for (n, file) in externs {
             args.push("--extern".into());
             args.push(format!("{}=/t/debug/deps/{}", n, file));
@@ -1087,6 +1111,17 @@ mod tests {
         let lib = parse_unit(&event("l", "3", &[], &[], 1, None), true, &tok()).unwrap();
         assert_eq!(lib.cacheability, "cacheable");
         assert_eq!(parse_unit(&event("l", "3", &[], &[], 1, None), false, &tok()).unwrap().cacheability, "n/a");
+    }
+
+    #[test]
+    fn compilers_started_by_build_scripts_are_not_units() {
+        // proc-macro2, serde and others compile a probe file with $RUSTC_WRAPPER $RUSTC; it inherits
+        // the package environment but is not something Cargo scheduled.
+        let mut probe = event("proc_macro2", "0", &[], &[], 5, None);
+        let args: Vec<Value> = probe["args"].as_array().unwrap().iter().filter(|a| !a.as_str().unwrap().starts_with("metadata=")).cloned().collect();
+        probe["args"] = json!(args);
+        assert!(parse_unit(&probe, false, &tok()).is_none());
+        assert!(parse_unit(&event("proc_macro2", "0", &[], &[], 5, None), false, &tok()).is_some());
     }
 
     #[test]
