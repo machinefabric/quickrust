@@ -37,16 +37,34 @@ fn qa001_plain_build_matches_upstream() {
 
 #[test]
 fn no_rebuild_when_alternating_with_upstream() {
-    // The wrapper must be invisible to Cargo's fingerprints: same target directory, zero recompilation.
+    // compat mode: the wrapper must be invisible to Cargo's fingerprints, same target directory,
+    // zero recompilation.
     let sb = Sandbox::new("alternate");
     let ws = sb.workspace("ws");
-    ok(sb.cargo(&ws).arg("build"));
+    ok(sb.cargo(&ws).arg("build").env("HAUL_MODE", "compat"));
     let before = artifacts(&ws.join("target"));
     let up = ok(sb.upstream(&ws).arg("build"));
     assert!(!stderr(&up).contains("Compiling"), "upstream rebuilt after a shim build:\n{}", stderr(&up));
-    let again = ok(sb.cargo(&ws).arg("build"));
+    let again = ok(sb.cargo(&ws).arg("build").env("HAUL_MODE", "compat"));
     assert!(!stderr(&again).contains("Compiling"), "shim rebuilt after an upstream build:\n{}", stderr(&again));
     assert_eq!(artifacts(&ws.join("target")), before);
+}
+
+#[test]
+fn fast_mode_and_upstream_keep_separate_artifacts_instead_of_rebuilding_each_other() {
+    // Fast mode builds with other profile settings, so Cargo names its artifacts differently. After
+    // each side has built once, alternating between them compiles nothing (docs/migration.md).
+    let sb = Sandbox::new("alternate-fast");
+    let ws = sb.workspace("ws");
+    ok(sb.cargo(&ws).arg("build"));
+    ok(sb.upstream(&ws).arg("build"));
+    for _ in 0..2 {
+        let shim = ok(sb.cargo(&ws).arg("build"));
+        assert!(!stderr(&shim).contains("Compiling"), "fast mode rebuilt after an upstream build:\n{}", stderr(&shim));
+        let up = ok(sb.upstream(&ws).arg("build"));
+        assert!(!stderr(&up).contains("Compiling"), "upstream rebuilt after a fast-mode build:\n{}", stderr(&up));
+    }
+    assert_eq!(stdout(&ok(sb.cargo(&ws).args(["run", "-q", "-p", "app"]))), stdout(&ok(sb.upstream(&ws).args(["run", "-q", "-p", "app"]))));
 }
 
 #[test]
@@ -121,10 +139,11 @@ fn qa004_manifest_path_from_another_directory() {
 
 #[test]
 fn qa005_features_reach_rustc_unchanged() {
-    // FR-001 acceptance: `cargo build --features a,b` selects the same build as upstream.
+    // FR-001 acceptance: `cargo build --features a,b` selects the same build as upstream (compat
+    // mode builds exactly upstream's; fast mode would differ in profile settings by design).
     let sb = Sandbox::new("features");
     let p = sb.package("p", "p");
-    ok(sb.cargo(&p).args(["build", "--features", "a,b"]));
+    ok(sb.cargo(&p).args(["build", "--features", "a,b"]).env("HAUL_MODE", "compat"));
     let report = sb.report(&p, "latest");
     let lib = report["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap();
     assert_eq!(lib["features"], serde_json::json!(["a", "b"]));
@@ -334,11 +353,13 @@ fn qa017_metadata_stdout_is_byte_identical() {
 
 #[test]
 fn qa018_json_message_stream_is_byte_identical_and_observed() {
-    // AC-002 / FR-001.2: the machine-readable stream must be exactly Cargo's.
+    // AC-002 / FR-001.2: the machine-readable stream must be exactly Cargo's. In compat mode the
+    // build is upstream's own, so the stream is byte-identical; in fast mode it is still exactly
+    // what the delegated Cargo prints, describing the settings Haul applied.
     let sb = Sandbox::new("json");
     let ws = sb.workspace("ws");
     let args = ["build", "-j1", "--message-format=json"];
-    let wrapped = ok(sb.cargo(&ws).args(args));
+    let wrapped = ok(sb.cargo(&ws).args(args).env("HAUL_MODE", "compat"));
     ok(sb.upstream(&ws).arg("clean"));
     let native = ok(sb.upstream(&ws).args(args));
     // Upstream Cargo itself emits independent units in a different order from run to run (even
@@ -361,7 +382,7 @@ fn qa018_json_message_stream_is_byte_identical_and_observed() {
     assert_eq!(report["metrics"]["units_fresh"], 0);
     assert!(report["metrics"]["units_observed"].as_u64().unwrap() >= 5);
     // A second, fully fresh build reports its units as fresh rather than as zero work unknown.
-    let again = ok(sb.cargo(&ws).args(args));
+    let again = ok(sb.cargo(&ws).args(args).env("HAUL_MODE", "compat"));
     let fresh = sb.report(&ws, "latest");
     assert!(fresh["metrics"]["units_fresh"].as_u64().unwrap() >= 5, "{}", fresh["metrics"]);
     assert_eq!(fresh["metrics"]["units_compiled"], 0);

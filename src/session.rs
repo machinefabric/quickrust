@@ -323,6 +323,15 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                         Some((iw, _)) => p.env_set.push((crate::ENV_INNER_WRAPPER.into(), iw.clone())),
                         None => p.env_remove.push(crate::ENV_INNER_WRAPPER.into()),
                     }
+                    // Haul's artifact cache: fast mode only, and never behind a wrapper the user
+                    // configured, which may be a cache with rules of its own.
+                    let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
+                    p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
+                    if artifacts {
+                        p.env_set.push((crate::artifact_cache::ENV_CACHE_DIR.into(), path_str(&util::haul_home().join("cache").join("artifacts"))));
+                    } else {
+                        p.env_remove.push(crate::artifact_cache::ENV_CACHE_DIR.into());
+                    }
                     p.events_dir = Some(dir);
                 }
             }
@@ -347,6 +356,15 @@ fn upstream_command(up: &resolve::Upstream, args: &[OsString], inv: &Invocation)
         cmd.env(k, v);
     }
     cmd
+}
+
+/// The user's arguments with `--config` overlays placed before the subcommand (after `+toolchain`).
+fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Vec<OsString> {
+    let at = usize::from(inv.toolchain.is_some()).min(args.len());
+    let mut out = args[..at].to_vec();
+    out.extend(overlays.iter().map(OsString::from));
+    out.extend_from_slice(&args[at..]);
+    out
 }
 
 /// `haul upstream …`: upstream Cargo with no policy and no instrumentation (COMP-013).
@@ -416,8 +434,16 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if !store_ok {
         plan.instrumented = false;
     }
+    // Fast mode: settings that keep program behaviour identical, unless the user made them.
+    let mut user_keys = subset.profile_keys.clone();
+    if let Some(root) = &ws_root {
+        user_keys.extend(resolve::manifest_profile_keys(root));
+    }
+    user_keys.extend(resolve::env_profile_keys());
+    let fast = crate::fast::overlays(&inv, cfg.str("mode"), &user_keys);
+    plan.policy["fast"] = fast.record;
 
-    let mut cmd = upstream_command(&up, &spec.args, &inv);
+    let mut cmd = upstream_command(&up, &with_overlays(&spec.args, &inv, &fast.args), &inv);
     cmd.current_dir(&cwd);
     for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
         cmd.env(k, v);

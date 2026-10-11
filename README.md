@@ -81,11 +81,37 @@ A machine-readable report for any ordinary build:
 HAUL_REPORT=build-report.json cargo build
 ```
 
+## Fast by default
+
+The goal: `cargo build` through Haul is faster than plain Cargo, on any project, with
+no configuration. In the default `mode = "fast"`, Haul applies build settings that keep
+your program's behaviour identical:
+
+| Setting | What changes |
+|---|---|
+| `profile.dev.debug = "line-tables-only"` | dev builds keep file and line information (backtraces, stepping, breakpoints) but not local-variable and type information, the bulk of the debug data that has to be generated, linked and stored |
+| `profile.dev.package."*".debug = false` | no debug information for dependencies in dev builds, as Cargo's own build-performance guide recommends |
+
+They reach Cargo as `--config` arguments; nothing in your repository changes. A setting
+you made yourself, in `Cargo.toml`, a `.cargo/config.toml`, a `CARGO_PROFILE_*` variable or
+`--config`, always wins: Haul then leaves it, and the settings that depend on it, alone.
+Want full debug info back? Set `[profile.dev] debug = true` as you would with Cargo.
+Every run records what Haul applied, what it left alone and why (`policy.fast` in the
+report).
+
+`mode = "compat"` (or `HAUL_MODE=compat`) builds exactly what upstream Cargo builds.
+`haul upstream` is upstream Cargo with no Haul at all.
+
+How much faster, measured on real projects against plain Cargo:
+[benchmarks/PROGRESS.md](benchmarks/PROGRESS.md) (method: [benchmarks/README.md](benchmarks/README.md)).
+
 ## What "drop-in" means here
 
 - Arguments, stdin, stdout, stderr, the environment, the exit status and
   terminating signals pass through unchanged. `--message-format=json` output is
-  byte-for-byte Cargo's.
+  byte-for-byte what the delegated Cargo prints.
+- In fast mode, the build settings above differ from Cargo's defaults and nothing
+  else does; in compat mode the build is Cargo's own.
 - Unknown flags and commands are forwarded; Cargo decides whether they are valid.
 - `cargo +toolchain`, `rust-toolchain.toml` and every other rustup rule are
   honoured by delegating to rustup's own proxy.

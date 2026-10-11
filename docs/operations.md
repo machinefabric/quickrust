@@ -1,5 +1,17 @@
 # Operating Haul
 
+## Modes
+
+| `mode` | Builds |
+|---|---|
+| `fast` (default) | upstream Cargo, plus build settings that keep program behaviour identical, applied as `--config` arguments to build commands only (see the README). A setting the user made in the manifest, a Cargo config file, `CARGO_PROFILE_*` or `--config` is never overridden. |
+| `compat` | exactly upstream Cargo's builds; Haul only observes |
+
+Set it in `.haul/config.toml` (`mode = "compat"`), `~/.haul/config.toml`, or `HAUL_MODE`.
+The run report's `policy.fast` lists what was applied and what was left alone, with the
+user setting that caused it. External subcommands (`cargo nextest`, …) never receive the
+settings, because Cargo does not pass `--config` on to them.
+
 ## Where state lives
 
 | Location | Content | Safe to delete |

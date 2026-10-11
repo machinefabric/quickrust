@@ -40,7 +40,8 @@ in a crate others build on.
 | `haul-compat` | Haul with `mode = compat` (once that setting exists): pure overhead, must stay ≥ 0.99 |
 
 `--define 'NAME=BASE;env:K=V;config:K=V'` adds an ad-hoc variant (base `cargo` or `haul`)
-for trying a lever before it becomes a default. `--aa` adds a second plain Cargo
+for trying a lever before it becomes a default, or for measuring one lever on its own
+(for example Haul with one setting switched off). Defined variants may be recorded. `--aa` adds a second plain Cargo
 (`cargo-aa`): an A/A test whose index must be 1.00 within noise.
 
 ## Scenarios

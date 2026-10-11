@@ -9,6 +9,7 @@
 //! Observation is strictly fail-open: no telemetry problem may change the
 //! compiler's result (NFR-020).
 
+use crate::artifact_cache;
 use crate::proc::{self, ExitInfo};
 use crate::util;
 use serde_json::{json, Value};
@@ -33,6 +34,33 @@ pub fn main() {
 
     let start_wall = util::now_wall_ns();
     let started = Instant::now();
+
+    // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
+    let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
+    let job = match (&inner, &event_dir, &args_utf8, rustc.to_str()) {
+        (None, Some(_), Some(args), Some(r)) => artifact_cache::prepare(r, args),
+        _ => Err("off".into()),
+    };
+    if let Ok(j) = &job {
+        if let artifact_cache::Lookup::Hit { stderr, entry } = j.lookup() {
+            use std::io::Write;
+            let mut err = std::io::stderr().lock();
+            let _ = err.write_all(&stderr).and_then(|_| err.flush());
+            drop(err);
+            let exit = ExitInfo { code: Some(0), signal: None };
+            if let Some(dir) = &event_dir {
+                let _ = std::panic::catch_unwind(|| {
+                    let mut ev = build_event(&rustc, &argv, None, false, start_wall, started.elapsed().as_nanos() as u64, exit, None);
+                    ev["cache"] = json!({ "result": "hit", "entry": entry });
+                    if let Ok(bytes) = serde_json::to_vec(&ev) {
+                        let _ = util::write_atomic_fast(&dir.join(format!("{:020}-{}.json", start_wall, std::process::id())), &bytes);
+                    }
+                });
+            }
+            proc::propagate(exit)
+        }
+    }
+    let mut captured: Option<Vec<u8>> = None;
     let direct = |rustc: &OsString, argv: &[OsString]| {
         let mut c = Command::new(rustc);
         c.args(argv);
@@ -54,6 +82,11 @@ pub fn main() {
                 Err(e) => Err(e),
             }
         }
+        // A cacheable miss: rustc's stderr streams through unchanged and is kept for replay.
+        None if job.is_ok() => run_teed(&mut direct(&rustc, &argv)).map(|(e, u, buf)| {
+            captured = Some(buf);
+            (e, u)
+        }),
         None => proc::run(&mut direct(&rustc, &argv), true),
     };
     let (exit, usage) = match result {
@@ -65,10 +98,21 @@ pub fn main() {
     };
     let dur_ns = started.elapsed().as_nanos() as u64;
 
+    // Storing is best effort and never changes the compiler's outcome.
+    let cache = match (&job, &captured) {
+        (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
+            Ok(Ok(())) => json!({ "result": "stored" }),
+            Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
+            Err(_) => json!({ "result": "miss", "not_stored": "internal error" }),
+        },
+        (Ok(_), _) => json!({ "result": "miss", "not_stored": "the compilation failed" }),
+        (Err(why), _) => json!({ "result": "off", "reason": why }),
+    };
     if let Some(dir) = event_dir {
         // Telemetry must never alter the compiler's outcome.
         let _ = std::panic::catch_unwind(|| {
-            let ev = build_event(&rustc, &argv, inner.as_ref(), fallback, start_wall, dur_ns, exit, usage);
+            let mut ev = build_event(&rustc, &argv, inner.as_ref(), fallback, start_wall, dur_ns, exit, usage);
+            ev["cache"] = cache;
             if let Ok(bytes) = serde_json::to_vec(&ev) {
                 let name = format!("{:020}-{}.json", start_wall, std::process::id());
                 let _ = util::write_atomic_fast(&dir.join(name), &bytes);
@@ -76,6 +120,39 @@ pub fn main() {
         });
     }
     proc::propagate(exit)
+}
+
+/// Runs `cmd` with its stderr copied through to ours as it arrives, returning a copy.
+fn run_teed(cmd: &mut Command) -> std::io::Result<(ExitInfo, Option<proc::Usage>, Vec<u8>)> {
+    use std::io::{Read, Write};
+    cmd.stderr(std::process::Stdio::piped());
+    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let r = proc::run_with(cmd, true, &mut |child| {
+        if let Some(mut from) = child.stderr.take() {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                let (mut buf, mut chunk) = (Vec::new(), [0u8; 16 * 1024]);
+                let mut out = std::io::stderr();
+                loop {
+                    match from.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            // Forward first: Cargo starts dependents on rustc's `artifact` notices.
+                            let _ = out.write_all(&chunk[..n]).and_then(|_| out.flush());
+                            buf.extend_from_slice(&chunk[..n]);
+                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(_) => break,
+                    }
+                }
+                let _ = tx.send(buf);
+            });
+        }
+    });
+    let (exit, usage) = r?;
+    // A grandchild holding the pipe open must not hang the build.
+    let buf = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
+    Ok((exit, usage, buf))
 }
 
 fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {

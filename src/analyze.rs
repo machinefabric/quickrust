@@ -933,7 +933,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
         },
         "toolchain": toolchain,
         "environment": { "machine": environment, "variables": session["env"] },
-        "policy": { "workload": session["policy"]["workload"], "incremental": incremental, "cache": { "provider": session["policy"]["cache"]["provider"], "state": session["policy"]["cache"]["state"], "detail": session["policy"]["cache"]["detail"], "fail": session["policy"]["cache"]["fail"] } },
+        "policy": { "workload": session["policy"]["workload"], "fast": session["policy"]["fast"], "incremental": incremental, "cache": { "provider": session["policy"]["cache"]["provider"], "state": session["policy"]["cache"]["state"], "detail": session["policy"]["cache"]["detail"], "fail": session["policy"]["cache"]["fail"] } },
         "metrics": {
             "wall_time_ns": wall,
             "critical_path_ns": if compiled.is_empty() { Value::Null } else { json!(cp.total_ns) },

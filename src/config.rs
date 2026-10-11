@@ -42,6 +42,7 @@ struct Key {
 }
 
 const KEYS: &[Key] = &[
+    Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("HAUL_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
     Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested `cargo` invocations that reach the shim: record them (orchestrator) or hand straight to upstream" },
     Key { name: "compatibility.unknown-command", kind: Kind::Enum(&["delegate", "instrument"]), default: "delegate", env: None, help: "external subcommands: plain delegation or rustc-wrapper instrumentation" },
     Key { name: "compatibility.real-cargo", kind: Kind::Str, default: "", env: None, help: "absolute path of the upstream Cargo binary (resolution rule 4)" },
@@ -55,6 +56,7 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.local-dev", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy on developer machines" },
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
+    Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
     Key { name: "artifacts.stale-days", kind: Kind::Int, default: "30", env: None, help: "age after which unused rebuildable artifacts become GC candidates" },
@@ -75,6 +77,7 @@ const RESERVED_ENV: &[&str] = &[
     crate::ENV_EXEC_GUARD,
     crate::ENV_REAL_CARGO,
     crate::ENV_HOME,
+    crate::artifact_cache::ENV_CACHE_DIR,
 ];
 
 #[derive(Debug, Clone)]
@@ -169,6 +172,12 @@ impl Config {
         let origin = path.display().to_string();
         let doc: toml::Table = text.parse().map_err(|e| format!("invalid TOML in {}: {}", origin, e))?;
         for (section, body) in &doc {
+            // Top-level keys (`mode = "compat"`) sit next to the sections.
+            if let Some(key) = KEYS.iter().find(|k| k.name == section && !k.name.contains('.')) {
+                let v = from_toml(key, body, &origin)?;
+                self.settings.insert(key.name, Setting { value: v, origin: origin.clone() });
+                continue;
+            }
             let table = body.as_table().ok_or_else(|| format!("`{}` in {} must be a table", section, origin))?;
             for (name, value) in table {
                 let full = format!("{}.{}", section, name);
@@ -263,6 +272,7 @@ mod tests {
     #[test]
     fn defaults_are_conservative() {
         let c = Config::defaults();
+        assert_eq!(c.str("mode"), "fast");
         assert_eq!(c.str("cache.provider"), "inherit");
         assert_eq!(c.str("incremental.local-dev"), "cargo-default");
         assert!(c.bool("measurement.enabled"));
@@ -279,11 +289,12 @@ mod tests {
         assert!(err.contains("cache.providr") && err.contains("config.toml"), "{}", err);
         fs::write(&p, "[cache]\nfail = \"maybe\"\n").unwrap();
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("one of open, closed"));
-        fs::write(&p, "[cache]\nprovider = \"sccache\"\n[measurement]\nkeep-runs = 7\n").unwrap();
+        fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\n[measurement]\nkeep-runs = 7\n").unwrap();
         let mut c = Config::defaults();
         c.apply_file(&p).unwrap();
         assert_eq!(c.str("cache.provider"), "sccache");
         assert_eq!(c.int("measurement.keep-runs"), 7);
+        assert_eq!(c.str("mode"), "compat");
         assert!(c.origin("cache.provider").ends_with("config.toml"));
         c.set_flag("cache.provider=none").unwrap();
         assert_eq!(c.origin("cache.provider"), "flag");
