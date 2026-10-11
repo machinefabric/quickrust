@@ -1,0 +1,34 @@
+# Workloads of the speed index (`haul-bench`). Each is pinned to a commit and its
+# committed lockfile, fetched once into the bench work directory, and built offline.
+#
+# Edits are real code changes inside a function body: `find` must occur exactly once
+# in `file`, and every application replaces it with `replace`, where `@N@` becomes a
+# number unique to that edit. `leaf` is a crate nothing else depends on; `core` is a
+# crate others build on, so editing it rebuilds its dependents too.
+
+[[workload]]
+name = "haul"
+description = "Haul's own first commit: one package (lib + 2 bins), ~40 units, serde/toml/sha2"
+source = "self"
+rev = "b2af135"
+quick = true
+leaf = { file = "src/bin/haul.rs", find = '''    haul::cli::main()''', replace = '''    let _ = @N@u64;
+    haul::cli::main()''' }
+core = { file = "src/util.rs", find = '''format!("{:.0}ms", s * 1e3)''', replace = '''format!("{:.0}ms@N@", s * 1e3)''' }
+
+[[workload]]
+name = "ripgrep"
+description = "ripgrep 15.2.0: a real CLI, 9-crate workspace, regex/memchr/serde"
+git = "https://github.com/BurntSushi/ripgrep"
+rev = "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f"
+leaf = { file = "crates/core/main.rs", find = '''stdout.write_all(b": ")?;''', replace = '''stdout.write_all(b": @N@")?;''' }
+core = { file = "crates/matcher/src/lib.rs", find = '''"no error"''', replace = '''"no error @N@"''' }
+
+[[workload]]
+name = "axum-todos"
+description = "axum 0.8.9 `todos` example: tokio + axum + tower-http + serde + tracing service, axum built from source"
+git = "https://github.com/tokio-rs/axum"
+rev = "c59208c86fded335cd85e388030ad59347b0e5ae"
+args = ["-p", "example-todos"]
+leaf = { file = "examples/todos/src/main.rs", find = '''"Unhandled internal error: {error}"''', replace = '''"Unhandled internal error @N@: {error}"''' }
+core = { file = "axum-core/src/response/into_response_parts.rs", find = '''"failed to convert key to a header name"''', replace = '''"failed to convert key to a header name @N@"''' }
