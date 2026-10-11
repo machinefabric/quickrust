@@ -161,7 +161,9 @@ impl Config {
     fn apply_file(&mut self, path: &Path) -> Result<(), String> {
         let text = match fs::read_to_string(path) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            // Absent, including below a path that is not a directory: an unusable state
+            // directory must not turn into a configuration error (NFR-020).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound || !path.exists() => return Ok(()),
             Err(e) => return Err(format!("cannot read {}: {}", path.display(), e)),
         };
         let origin = path.display().to_string();

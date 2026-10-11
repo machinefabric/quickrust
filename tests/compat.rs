@@ -536,14 +536,11 @@ fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     // … unless strict reporting was requested.
     let strict = run(sb.cargo(&p).arg("build").env("HAUL_REPORT", blocker.join("report.json")).env("HAUL_MEASUREMENT_STRICT", "true"));
     assert_eq!(strict.status.code(), Some(2));
-    // NFR-020: an unusable state directory (read-only here) still builds, with a warning.
-    use std::os::unix::fs::PermissionsExt;
-    let ro = sb.dir.join("read-only-home");
-    fs::create_dir_all(&ro).unwrap();
-    fs::set_permissions(&ro, fs::Permissions::from_mode(0o555)).unwrap();
+    // NFR-020: an unusable state directory still builds, with a warning. A directory below a
+    // regular file cannot be created by anyone; a read-only directory would not stop root.
+    let unusable = blocker.join("haul-home");
     fs::remove_dir_all(p.join("target")).unwrap();
-    let no_state = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &ro));
-    fs::set_permissions(&ro, fs::Permissions::from_mode(0o755)).unwrap();
+    let no_state = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &unusable));
     assert!(no_state.status.success(), "{}", stderr(&no_state));
     assert!(stderr(&no_state).contains("this run was not recorded"), "{}", stderr(&no_state));
     assert!(p.join("target/debug/p").exists());
