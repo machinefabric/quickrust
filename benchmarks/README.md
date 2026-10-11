@@ -13,7 +13,8 @@ target/release/haul-bench run --full --record                    # checkpoint, ~
 (`target/` is wherever your Cargo puts build output.) Two tiers:
 
 - **Quick**, every iteration: the `haul` workload; `cargo` vs `haul`; `cold-build no-op
-  edit-leaf edit-core second-checkout`; 3 repetitions, no warm-up; about two minutes.
+  edit-leaf edit-core rebuild-after-clean second-checkout`; 3 repetitions, no warm-up;
+  about two and a half minutes.
   `--record` appends to [`speed-index-quick.jsonl`](speed-index-quick.jsonl) with the `--note`,
   so every iteration leaves a trace.
 - **Full**, a checkpoint every ~10 iterations and before a step is called done: all three
@@ -68,7 +69,7 @@ One repetition runs, per variant, the whole loop from nothing built:
 | `second-checkout` | `cargo build` in a second, untouched checkout of the same commit |
 
 `--quick` runs the `haul` workload, variants `cargo` and `haul`, scenarios
-`cold-build no-op edit-leaf edit-core second-checkout`, 3 repetitions. `--full` runs
+`cold-build no-op edit-leaf edit-core rebuild-after-clean second-checkout`, 3 repetitions. `--full` runs
 everything, 5 repetitions after one untimed warm-up repetition.
 
 ## Sealed environment
