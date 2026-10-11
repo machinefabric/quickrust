@@ -38,6 +38,9 @@ pub struct Job {
     out_dir: PathBuf,
     stem: String,
     out_dir_env: Option<String>,
+    /// A workspace unit: its sources can change, so level 2 also hashes every input file.
+    local: bool,
+    cwd: PathBuf,
 }
 
 pub enum Lookup {
@@ -83,10 +86,16 @@ fn tree_digest(root: &Path) -> Option<String> {
 pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
     let root = std::env::var_os(ENV_CACHE_DIR).filter(|v| !v.is_empty()).map(PathBuf::from).ok_or("the artifact cache is off")?;
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
-    if !crate::wrapper::is_external_source(Path::new(&manifest_dir)) {
-        return Err("workspace sources can change under the same name".into());
-    }
+    let local = !crate::wrapper::is_external_source(Path::new(&manifest_dir));
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut key = vec![FORMAT.to_string(), file_identity(Path::new(rustc)).ok_or("rustc cannot be identified")?];
+    if local {
+        // Workspace units carry the checkout's absolute path in their debug information: they are
+        // reused within the same checkout (after a clean, across branch switches, in CI with a
+        // fixed path), never into another one.
+        key.push(format!("workspace={}", util::path_str(&cwd)));
+    }
+    let mut test = false;
     let (mut crate_name, mut out_dir, mut extra, mut types) = (None, None, String::new(), Vec::new());
     let mut i = 0;
     while i < args.len() {
@@ -117,12 +126,19 @@ pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
             return Err("links native libraries or prints compiler information".into());
         } else if let Some(v) = value_of(args, &mut i, "-C") {
             if v.starts_with("incremental") {
-                return Err("incremental compilation".into());
+                // rustc revalidates its incremental state against the inputs on every compilation,
+                // so outputs may be restored without it; only whether it is on changes the output.
+                key.push("-Cincremental".into());
+                i += 1;
+                continue;
             }
             if let Some(e) = v.strip_prefix("extra-filename=") {
                 extra = e.to_string();
             }
             key.push(format!("-C{}", v));
+        } else if a == "--test" {
+            test = true;
+            key.push(a.to_string());
         } else if value_of(args, &mut i, "--diagnostic-width").is_some() {
             // Terminal width of the build that ran first; never part of the identity.
         } else {
@@ -135,8 +151,8 @@ pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
     if let Some(t) = types.iter().find(|t| !matches!(t.as_str(), "lib" | "rlib" | "proc-macro" | "bin")) {
         return Err(format!("crate type {} is not cached", t));
     }
-    if types.iter().any(|t| t == "bin") && !crate_name.starts_with("build_script_") {
-        return Err("binaries other than build scripts are not cached".into());
+    if (test || types.iter().any(|t| t == "bin")) && !local && !crate_name.starts_with("build_script_") {
+        return Err("dependency binaries other than build scripts are not cached".into());
     }
     // What Cargo sets for the unit itself. Variables describing where this particular build
     // lives (target directory, Cargo home, current directory) are left out: when rustc or a
@@ -149,8 +165,21 @@ pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
     if let Some(o) = &out_dir_env {
         key.push(format!("OUT_DIR=sha:{}", tree_digest(Path::new(o)).ok_or("OUT_DIR is unreadable")?));
     }
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env })
+    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, cwd })
+}
+
+/// Level 2: the values of the variables rustc read, and for workspace units the content of
+/// every input file it read. `None` when an input has gone (a miss, then a fresh compilation).
+fn level2(key1: &str, names: &[String], inputs: &[String], cwd: &Path) -> Option<String> {
+    let mut parts = vec![env_digest(key1, names)];
+    for f in inputs {
+        // Files below OUT_DIR are covered by its content digest in level 1.
+        if f.starts_with("<OUT_DIR>") {
+            continue;
+        }
+        parts.push(format!("{}={}", f, util::sha256_file(&cwd.join(f)).ok()?));
+    }
+    Some(util::digest_parts(parts))
 }
 
 fn env_digest(key1: &str, names: &[String]) -> String {
@@ -186,8 +215,8 @@ impl Job {
 
     pub fn lookup(&self) -> Lookup {
         let Some(m) = util::read_json(&self.manifest()) else { return Lookup::Miss };
-        let names: Vec<String> = m["env_deps"].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect();
-        let key2 = env_digest(&self.key1, &names);
+        let list = |k: &str| -> Vec<String> { m[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
+        let Some(key2) = level2(&self.key1, &list("env_deps"), &list("inputs"), &self.cwd) else { return Lookup::Miss };
         let dir = self.entry_dir(&key2);
         let Some(entry) = util::read_json(&dir.join("entry.json")) else { return Lookup::Miss };
         let pairs = vec![
@@ -222,10 +251,32 @@ impl Job {
         let mut names: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("# env-dep:")).map(|r| r.split_once('=').map(|(n, _)| n).unwrap_or(r).to_string()).collect();
         names.sort();
         names.dedup();
-        let key2 = env_digest(&self.key1, &names);
+        // Inputs of a workspace unit, as rustc listed them (relative to the workspace root, or below OUT_DIR).
+        let mut inputs = Vec::new();
+        if self.local {
+            let rule = text.lines().find(|l| !l.starts_with('#') && l.contains(": ")).ok_or("dep-info lists no inputs")?;
+            for f in crate::wrapper::split_depinfo_paths(rule.split_once(": ").map(|(_, b)| b).unwrap_or("")) {
+                let p = self.cwd.join(&f);
+                // An input that changed while rustc ran: the outputs may not match its current content.
+                let md = fs::metadata(&p).map_err(|e| format!("input {} is unreadable: {}", f, e))?;
+                if util::mtime_ns(&md) >= start_wall_ns {
+                    return Err(format!("{} changed during the compilation", f));
+                }
+                match self.out_dir_env.as_deref().and_then(|o| util::path_str(&p).strip_prefix(o).map(str::to_string)) {
+                    Some(rel) => inputs.push(format!("<OUT_DIR>{}", rel)),
+                    None => inputs.push(f),
+                }
+            }
+            inputs.sort();
+            inputs.dedup();
+        }
+        let key2 = level2(&self.key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
         let dir = self.entry_dir(&key2);
+        // The manifest always describes the latest compilation (its input list is what later
+        // lookups hash), even when an identical entry was stored before.
+        let manifest = json!({ "env_deps": names, "inputs": inputs });
         if dir.join("entry.json").exists() {
-            return Ok(());
+            return util::write_json(&self.manifest(), &manifest).map_err(|e| e.to_string());
         }
         let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
         let tmp = self.root.join("tmp").join(format!("{}-{}", key2, std::process::id()));
@@ -254,14 +305,14 @@ impl Job {
             return Err("the compilation left no output to cache".into());
         }
         fs::write(tmp.join("stderr"), stderr).map_err(|e| e.to_string())?;
-        let entry = json!({ "files": files, "executable": executable, "out_dir": util::path_str(&self.out_dir), "out_dir_env": self.out_dir_env, "env_deps": names, "stored_at": util::iso8601(util::now_wall_ns()) });
+        let entry = json!({ "files": files, "executable": executable, "out_dir": util::path_str(&self.out_dir), "out_dir_env": self.out_dir_env, "env_deps": names, "inputs": inputs, "stored_at": util::iso8601(util::now_wall_ns()) });
         util::write_json(&tmp.join("entry.json"), &entry).map_err(|e| e.to_string())?;
         fs::create_dir_all(self.root.join("e")).map_err(|e| e.to_string())?;
         // Another build may have stored the same entry meanwhile; either copy is the same.
         if fs::rename(&tmp, &dir).is_err() {
             let _ = fs::remove_dir_all(&tmp);
         }
-        util::write_json(&self.manifest(), &json!({ "env_deps": names })).map_err(|e| e.to_string())
+        util::write_json(&self.manifest(), &manifest).map_err(|e| e.to_string())
     }
 }
 
