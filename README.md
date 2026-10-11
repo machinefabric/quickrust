@@ -135,10 +135,9 @@ its source. `haul policy explain` lists every key with its environment variable.
 
 ## Tracking
 
-Work is tracked on the [project board](https://github.com/users/jowharshamshiri/projects/6),
-backed by issues in this repository: delivered work, findings and decisions as
-closed issues with their context; remaining work by milestone (P0, P1, P2,
-Future).
+Work is tracked on the private [project board](https://github.com/users/jowharshamshiri/projects/6):
+delivered work, findings and decisions as cards carrying their context, and the
+remaining work by release (P0, P1, P2, Future).
 
 ## Development
 
