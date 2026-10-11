@@ -57,6 +57,7 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
+    Key { name: "cache.artifacts-max-size", kind: Kind::Str, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
     Key { name: "artifacts.stale-days", kind: Kind::Int, default: "30", env: None, help: "age after which unused rebuildable artifacts become GC candidates" },
