@@ -1,79 +1,106 @@
 # Speed index
 
-The number Haul's progress is measured by: how long the same developer loop
-takes through Haul compared with upstream Cargo.
+The number Haul's progress is measured by: how long the same developer loop takes
+through Haul compared with upstream Cargo, on real projects.
 
 ```bash
-cargo build --release
-cargo run --release --example speed_index -- --reps 3 --record
+cargo build --release --workspace
+target/release/haul-bench fetch                 # once; the only step that touches the network
+target/release/haul-bench run --quick           # a few minutes, while iterating
+target/release/haul-bench run --full --record   # the measurement that goes into the record
 ```
 
-`--record` appends one line to [`speed-index.jsonl`](speed-index.jsonl). Record
-from a clean checkout of the commit being measured, on an otherwise idle
-machine, and commit the new line with the change that moved it.
+(`target/` is wherever your Cargo puts build output.) Every run prints a table and
+writes its complete samples to `<work-dir>/results/<time>.json`. Only `--full --record`
+appends to [`speed-index.jsonl`](speed-index.jsonl); [`PROGRESS.md`](PROGRESS.md) holds one
+human-readable line per recorded step.
 
-## What is measured
+## Workloads
 
-**Workload.** Haul's own source at commit `b2af135`, with its real registry
-dependencies (serde, syn, toml, …; about forty build units). It is pinned so
-the index is comparable from one Haul version to the next; Haul itself, the
-thing under test, is always the current build.
+Defined in [`workloads.toml`](workloads.toml), each pinned to a commit and its committed
+lockfile:
 
-**Variants.** Each has its own checkouts, target directories and state.
+| Workload | Shape |
+|---|---|
+| `haul` | Haul's first commit `b2af135`: one package, lib + 2 bins, ~40 units. The quick workload. |
+| `ripgrep` | ripgrep 15.2.0: a 9-crate workspace, a real CLI |
+| `axum-todos` | axum 0.8.9's `todos` example: tokio, axum (built from source), tower-http, serde, tracing |
+
+Every workload defines two edits, both real code changes inside a function body (a
+literal changes, numbered per edit): `leaf`, in a crate nothing depends on, and `core`,
+in a crate others build on.
+
+## Variants
 
 | Variant | What runs |
 |---|---|
-| `cargo` | upstream Cargo, no Haul on the path |
-| `haul` | `haul <command>` with Haul's default configuration |
-| `haul+cache` | Haul with `cache.provider = "sccache"`, on an isolated sccache server whose cache starts empty every repetition |
+| `cargo` | upstream Cargo: the denominator |
+| `cargo-tuned` | upstream Cargo with the settings from Cargo's own build-performance guide (`debug = "line-tables-only"`, dependencies `debug = false`), passed as `--config`. What a user gets without Haul by editing configuration. Keeps Haul's index honest. |
+| `haul` | Haul, default configuration: **the headline number** |
+| `haul-compat` | Haul with `mode = compat` (once that setting exists): pure overhead, must stay ≥ 0.99 |
 
-**Scenarios**, run in this order within a repetition, starting with nothing
-cached anywhere:
+`--define 'NAME=BASE;env:K=V;config:K=V'` adds an ad-hoc variant (base `cargo` or `haul`)
+for trying a lever before it becomes a default. `--aa` adds a second plain Cargo
+(`cargo-aa`): an A/A test whose index must be 1.00 within noise.
+
+## Scenarios
+
+One repetition runs, per variant, the whole loop from nothing built:
 
 | Scenario | Step |
 |---|---|
-| `cold-build` | `cargo build` from an empty target directory |
-| `no-op` | `cargo build` again, nothing changed |
-| `edit-rebuild` | `cargo build` after a one-line edit to a workspace source file |
-| `check-after-build` | `cargo check` in the tree that was just built |
-| `rebuild-after-clean` | `cargo build` after the target directory was removed |
-| `second-checkout` | `cargo build` in a second checkout of the same commit |
+| `cold-build` | `cargo build`: empty target directory and Haul state (the OS page cache stays warm) |
+| `no-op` | `cargo build` again, nothing changed; each sample is the mean of 10 runs |
+| `edit-leaf` | leaf edit, `cargo build` |
+| `edit-core` | core edit, `cargo build` (rebuilds everything above that crate) |
+| `check-after-edit` | another leaf edit, `cargo check` |
+| `test-build` | `cargo test --no-run` |
+| `rebuild-after-clean` | `cargo clean`, then `cargo build` |
+| `second-checkout` | `cargo build` in a second, untouched checkout of the same commit |
 
-Variants are interleaved within each repetition, so drift in machine load
-affects all of them alike. The reported time per scenario is the median over
-repetitions.
+`--quick` runs the `haul` workload, variants `cargo` and `haul`, scenarios
+`cold-build no-op edit-leaf second-checkout`, 3 repetitions. `--full` runs everything, 5
+repetitions. Both add one untimed warm-up repetition.
+
+## Sealed environment
+
+Each command starts from an empty environment: rustup's proxies and system tools on
+`PATH`, a pinned toolchain (`--toolchain`, default `stable`), and a Cargo home of the
+benchmark's own (`<work-dir>/cargo-home`, no `config.toml`, populated by `fetch`, used
+offline). Every variant and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`.
+Nothing from the machine's Cargo configuration, such as a global `build.target-dir` or
+a rustc wrapper, can reach a measurement. The work directory (default
+`/mnt/shared/nvme2p3/haul-bench`, `--work-dir` or `HAUL_BENCH_DIR`) is refused if any parent
+has a `.cargo/config.toml`.
+
+Checks that invalidate a run, which is then reported and never recorded:
+
+- before measuring, `cargo metadata` under each variant's environment must report that
+  variant's own target directory;
+- `haul-compat` and `cargo-aa` must run exactly the units Cargo runs (counted from the
+  `Compiling`/`Checking` lines); an edit that compiled nothing is an error;
+- more than half of a scenario's samples taken while CPU pressure (`/proc/pressure/cpu`,
+  `some avg10`) exceeded 10%;
+- samples of a scenario longer than a second spread by more than 25% (`(max − min) / median`).
+
+Variants run interleaved within each repetition, in an order that rotates every
+repetition, so drift in machine load and caches affects all of them alike.
 
 ## The index
 
-For each scenario, `speedup = cargo time / variant time`. The index is the
-geometric mean of the six speedups: **1.000 is parity with Cargo, above 1 is
-faster, below 1 is slower.** The geometric mean keeps one long scenario from
-drowning the short ones; the whole-loop ratio (sum of the six medians) is
-recorded next to it for the opposite view.
-
-Two indices are tracked:
-
-- **`haul`** — what a user gets by replacing `cargo` and changing nothing else.
-  Haul delegates every compilation to Cargo and rustc, so this can only move
-  above 1 when Haul removes work on its own; until then it measures Haul's
-  overhead and should stay at parity.
-- **`haul+cache`** — what Haul delivers today with its cache policy switched
-  on. The first build pays for filling the cache; later scenarios show what the
-  cache gives back.
-
-## Stability gate
-
-If the samples of any scenario longer than a second differ by more than 25%
-(`(max − min) / median`) for any variant, the run is reported as **unstable**
-and is not recorded: the machine was busy with something else, and a ratio of
-medians taken from such samples is not a measurement.
+Per scenario, `speedup = cargo median / variant median` of wall time. A workload's index
+is the geometric mean over its scenarios; the speed index is the geometric mean over
+workloads. **1.000 is parity; above 1 is faster than Cargo.** The same is reported for
+CPU time (user + system of the whole process tree), which is much less sensitive to other
+load on the machine. Every sample also records peak RSS of the largest process, units run
+and the target directory's allocated bytes.
 
 ## Reading it honestly
 
-- It is a ratio on one workload on one machine. The `machine` and `toolchain`
-  fields of each record say which; compare records from like machines.
-- Differences of a few percent between repetitions are noise on the short
-  scenarios (`no-op` is tens of milliseconds). The raw samples are stored with
-  every record.
-- A change that improves the index by making Cargo's side slower is not an
-  improvement; the Cargo times are recorded so that is visible.
+- A ratio on three workloads on one machine. Each record names the machine and the
+  toolchains; compare like with like.
+- `no-op` is tens of milliseconds; a few percent there is process start-up noise.
+- `cargo-tuned` shows how much of a win plain configuration would give. Haul's value is
+  what it adds beyond that, and doing it without anyone editing configuration.
+- A change that "improves" the index by making Cargo's side slower is not an
+  improvement; Cargo's times are in every record.

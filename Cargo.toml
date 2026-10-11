@@ -7,6 +7,10 @@ description = "Drop-in Cargo replacement: an orchestration, observability and po
 license = "MIT OR Apache-2.0"
 default-run = "haul"
 
+# The benchmark harness is a separate member so its code never ships in Haul.
+[workspace]
+members = [".", "bench"]
+
 [lib]
 name = "haul"
 path = "src/lib.rs"

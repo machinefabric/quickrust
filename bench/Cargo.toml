@@ -1,0 +1,12 @@
+[package]
+name = "haul-bench"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Speed index: the same developer loop through upstream Cargo and through Haul"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+serde_json = { version = "1", features = ["preserve_order"] }
+toml = "0.8"
+libc = "0.2"
