@@ -737,7 +737,10 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     // Its warning must reach the user on every build, cached or not.
     let dep = sb.dir.join("cargo-home/registry/src/fake-0000/greet-1.0.0");
     sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    let unused = 1;\n    \"hello from the cache\"\n}\n");
+    // Like serde: a build script generates code that the library includes through OUT_DIR,
+    // whose path differs in every target directory.
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    let unused = 1;\n    GREETING\n}\n");
     let app = |rel: &str| {
         // A path dependency is compiled incrementally, which a registry one never is.
         sb.file(&format!("{}/Cargo.toml", rel), &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
@@ -748,7 +751,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
 
     let first = ok(sb.cargo(&a).arg("build"));
     assert!(stderr(&first).contains("unused variable"), "{}", stderr(&first));
-    assert_eq!(cache_results(&sb), vec![("app".to_string(), "off".to_string()), ("greet".to_string(), "stored".to_string())]);
+    assert_eq!(cache_results(&sb), vec![("app".to_string(), "off".to_string()), ("build_script_build".to_string(), "stored".to_string()), ("greet".to_string(), "stored".to_string())]);
 
     ok(sb.cargo(&a).arg("clean"));
     let again = ok(sb.cargo(&a).args(["run", "-q"]));

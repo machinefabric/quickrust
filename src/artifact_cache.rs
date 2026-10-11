@@ -18,6 +18,10 @@
 //!   (`artifact` notices) from them, and stores the diagnostics it replays as warnings.
 //!
 //! Any cache problem means "compile normally": the cache can only ever save time.
+//!
+//! Known difference: a crate that `include!`s files its build script generated is keyed by
+//! the content of `OUT_DIR`, not its path, so a unit restored into another target directory
+//! names the first one in panic locations and debug information for that generated code.
 
 use crate::util;
 use serde_json::{json, Value};
@@ -150,7 +154,14 @@ pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
 }
 
 fn env_digest(key1: &str, names: &[String]) -> String {
-    util::digest_parts(std::iter::once(key1.to_string()).chain(names.iter().map(|n| format!("{}={}", n, std::env::var(n).map(|v| format!("set:{}", v)).unwrap_or_else(|_| "unset".into())))))
+    util::digest_parts(std::iter::once(key1.to_string()).chain(names.iter().map(|n| {
+        // `include!(concat!(env!("OUT_DIR"), …))` reads OUT_DIR: what matters is the directory's
+        // content, already in level 1; its path differs in every target directory.
+        if n == "OUT_DIR" {
+            return "OUT_DIR=<content>".to_string();
+        }
+        format!("{}={}", n, std::env::var(n).map(|v| format!("set:{}", v)).unwrap_or_else(|_| "unset".into()))
+    })))
 }
 
 /// Replaces the cached build's paths with this build's (longest first).
