@@ -30,7 +30,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("rebuild-after-clean", "`cargo clean`, then `cargo build`"),
     ("second-checkout", "`cargo build` in a second checkout of the same commit"),
 ];
-const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "second-checkout"];
+const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "edit-core", "second-checkout"];
 const NOOP_RUNS: u64 = 10;
 
 fn fail(msg: &str) -> ! {
@@ -244,7 +244,9 @@ struct Opts {
     quick: bool,
     full: bool,
     reps: Option<usize>,
-    warmups: usize,
+    /// Untimed repetitions first; default 1 for full runs, none for quick ones.
+    warmups: Option<usize>,
+    note: Option<String>,
     workloads: Option<Vec<String>>,
     variants: Option<Vec<String>>,
     only: Option<Vec<String>>,
@@ -266,7 +268,8 @@ fn parse_opts(args: &[String]) -> Opts {
         quick: false,
         full: false,
         reps: None,
-        warmups: 1,
+        warmups: None,
+        note: None,
         workloads: None,
         variants: None,
         only: None,
@@ -291,7 +294,8 @@ fn parse_opts(args: &[String]) -> Opts {
             "--quick" => o.quick = true,
             "--full" => o.full = true,
             "--reps" => o.reps = Some(val(&mut i, "--reps").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--reps needs a number ≥ 1"))),
-            "--warmups" => o.warmups = val(&mut i, "--warmups").parse().unwrap_or_else(|_| fail("--warmups needs a number")),
+            "--warmups" => o.warmups = Some(val(&mut i, "--warmups").parse().unwrap_or_else(|_| fail("--warmups needs a number"))),
+            "--note" => o.note = Some(val(&mut i, "--note")),
             "--workload" => o.workloads = Some(list(&val(&mut i, "--workload"))),
             "--variant" => o.variants = Some(list(&val(&mut i, "--variant"))),
             "--only" => o.only = Some(list(&val(&mut i, "--only"))),
@@ -313,7 +317,7 @@ fn parse_opts(args: &[String]) -> Opts {
 const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b]
        haul-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
                       [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
-                      [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
+                      [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -391,15 +395,17 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         None => SCENARIOS.iter().map(|(s, _)| *s).collect(),
     };
     let reps = opts.reps.unwrap_or(if opts.full { 5 } else { 3 });
-    // Extra --define variants may be recorded next to the built-in ones (a lever measured on
-    // its own); everything else must be complete so that records stay comparable.
-    let recordable_shape = opts.full && opts.only.is_none() && opts.variants.is_none() && !opts.aa && opts.workloads.is_none();
-    if opts.record && !recordable_shape {
-        fail("--record needs a --full run over every workload, built-in variant and scenario (extra --define variants are allowed)");
+    // Two records: every quick run (one per iteration) and the full checkpoints. Extra --define
+    // variants may be recorded (a lever measured on its own); otherwise a record must have the
+    // standard shape of its tier so that records stay comparable.
+    let standard = opts.only.is_none() && opts.variants.is_none() && !opts.aa && opts.workloads.is_none() && opts.reps.is_none();
+    if opts.record && !(standard && (opts.full || opts.quick)) {
+        fail("--record needs a plain --quick or --full run (no --only, --variant, --workload, --reps or --aa; --define is allowed)");
     }
+    let warmups = opts.warmups.unwrap_or(if opts.full { 1 } else { 0 });
 
     let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe) });
-    eprintln!("haul-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, opts.warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
+    eprintln!("haul-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
 
     let started = Instant::now();
     let mut edit_n = 0u64;
@@ -428,15 +434,15 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         // samples[variant][scenario] = measured samples; counts[(scenario, rep)][variant] = units run.
         let mut samples: BTreeMap<String, BTreeMap<String, Vec<Sample>>> = BTreeMap::new();
         let mut counts: BTreeMap<(String, usize), BTreeMap<String, u64>> = BTreeMap::new();
-        let total = opts.warmups + reps;
+        let total = warmups + reps;
         for rep in 0..total {
             let rep_started = Instant::now();
-            let measured = rep >= opts.warmups;
+            let measured = rep >= warmups;
             // Rotate the order so no variant always runs first (page cache, thermal and load drift).
             let n = variants.len();
             for k in 0..n {
                 let v = &variants[(k + rep) % n];
-                eprintln!("haul-bench: {} · {} {}/{} · {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - opts.warmups + 1 } else { rep + 1 }, if measured { reps } else { opts.warmups }, v.name);
+                eprintln!("haul-bench: {} · {} {}/{} · {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - warmups + 1 } else { rep + 1 }, if measured { reps } else { warmups }, v.name);
                 let r = repetition(&ctx, v, w, &selected, &originals, &mut edit_n);
                 if !measured {
                     continue;
@@ -551,7 +557,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         "haul_rev": haul_rev, "haul_dirty": haul_dirty, "haul_settings": settings,
         "mode": if opts.full { "full" } else if opts.quick { "quick" } else { "custom" },
-        "repetitions": reps, "warmups": opts.warmups,
+        "repetitions": reps, "warmups": warmups, "note": opts.note,
         "machine": machine(), "toolchain": toolchain,
         "variants": variants.iter().map(|v| json!({ "name": v.name, "base": format!("{:?}", v.base).to_lowercase(), "env": v.env.iter().map(|(k, val)| format!("{}={}", k, val)).collect::<Vec<_>>(), "config": v.config })).collect::<Vec<_>>(),
         "workloads": results, "index": overall, "problems": problems,
@@ -573,7 +579,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         return;
     }
     if opts.record {
-        let path = repo.join("benchmarks/speed-index.jsonl");
+        let path = repo.join(if opts.full { "benchmarks/speed-index.jsonl" } else { "benchmarks/speed-index-quick.jsonl" });
         let mut text = fs::read_to_string(&path).unwrap_or_default();
         text.push_str(&entry.to_string());
         text.push('\n');

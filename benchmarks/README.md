@@ -5,15 +5,23 @@ through Haul compared with upstream Cargo, on real projects.
 
 ```bash
 cargo build --release --workspace
-target/release/haul-bench fetch                 # once; the only step that touches the network
-target/release/haul-bench run --quick           # a few minutes, while iterating
-target/release/haul-bench run --full --record   # the measurement that goes into the record
+target/release/haul-bench fetch                                  # once; the only step that touches the network
+target/release/haul-bench run --quick --record --note "what changed"   # every iteration, ~2 min
+target/release/haul-bench run --full --record                    # checkpoint, ~30 min
 ```
 
-(`target/` is wherever your Cargo puts build output.) Every run prints a table and
-writes its complete samples to `<work-dir>/results/<time>.json`. Only `--full --record`
-appends to [`speed-index.jsonl`](speed-index.jsonl); [`PROGRESS.md`](PROGRESS.md) holds one
-human-readable line per recorded step.
+(`target/` is wherever your Cargo puts build output.) Two tiers:
+
+- **Quick**, every iteration: the `haul` workload; `cargo` vs `haul`; `cold-build no-op
+  edit-leaf edit-core second-checkout`; 3 repetitions, no warm-up; about two minutes.
+  `--record` appends to [`speed-index-quick.jsonl`](speed-index-quick.jsonl) with the `--note`,
+  so every iteration leaves a trace.
+- **Full**, a checkpoint every ~10 iterations and before a step is called done: all three
+  workloads, all variants and scenarios, 5 repetitions plus a warm-up; about half an hour.
+  `--record` appends to [`speed-index.jsonl`](speed-index.jsonl), and
+  [`PROGRESS.md`](PROGRESS.md) gets one human-readable line.
+
+Every run prints a table and writes its complete samples to `<work-dir>/results/<time>.json`.
 
 ## Workloads
 
@@ -60,8 +68,8 @@ One repetition runs, per variant, the whole loop from nothing built:
 | `second-checkout` | `cargo build` in a second, untouched checkout of the same commit |
 
 `--quick` runs the `haul` workload, variants `cargo` and `haul`, scenarios
-`cold-build no-op edit-leaf second-checkout`, 3 repetitions. `--full` runs everything, 5
-repetitions. Both add one untimed warm-up repetition.
+`cold-build no-op edit-leaf edit-core second-checkout`, 3 repetitions. `--full` runs
+everything, 5 repetitions after one untimed warm-up repetition.
 
 ## Sealed environment
 
