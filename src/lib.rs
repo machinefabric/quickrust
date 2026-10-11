@@ -20,6 +20,7 @@ pub mod render;
 pub mod resolve;
 pub mod session;
 pub mod store;
+pub mod toolchain_cache;
 pub mod util;
 pub mod waste;
 pub mod wrapper;
