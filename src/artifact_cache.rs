@@ -238,7 +238,11 @@ impl Job {
             Ok(rewrite(&fs::read(dir.join("stderr")).unwrap_or_default(), &pairs))
         };
         match restore() {
-            Ok(stderr) => Lookup::Hit { stderr, entry: key2 },
+            Ok(stderr) => {
+                // Recency for eviction: the least recently used entries go first.
+                let _ = fs::File::options().write(true).open(dir.join("entry.json")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+                Lookup::Hit { stderr, entry: key2 }
+            }
             // A damaged entry is a miss; the compilation that follows overwrites the outputs.
             Err(_) => Lookup::Miss,
         }
@@ -316,9 +320,56 @@ impl Job {
     }
 }
 
+/// Keeps the cache below `max_bytes` by removing the least recently used entries.
+/// Returns (bytes before, bytes removed). Safe while builds run: an entry is renamed away
+/// before it is deleted, and a build that finds it gone simply compiles.
+pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
+    let mut entries: Vec<(u64, u64, PathBuf)> = Vec::new();
+    for e in fs::read_dir(root.join("e")).into_iter().flatten().flatten() {
+        let dir = e.path();
+        let used = fs::metadata(dir.join("entry.json")).map(|m| util::mtime_ns(&m)).unwrap_or(0);
+        let bytes: u64 = fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum();
+        entries.push((used, bytes, dir));
+    }
+    let total: u64 = entries.iter().map(|e| e.1).sum();
+    let mut over = total.saturating_sub(max_bytes);
+    let mut removed = 0;
+    entries.sort();
+    for (_, bytes, dir) in entries {
+        if over == 0 {
+            break;
+        }
+        let doomed = root.join("tmp").join(format!("evict-{}-{}", std::process::id(), dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+        if fs::create_dir_all(root.join("tmp")).and_then(|_| fs::rename(&dir, &doomed)).is_ok() {
+            let _ = fs::remove_dir_all(&doomed);
+            removed += bytes;
+            over = over.saturating_sub(bytes);
+        }
+    }
+    (total, removed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn eviction_removes_least_recently_used_entries_first() {
+        let root = std::env::temp_dir().join(format!("haul-evict-{}", util::new_id()));
+        for (name, age_s) in [("old", 300), ("mid", 200), ("new", 100)] {
+            let d = root.join("e").join(name);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("lib.rlib"), vec![0u8; 1000]).unwrap();
+            fs::write(d.join("entry.json"), "{}").unwrap();
+            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
+            fs::File::options().write(true).open(d.join("entry.json")).unwrap().set_modified(t).unwrap();
+        }
+        let (total, removed) = evict(&root, 2100);
+        assert!(total >= 3000 && removed >= 1000);
+        assert!(!root.join("e/old").exists() && root.join("e/mid").exists() && root.join("e/new").exists());
+        assert_eq!(evict(&root, u64::MAX).1, 0);
+        fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn rewrite_replaces_the_cached_builds_paths() {

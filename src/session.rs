@@ -597,9 +597,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             outcome.policy_exit = Some(crate::EXIT_HAUL_ERROR);
         }
     }
-    // Amortised retention: roughly one invocation in 32 pays for pruning.
+    // Amortised retention: roughly one invocation in 32 pays for pruning, one in 16 for the cache's size cap.
     if id.as_bytes()[25] % 32 == 0 {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
+    }
+    if plan.policy["cache"]["artifacts"] == json!("on") && id.as_bytes()[24] % 16 == 0 {
+        let max = util::parse_bytes(cfg.str("cache.artifacts-max-size")).unwrap_or(10 << 30);
+        crate::artifact_cache::evict(&util::haul_home().join("cache").join("artifacts"), max);
     }
     outcome.store = Some(store);
     Ok(outcome)
