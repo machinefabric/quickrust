@@ -398,6 +398,12 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
     // directory override, rust-toolchain.toml, default), so we never re-implement it (COMP-012).
     if let Some(dir) = rustup_bin_dir() {
         if let Some(proxy) = first_exe(&dir, "cargo").filter(|p| !is_self(p)) {
+            // Fast mode: rustup's choice, learned once for these inputs, without the proxy's ~5 ms.
+            if cfg.str("mode") == "fast" {
+                if let Some((cargo, env)) = std::env::current_dir().ok().and_then(|cwd| crate::toolchain_cache::resolve(&proxy, inv.toolchain.as_deref(), &cwd)) {
+                    return Ok(Upstream { program: cargo, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup's toolchain, resolved once (proxy skipped)" });
+                }
+            }
             let rule = if inv.toolchain.is_some() { "rustup proxy with explicit +toolchain" } else { "rustup proxy (directory toolchain)" };
             return Ok(Upstream { program: proxy, strip_toolchain_arg: false, env: vec![], rule });
         }

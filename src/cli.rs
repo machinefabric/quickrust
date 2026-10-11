@@ -213,6 +213,9 @@ pub fn main() {
     if invoked_as == "cargo" {
         session::run_and_exit(args, Mode::Shim);
     }
+    if invoked_as == crate::toolchain_cache::PROBE_NAME {
+        crate::toolchain_cache::report_environment();
+    }
     let command = args.first().map(|a| util::lossy(a)).unwrap_or_default();
     let rest = if args.is_empty() { &args[..] } else { &args[1..] };
     let result: CmdResult = match command.as_str() {

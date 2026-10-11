@@ -701,3 +701,25 @@ fn dispatch_overhead_stays_within_budget() {
     eprintln!("no-op build: upstream {:.1} ms, shim {:.1} ms, overhead {:.1} ms", native as f64 / 1000.0, wrapped as f64 / 1000.0, overhead_ms);
     assert!(overhead_ms < 100.0, "no-op overhead {:.1} ms exceeds the 100 ms budget (NFR-PERF-003)", overhead_ms);
 }
+
+#[test]
+fn fast_mode_learns_rustups_toolchain_once_and_skips_the_proxy() {
+    let sb = Sandbox::new("proxy");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    let rule = |sb: &Sandbox| sb.sessions().last().unwrap()["upstream"]["rule"].as_str().unwrap().to_string();
+    if !rule(&sb).contains("rustup") {
+        eprintln!("skipped: Cargo is not managed by rustup here");
+        return;
+    }
+    assert_eq!(rule(&sb), "rustup's toolchain, resolved once (proxy skipped)");
+    assert!(sb.home.join("toolchains.json").is_file());
+    // The same choice rustup makes: `+toolchain` included, and the result is the same Cargo.
+    let direct = stdout(&ok(sb.cargo(&p).arg("-V")));
+    assert_eq!(direct, stdout(&ok(sb.upstream(&p).arg("-V"))));
+    let plus = ok(sb.cargo(&p).args(["+stable", "build"]));
+    assert!(plus.status.success());
+    // compat mode keeps the proxy.
+    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
+    assert!(rule(&sb).starts_with("rustup proxy"), "{}", rule(&sb));
+}
