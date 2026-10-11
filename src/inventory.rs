@@ -56,6 +56,9 @@ struct Group {
     newest_mtime_ns: u64,
 }
 
+/// Every name of one hard-linked inode: (relative path components, logical bytes, allocated bytes, mtime).
+type LinkedNames = Vec<(Vec<String>, u64, u64, u64)>;
+
 const LAYOUT_DIRS: &[&str] = &["deps", "build", "incremental", ".fingerprint", "examples"];
 
 /// Unit stem (`name-hash`) of an artifact file name in `deps/`.
@@ -200,11 +203,25 @@ fn reclaimability(category: &str, group: &str, newest_mtime_ns: u64, known: &Kno
     }
 }
 
+/// Adds one file to its category and group.
+#[allow(clippy::too_many_arguments)]
+fn account(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Knowledge, cats: &mut BTreeMap<&'static str, Tally>, total: &mut Tally, groups: &mut HashMap<(&'static str, String), Group>) {
+    // Haul's own benchmark/experiment directories are complete target directories one level down.
+    let inner = if matches!(rel.first(), Some(&"haul-bench") | Some(&"haul-exp")) && rel.len() > 2 { &rel[2..] } else { rel };
+    let (cat, group) = classify(inner, known);
+    let group = if inner.len() != rel.len() { format!("{}/{}/{}", rel[0], rel[1], group) } else { group };
+    cats.entry(cat).or_default().add(logical, allocated);
+    total.add(logical, allocated);
+    let g = groups.entry((cat, group)).or_default();
+    g.tally.add(logical, allocated);
+    g.newest_mtime_ns = g.newest_mtime_ns.max(mtime_ns);
+}
+
 /// Scans one build/target directory.
 pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
     let mut cats: BTreeMap<&'static str, Tally> = BTreeMap::new();
     let mut groups: HashMap<(&'static str, String), Group> = HashMap::new();
-    let mut seen_links: HashSet<(u64, u64)> = HashSet::new();
+    let mut linked: HashMap<(u64, u64), LinkedNames> = HashMap::new();
     let mut total = Tally::default();
     let mut hardlink_dup = 0u64;
     let mut symlinks = 0u64;
@@ -266,22 +283,21 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
                 }
             }
             if let Some(key) = hardlink_key(&md) {
-                if !seen_links.insert(key) {
-                    // Second name of the same inode: counting it again would overstate usage (FR-110.3).
-                    hardlink_dup += logical;
-                    continue;
-                }
+                // Decided after the walk, once every name of the inode is known.
+                linked.entry(key).or_default().push((rel_owned.clone(), logical, allocated, util::mtime_ns(&md)));
+                continue;
             }
-            // Haul's own benchmark/experiment directories are complete target directories one level down.
-            let inner = if matches!(rel.first(), Some(&"haul-bench") | Some(&"haul-exp")) && rel.len() > 2 { &rel[2..] } else { &rel[..] };
-            let (cat, group) = classify(inner, known);
-            let group = if inner.len() != rel.len() { format!("{}/{}/{}", rel[0], rel[1], group) } else { group };
-            cats.entry(cat).or_default().add(logical, allocated);
-            total.add(logical, allocated);
-            let g = groups.entry((cat, group)).or_default();
-            g.tally.add(logical, allocated);
-            g.newest_mtime_ns = g.newest_mtime_ns.max(util::mtime_ns(&md));
+            account(&rel, logical, allocated, util::mtime_ns(&md), known, &mut cats, &mut total, &mut groups);
         }
+    }
+    // Cargo uplifts outputs from `deps/` by hard link. One inode is counted once (FR-110.3), under
+    // the name that identifies its build unit, whichever name the walk happened to reach first.
+    for (_, mut names) in linked {
+        let pick = names.iter().position(|n| n.0.iter().any(|c| c == "deps")).unwrap_or(0);
+        let (rel_owned, logical, allocated, mtime) = names.swap_remove(pick);
+        hardlink_dup += names.iter().map(|n| n.1).sum::<u64>();
+        let rel: Vec<&str> = rel_owned.iter().map(String::as_str).collect();
+        account(&rel, logical, allocated, mtime, known, &mut cats, &mut total, &mut groups);
     }
 
     let cutoff = opts.now_ns.saturating_sub(opts.stale_days * 86_400 * 1_000_000_000);
