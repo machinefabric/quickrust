@@ -30,7 +30,7 @@ const SCENARIOS: &[(&str, &str)] = &[
     ("rebuild-after-clean", "`cargo clean`, then `cargo build`"),
     ("second-checkout", "`cargo build` in a second checkout of the same commit"),
 ];
-const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "edit-core", "second-checkout"];
+const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "edit-core", "rebuild-after-clean", "second-checkout"];
 const NOOP_RUNS: u64 = 10;
 
 fn fail(msg: &str) -> ! {
