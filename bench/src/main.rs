@@ -407,6 +407,10 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe) });
     eprintln!("haul-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
 
+    // Provenance is taken before measuring: the binaries were built from this state, and later
+    // edits to the checkout must not be attributed to them.
+    let state = || (capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_default(), capture(repo, "git", &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(true));
+    let (haul_rev, haul_dirty) = state();
     let started = Instant::now();
     let mut edit_n = 0u64;
     let mut problems: Vec<String> = Vec::new();
@@ -551,8 +555,9 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     }
     println!("  elapsed {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 
-    let haul_rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_default();
-    let haul_dirty = capture(repo, "git", &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(true);
+    if state() != (haul_rev.clone(), haul_dirty) {
+        eprintln!("haul-bench: note: the Haul checkout changed during the run; the record describes it as it was at the start");
+    }
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
         "haul_rev": haul_rev, "haul_dirty": haul_dirty, "haul_settings": settings,
