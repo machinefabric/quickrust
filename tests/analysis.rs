@@ -681,3 +681,90 @@ fn stale_session_filesystem_facts_are_marked_unavailable() {
     assert!(latest["metrics"]["artifact_allocated_bytes"].as_u64().unwrap() > 0);
     assert_eq!(reasons(&latest), vec![("p".into(), "bin".into(), "dependency".into()), ("p".into(), "lib".into(), "source".into())]);
 }
+
+#[test]
+fn fast_mode_applies_its_settings_unless_the_user_made_them() {
+    let sb = Sandbox::new("fast");
+    let p = sb.package("p", "p");
+    let debuginfo = |r: &Value| -> Vec<String> { r["units"].as_array().unwrap().iter().filter(|u| u["freshness"] == "compiled").map(|u| u["codegen"]["debuginfo"].as_str().unwrap_or("0").to_string()).collect() };
+
+    ok(sb.cargo(&p).arg("build"));
+    let r = sb.report(&p, "latest");
+    assert!(!debuginfo(&r).is_empty() && debuginfo(&r).iter().all(|d| d == "line-tables-only"), "{:?}", debuginfo(&r));
+    assert_eq!(r["policy"]["fast"]["applied"].as_array().unwrap().len(), 2);
+    assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not Haul's overlays");
+
+    // compat: exactly what upstream Cargo builds.
+    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
+    let r = sb.report(&p, "latest");
+    assert!(debuginfo(&r).iter().all(|d| d == "2"), "{:?}", debuginfo(&r));
+    assert!(r["policy"]["fast"]["applied"].as_array().unwrap().is_empty());
+
+    // A setting the user made wins, and the report says why Haul stood back.
+    let manifest = p.join("Cargo.toml");
+    let text = fs::read_to_string(&manifest).unwrap();
+    fs::write(&manifest, format!("{}\n[profile.dev]\ndebug = 1\n", text)).unwrap();
+    ok(sb.cargo(&p).arg("build"));
+    let r = sb.report(&p, "latest");
+    assert!(debuginfo(&r).iter().all(|d| d == "1"), "{:?}", debuginfo(&r));
+    let yielded = r["policy"]["fast"]["yielded"].as_array().unwrap();
+    assert_eq!(yielded.len(), 2);
+    assert!(yielded[0]["because"].as_str().unwrap().contains("Cargo.toml"), "{}", yielded[0]);
+}
+
+/// Events of the latest instrumented run: (crate name, cache result).
+fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    let dir = std::path::PathBuf::from(s["events_dir"].as_str().unwrap());
+    let mut out: Vec<(String, String)> = fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+        .filter(|ev| ev["kind"] == "compile")
+        .map(|ev| {
+            let args: Vec<String> = ev["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap().to_string()).collect();
+            let name = args.iter().position(|a| a == "--crate-name").map(|i| args[i + 1].clone()).unwrap_or_default();
+            (name, ev["cache"]["result"].as_str().unwrap_or("").to_string())
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+#[test]
+fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
+    let sb = Sandbox::new("artifacts");
+    // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.
+    // Its warning must reach the user on every build, cached or not.
+    let dep = sb.dir.join("cargo-home/registry/src/fake-0000/greet-1.0.0");
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    let unused = 1;\n    \"hello from the cache\"\n}\n");
+    let app = |rel: &str| {
+        // A path dependency is compiled incrementally, which a registry one never is.
+        sb.file(&format!("{}/Cargo.toml", rel), &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
+        sb.file(&format!("{}/src/main.rs", rel), "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
+        sb.dir.join(rel)
+    };
+    let (a, b) = (app("a"), app("b"));
+
+    let first = ok(sb.cargo(&a).arg("build"));
+    assert!(stderr(&first).contains("unused variable"), "{}", stderr(&first));
+    assert_eq!(cache_results(&sb), vec![("app".to_string(), "off".to_string()), ("greet".to_string(), "stored".to_string())]);
+
+    ok(sb.cargo(&a).arg("clean"));
+    let again = ok(sb.cargo(&a).args(["run", "-q"]));
+    assert_eq!(stdout(&again), "hello from the cache\n");
+    assert!(stderr(&again).contains("unused variable"), "a cached unit's warnings are replayed: {}", stderr(&again));
+    assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())));
+
+    // Another checkout with its own target directory reuses it too, and Cargo then considers it fresh.
+    ok(sb.cargo(&b).arg("build"));
+    assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())));
+    let fresh = ok(sb.cargo(&b).arg("build"));
+    assert!(!stderr(&fresh).contains("Compiling"), "a restored unit must be fresh for Cargo afterwards: {}", stderr(&fresh));
+    assert_eq!(stdout(&ok(sb.cargo(&b).args(["run", "-q"]))), "hello from the cache\n");
+
+    // compat mode never uses the cache.
+    ok(sb.cargo(&a).arg("clean"));
+    ok(sb.cargo(&a).arg("build").env("HAUL_MODE", "compat"));
+    assert!(cache_results(&sb).iter().all(|(_, r)| r == "off"), "{:?}", cache_results(&sb));
+}

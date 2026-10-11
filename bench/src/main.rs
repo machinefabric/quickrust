@@ -391,9 +391,11 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         None => SCENARIOS.iter().map(|(s, _)| *s).collect(),
     };
     let reps = opts.reps.unwrap_or(if opts.full { 5 } else { 3 });
-    let recordable_shape = opts.full && opts.only.is_none() && opts.variants.is_none() && opts.defines.is_empty() && !opts.aa && opts.workloads.is_none();
+    // Extra --define variants may be recorded next to the built-in ones (a lever measured on
+    // its own); everything else must be complete so that records stay comparable.
+    let recordable_shape = opts.full && opts.only.is_none() && opts.variants.is_none() && !opts.aa && opts.workloads.is_none();
     if opts.record && !recordable_shape {
-        fail("--record needs a plain --full run: every workload, variant and scenario");
+        fail("--record needs a --full run over every workload, built-in variant and scenario (extra --define variants are allowed)");
     }
 
     let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe) });

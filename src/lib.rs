@@ -4,12 +4,14 @@
 //! process boundary around them (policy, observation, lifecycle, budgets).
 
 pub mod analyze;
+pub mod artifact_cache;
 pub mod bench;
 pub mod cache;
 pub mod cli;
 pub mod compare;
 pub mod config;
 pub mod discover;
+pub mod fast;
 pub mod inventory;
 pub mod proc;
 pub mod recommend;

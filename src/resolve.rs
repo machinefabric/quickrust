@@ -177,7 +177,38 @@ pub struct CargoConfigSubset {
     pub rustc_wrapper: Option<(String, String)>,
     pub aliases: Vec<(String, String)>,
     pub target_dir: Option<PathBuf>,
+    /// Profile settings the user made in configuration, as `(path below [profile], origin)`,
+    /// e.g. `("dev.package.*.debug", "cargo config /w/.cargo/config.toml")`.
+    pub profile_keys: Vec<(String, String)>,
     pub notes: Vec<String>,
+}
+
+/// Every leaf key path below a TOML value, dot-joined (`dev.package.*.debug`).
+fn flatten_keys(prefix: &str, v: &toml::Value, out: &mut Vec<String>) {
+    match v {
+        toml::Value::Table(t) => {
+            for (k, x) in t {
+                flatten_keys(&if prefix.is_empty() { k.clone() } else { format!("{}.{}", prefix, k) }, x, out);
+            }
+        }
+        _ => out.push(prefix.to_string()),
+    }
+}
+
+/// Profile settings made in the manifest at `ws_root` (only the workspace root's profiles count).
+pub fn manifest_profile_keys(ws_root: &Path) -> Vec<(String, String)> {
+    let manifest = ws_root.join("Cargo.toml");
+    let mut keys = Vec::new();
+    if let Some(p) = std::fs::read_to_string(&manifest).ok().and_then(|t| t.parse::<toml::Table>().ok()).and_then(|d| d.get("profile").cloned()) {
+        flatten_keys("", &p, &mut keys);
+    }
+    keys.into_iter().map(|k| (k, format!("manifest {}", manifest.display()))).collect()
+}
+
+/// Profile settings made through `CARGO_PROFILE_<NAME>_<KEY>`, normalised as `name_key` in lower case.
+/// The environment cannot name packages, so these never contain `package`-level paths.
+pub fn env_profile_keys() -> Vec<(String, String)> {
+    std::env::vars().filter_map(|(k, _)| k.strip_prefix("CARGO_PROFILE_").map(|rest| (rest.to_ascii_lowercase(), format!("env {}", k)))).collect()
 }
 
 fn config_files(cwd: &Path) -> Vec<PathBuf> {
@@ -244,6 +275,11 @@ pub fn cargo_config_subset(cwd: &Path, cli_configs: &[String]) -> CargoConfigSub
                     out.target_dir = Some(PathBuf::from(config_relative(&format!("./{}", t), origin)));
                 }
             }
+        }
+        if let Some(p) = doc.get("profile") {
+            let mut keys = Vec::new();
+            flatten_keys("", p, &mut keys);
+            out.profile_keys.extend(keys.into_iter().map(|k| (k, format!("cargo config {}", origin.display()))));
         }
         if let Some(aliases) = doc.get("alias").and_then(|b| b.as_table()) {
             for (k, v) in aliases {
