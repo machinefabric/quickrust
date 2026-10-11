@@ -135,9 +135,8 @@ that used a different toolchain than the rest are discarded and counted.
 ## Platform notes
 
 - **macOS**: fully supported; every test suite runs here.
-- **Linux**: supported by design and type-checked (`x86_64-unknown-linux-gnu`), but the
-  suites have not yet been run on Linux. Linux-only code paths (`/proc` parsing,
-  mount lookup, resource-usage units) are unexercised until they are.
+- **Linux**: every test suite passes on `x86_64-unknown-linux-gnu` (Debian 12, run by
+  hand, also as root; not yet in CI). aarch64 has not been run.
 - **Windows**: the code is written against a process abstraction and
   type-checks for `x86_64-pc-windows-gnu`, but is not exercised by the test
   suite. Known gaps: no forwarding of termination signals beyond what the

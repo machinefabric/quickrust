@@ -52,6 +52,10 @@ impl Sandbox {
             }
         }
         c.env("HAUL_HOME", &self.home).env("CARGO_TERM_COLOR", "never");
+        // A Cargo home of the sandbox's own: the machine's `$CARGO_HOME/config.toml` (a global
+        // `build.target-dir`, a rustc wrapper, profile overrides) must not reach the fixtures, and
+        // `cargo login` in the suite must not touch real credentials. The fixtures need no registry.
+        c.env("CARGO_HOME", self.dir.join("cargo-home"));
         c
     }
 
