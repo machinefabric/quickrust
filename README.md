@@ -133,6 +133,13 @@ its source. `haul policy explain` lists every key with its environment variable.
 - [docs/security.md](docs/security.md) — trust model, secrets, state on disk
 - [docs/conformance.md](docs/conformance.md) — what of the specification is implemented, and where reality forced a deviation
 
+## Tracking
+
+Work is tracked on the [project board](https://github.com/users/jowharshamshiri/projects/6),
+backed by issues in this repository: delivered work, findings and decisions as
+closed issues with their context; remaining work by milestone (P0, P1, P2,
+Future).
+
 ## Development
 
 ```bash

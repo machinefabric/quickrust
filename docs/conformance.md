@@ -112,7 +112,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 | | Decision |
 |---|---|
 | OQ-001 minimum Rust/Cargo | Haul declares `rust-version = 1.80` (built and tested here with 1.98); it delegates to whatever Cargo is selected and needs only `cargo metadata` format 1 and `RUSTC_WRAPPER` |
-| OQ-002 platforms | macOS and Linux release-blocking; Windows type-checked |
+| OQ-002 platforms | macOS and Linux release-blocking; only macOS has been run so far, Linux and Windows are type-checked |
 | OQ-003 central service | none; all contracts are local files |
 | OQ-004 cache provider | whatever sccache is configured with |
 | OQ-005 fail-open vs fail-closed | `cache.fail`, default `open` |
