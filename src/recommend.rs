@@ -57,6 +57,16 @@ fn unknown_impact(why: &str) -> Value {
     json!({ "kind": "unknown", "basis": why })
 }
 
+/// Where a package comes from, as `cargo metadata` names it: no source is a local path.
+fn source_label(source: &Value) -> String {
+    match source.as_str() {
+        None => "a local path".into(),
+        Some(s) if s.starts_with("registry+") => format!("the registry {}", s.trim_start_matches("registry+")),
+        Some(s) if s.starts_with("git+") => format!("git {}", s.trim_start_matches("git+")),
+        Some(s) => s.to_string(),
+    }
+}
+
 pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
     let mut out: Vec<Rec> = Vec::new();
     let workload = report["policy"]["workload"].as_str().unwrap_or("local-dev");
@@ -94,9 +104,9 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
         );
     }
 
-    // Several versions of one dependency that the lockfile could unify (FR-050.1).
+    // One dependency built from several sources that could be one (FR-050.1).
     for d in report["duplication"]["versions"].as_array().into_iter().flatten() {
-        if d["state"] != json!("potentially-reducible") {
+        if d["state"] != json!("separate-sources") {
             continue;
         }
         let versions = d["versions"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -106,21 +116,21 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
         } else {
             unknown_impact("not every version was observed compiling, so the saving cannot be stated")
         };
-        let mut evidence: Vec<String> = versions.iter().map(|v| format!("{} is required via {}", vstr(v, "version"), v["required_by"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" → ")).unwrap_or_default())).collect();
-        evidence.push("the versions are SemVer-compatible according to Cargo's resolution".into());
+        let mut evidence: Vec<String> = versions.iter().map(|v| format!("{} from {} is required via {}", vstr(v, "version"), source_label(&v["source"]), v["required_by"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" → ")).unwrap_or_default())).collect();
+        evidence.push("the versions are SemVer-compatible; Cargo keeps them apart because their sources differ".into());
         out.push(
             rec(
                 format!("rec:duplicate-versions:{}", vstr(d, "name")),
                 "duplicate_dependency_versions",
                 "dependencies",
-                format!("`{}` is built in {} compatible versions", vstr(d, "name"), versions.len()),
+                format!("`{}` is built from {} different sources", vstr(d, "name"), versions.len()),
                 evidence,
                 "medium",
                 "medium",
                 "low",
                 impact,
-                "run `cargo update -p <name>` (or align the requirements), then `cargo tree -d` and the project's tests",
-                "a dependent may pin an older version on purpose (`=x.y.z` or an upper bound); the lockfile change must be reviewed",
+                "point every dependent at one source of the crate (the same registry, git or path dependency, or a `[patch]` entry), then `cargo tree -d` and the project's tests",
+                "a dependent may use another source on purpose (a fork, a local checkout); the change must be reviewed",
                 "review_required",
             )
             .scenarios(&["clean"]),
@@ -485,19 +495,21 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_versions_are_reported_only_when_unifiable() {
+    fn compatible_versions_from_separate_sources_are_reported() {
         let version = |v: &str, via: Value, ns: Option<u64>| json!({ "version": v, "required_by": via, "observed_compile_ns": ns });
         let mut r = base();
-        r["duplication"] = json!({ "versions": [{ "name": "rand", "state": "potentially-reducible", "versions": [version("0.8.4", json!(["app", "old"]), Some(1_000_000_000)), version("0.8.5", json!(["app"]), Some(3_000_000_000))] }] });
+        r["duplication"] = json!({ "versions": [{ "name": "rand", "state": "separate-sources", "versions": [version("0.8.4", json!(["app", "old"]), Some(1_000_000_000)), version("0.8.5", json!(["app"]), Some(3_000_000_000))] }] });
+        r["duplication"]["versions"][0]["versions"][1]["source"] = json!("registry+https://github.com/rust-lang/crates.io-index");
         let recs = generate(&r, &Index::empty());
         assert_eq!(recs[0]["rule"], "duplicate_dependency_versions");
         assert_eq!(recs[0]["impact"]["avoidable_time_ns"], 1_000_000_000u64, "all but the most expensive version");
-        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("0.8.4 is required via app → old"), "{}", recs[0]["evidence"]);
+        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("0.8.4 from a local path is required via app → old"), "{}", recs[0]["evidence"]);
+        assert!(recs[0]["evidence"][1].as_str().unwrap().contains("from the registry https://github.com/rust-lang/crates.io-index"), "{}", recs[0]["evidence"]);
         // One version not observed compiling: the saving is not stated.
         r["duplication"]["versions"][0]["versions"][1]["observed_compile_ns"] = Value::Null;
         assert_eq!(generate(&r, &Index::empty())[0]["impact"]["kind"], "unknown");
-        // Versions the lockfile cannot unify are not advice.
-        r["duplication"]["versions"][0]["state"] = json!("incompatible");
+        // Versions that are SemVer-incompatible are not advice.
+        r["duplication"]["versions"][0]["state"] = json!("necessary");
         assert!(rules(&r, &Index::empty()).is_empty());
     }
 

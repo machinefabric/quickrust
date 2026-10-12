@@ -1115,3 +1115,38 @@ fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
     assert_eq!(linked_by(&p.join("target/debug/p")), "lld");
 }
 
+
+#[test]
+fn compatible_versions_of_one_crate_from_two_sources_are_found_in_a_real_resolution() {
+    // Cargo resolves one SemVer-compatible version per source, so two compatible versions side
+    // by side come from different sources: here two path crates named `dup`, one reached as a
+    // dev-dependency, the other through a platform-specific dependency of `mid`.
+    let sb = Sandbox::new("versions");
+    sb.file("dup-a/Cargo.toml", "[package]\nname = \"dup\"\nversion = \"1.1.0\"\nedition = \"2021\"\n");
+    sb.file("dup-a/src/lib.rs", "pub fn which() -> &'static str { \"1.1\" }\n");
+    sb.file("dup-b/Cargo.toml", "[package]\nname = \"dup\"\nversion = \"1.2.0\"\nedition = \"2021\"\n");
+    sb.file("dup-b/src/lib.rs", "pub fn which() -> &'static str { \"1.2\" }\n");
+    sb.file("mid/Cargo.toml", "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[target.'cfg(unix)'.dependencies]\ndup = { path = \"../dup-b\" }\n");
+    sb.file("mid/src/lib.rs", "pub fn which() -> &'static str { dup::which() }\n");
+    sb.file("app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n\n[dev-dependencies]\ndup = { path = \"../dup-a\" }\n");
+    sb.file("app/src/main.rs", "fn main() {\n    println!(\"{}\", mid::which());\n}\n");
+    let app = sb.dir.join("app");
+    ok(sb.cargo(&app).arg("build"));
+    let r = sb.report(&app, "latest");
+
+    let dup = r["duplication"]["versions"].as_array().unwrap().iter().find(|d| d["name"] == "dup").unwrap_or_else(|| panic!("{}", r["duplication"]));
+    assert_eq!(dup["state"], "separate-sources", "{}", dup);
+    let version = |v: &str| dup["versions"].as_array().unwrap().iter().find(|x| x["version"] == v).unwrap().clone();
+    let (old, new) = (version("1.1.0"), version("1.2.0"));
+    assert!(old["source"].is_null() && new["source"].is_null(), "path packages have no source: {}", dup);
+    assert_eq!(old["required_by"], json!(["app@0.1.0", "dup@1.1.0 [dev]"]), "{}", old);
+    assert_eq!(new["required_by"], json!(["app@0.1.0", "mid@0.1.0", "dup@1.2.0"]), "{}", new);
+    // `cargo build` compiled the one `mid` uses; the dev-dependency was not built.
+    assert!(new["observed_compile_ns"].as_u64().is_some_and(|ns| ns > 0), "{}", new);
+    assert!(old["observed_compile_ns"].is_null(), "{}", old);
+
+    let rec = r["recommendations"].as_array().unwrap().iter().find(|x| x["rule"] == "duplicate_dependency_versions").unwrap_or_else(|| panic!("{}", r["recommendations"]));
+    assert_eq!(rec["title"], "`dup` is built from 2 different sources");
+    assert_eq!(rec["impact"]["kind"], "unknown", "the saving needs both versions observed");
+    assert!(rec["verification"].as_str().unwrap().contains("[patch]"), "{}", rec);
+}
