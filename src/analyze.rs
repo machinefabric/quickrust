@@ -55,7 +55,8 @@ pub struct Unit {
     pub role: String,
     pub primary: bool,
     pub features: Vec<String>,
-    /// `compiled`, `failed`, `fresh` (referenced but not rebuilt) or `ran`.
+    /// `compiled`, `restored` (from Haul's artifact cache), `failed`, `fresh` (referenced but not
+    /// rebuilt) or `ran` (a build script execution).
     pub freshness: String,
     pub start_wall_ns: Option<u64>,
     pub duration_ns: Option<u64>,
@@ -87,6 +88,13 @@ pub struct Unit {
     pub generated_inputs: BTreeMap<String, (String, u64)>,
     #[serde(skip)]
     pub env_deps: Vec<String>,
+}
+
+impl Unit {
+    /// Part of this build's output: compiled now or restored from the artifact cache.
+    pub fn built(&self) -> bool {
+        matches!(self.freshness.as_str(), "compiled" | "restored")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -289,7 +297,12 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
         u.role = "host".into();
     }
     let ok = ev["exit_code"] == json!(0);
-    u.freshness = if ok { "compiled" } else { "failed" }.into();
+    u.freshness = match (ok, ev["cache"]["result"].as_str()) {
+        (false, _) => "failed",
+        (true, Some("hit")) => "restored",
+        (true, _) => "compiled",
+    }
+    .into();
     u.start_wall_ns = ev["start_wall_ns"].as_u64();
     u.duration_ns = ev["dur_ns"].as_u64();
     u.rmeta_ready_ns = ev["rmeta_ready_ns"].as_u64();
@@ -676,6 +689,20 @@ fn unavailable(map: &mut serde_json::Map<String, Value>, field: &str, reason: im
     map.insert(field.to_string(), json!(reason.into()));
 }
 
+/// Adds what Haul's own artifact cache did in this run to the report's `cache` section.
+fn artifact_cache_summary(mut cache: Value, session: &Value, events: &[Value]) -> Value {
+    let count = |r: &str| events.iter().filter(|e| e["cache"]["result"] == json!(r)).count();
+    cache["artifacts"] = json!({
+        "state": session["policy"]["cache"]["artifacts"],
+        "restored": count("hit"),
+        "stored": count("stored"),
+        "missed": count("miss"),
+        "not_cacheable": count("off"),
+        "restore_time_ns": events.iter().filter(|e| e["cache"]["result"] == json!("hit")).filter_map(|e| e["dur_ns"].as_u64()).sum::<u64>(),
+    });
+    cache
+}
+
 /// Finalizes a session into its report. Idempotent: an existing report is returned as is.
 pub fn finalize(store: &WsStore, id: &str, cfg: &Config) -> Result<Value, String> {
     if let Some(existing) = store.load_run(id) {
@@ -779,6 +806,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
     let incremental = waste::incremental_policy(&graph, &session);
 
     let compiled: Vec<&Unit> = graph.units.iter().filter(|u| matches!(u.freshness.as_str(), "compiled" | "failed")).collect();
+    let restored = graph.units.iter().filter(|u| u.freshness == "restored").count() as u64;
     let fresh_referenced = graph.units.iter().filter(|u| u.freshness == "fresh").count() as u64;
     let sum_ns: u64 = compiled.iter().filter_map(|u| u.duration_ns).sum();
     let script_ns: u64 = graph.units.iter().filter(|u| u.kind == "build-script-run").filter_map(|u| u.duration_ns).sum();
@@ -948,6 +976,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
             "peak_rss_bytes": rss,
             "units_observed": if instrumented { observed_total } else { Value::Null },
             "units_compiled": if instrumented { json!(compiled.len()) } else { Value::Null },
+            "units_restored": if instrumented { json!(restored) } else { Value::Null },
             "units_failed": if instrumented { json!(compiled.iter().filter(|u| u.freshness == "failed").count()) } else { Value::Null },
             "units_fresh": fresh_total,
             "units_fresh_referenced": if instrumented { json!(fresh_referenced) } else { Value::Null },
@@ -960,7 +989,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
             "artifact_allocated_bytes": sum_inv("allocated_bytes"),
             "units": { "time": "ns", "size": "bytes" },
         },
-        "cache": cache,
+        "cache": artifact_cache_summary(cache, &session, &events),
         "critical_path": critical,
         "critical_path_model": {
             "completeness": if partial_reasons.is_empty() { "observed" } else { "partial" },

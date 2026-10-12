@@ -787,6 +787,11 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     assert_eq!(stdout(&again), "hello from the cache\n");
     assert!(stderr(&again).contains("unused variable"), "a cached unit's warnings are replayed: {}", stderr(&again));
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "hit"), "after a clean, the same checkout is restored entirely: {:?}", cache_results(&sb));
+    // The report tells restored units apart from compiled ones.
+    let r = sb.report(&a, "latest");
+    assert_eq!((r["metrics"]["units_compiled"].as_u64(), r["metrics"]["units_restored"].as_u64()), (Some(0), Some(3)), "{}", r["metrics"]);
+    assert_eq!(r["cache"]["artifacts"]["restored"], 3);
+    assert!(r["units"].as_array().unwrap().iter().filter(|u| u["kind"] != "build-script-run" && u["freshness"] != "fresh").all(|u| u["freshness"] == "restored"));
 
     // A workspace source that changed is never served from the cache; reverting it is.
     let main = a.join("src/main.rs");
