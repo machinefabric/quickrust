@@ -459,7 +459,7 @@ dependencies = [
 
 [[package]]
 name = "quickrust"
-version = "0.138.174"
+version = "0.139.277"
 dependencies = [
  "blake3",
  "flate2",
