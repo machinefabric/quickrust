@@ -164,7 +164,28 @@ pub fn path_str(p: &Path) -> String {
 
 /// Canonicalize for identity purposes only; never used to rewrite user-facing paths.
 pub fn canon(p: &Path) -> PathBuf {
-    fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf())
+    without_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+}
+
+/// Windows' canonical paths are verbatim (`\\?\C:\…`, `\\?\UNC\server\share\…`), a form many
+/// programs do not take and nobody writes: the path as written (`C:\…`, `\\server\share\…`) when
+/// it means the same, which a path short enough for the classic limit does. Other paths (every
+/// canonical path elsewhere) are left as they are.
+fn without_verbatim_prefix(p: PathBuf) -> PathBuf {
+    const MAX_PATH: usize = 260;
+    let Some(s) = p.to_str() else { return p };
+    let plain = if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = s.strip_prefix(r"\\?\").filter(|r| r.as_bytes().get(1) == Some(&b':')) {
+        rest.to_string()
+    } else {
+        return p;
+    };
+    if plain.len() < MAX_PATH {
+        PathBuf::from(plain)
+    } else {
+        p
+    }
 }
 
 /// Replaces machine-specific prefixes with portable tokens (DATA-005, PRIV-004).
@@ -597,6 +618,18 @@ pub fn vpath<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn verbatim_windows_paths_are_written_as_people_write_them() {
+        let p = |s: &str| without_verbatim_prefix(PathBuf::from(s));
+        assert_eq!(p(r"\\?\D:\a\_temp\haul-home\bin\haul.exe"), PathBuf::from(r"D:\a\_temp\haul-home\bin\haul.exe"));
+        assert_eq!(p(r"\\?\UNC\server\share\x"), PathBuf::from(r"\\server\share\x"));
+        // Not a drive path (a volume GUID), or too long for the classic limit: as it is.
+        assert_eq!(p(r"\\?\Volume{0}\x"), PathBuf::from(r"\\?\Volume{0}\x"));
+        let long = format!(r"\\?\C:\{}", "d\\".repeat(200));
+        assert_eq!(p(&long), PathBuf::from(&long));
+        assert_eq!(p("/home/u/.haul/bin/haul"), PathBuf::from("/home/u/.haul/bin/haul"));
+    }
     use super::*;
 
     #[test]

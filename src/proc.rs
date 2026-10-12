@@ -189,10 +189,10 @@ mod imp {
         }
     }
 
-    pub fn pid_alive(_pid: u32) -> bool {
-        // Liveness cannot be established without extra platform APIs; callers treat
-        // "unknown" as "possibly alive" and stay conservative.
-        true
+    /// Whether process `pid` is running: it can be opened and has not exited, or it exists but
+    /// belongs to someone this process may not ask.
+    pub fn pid_alive(pid: u32) -> bool {
+        pid != 0 && super::win::process_running(pid)
     }
 
     pub fn parent_pid() -> u32 {
@@ -298,6 +298,27 @@ mod win {
         fn GetStdHandle(which: u32) -> *mut c_void;
         fn GetHandleInformation(handle: *mut c_void, flags: *mut u32) -> i32;
         fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
+        fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
+        fn CloseHandle(handle: *mut c_void) -> i32;
+    }
+
+    /// Whether process `pid` exists and has not exited.
+    pub fn process_running(pid: u32) -> bool {
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        const STILL_ACTIVE: u32 = 259;
+        const ERROR_ACCESS_DENIED: i32 = 5;
+        let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if h.is_null() {
+            // Another user's process exists; no process with that id does not.
+            return std::io::Error::last_os_error().raw_os_error() == Some(ERROR_ACCESS_DENIED);
+        }
+        let mut code = 0u32;
+        let asked = unsafe { GetExitCodeProcess(h, &mut code) } != 0;
+        unsafe {
+            CloseHandle(h);
+        }
+        !asked || code == STILL_ACTIVE
     }
 
     const HANDLE_FLAG_INHERIT: u32 = 1;
