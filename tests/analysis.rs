@@ -352,10 +352,16 @@ fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_s
     let plain = json_out(sb.haul(&p).args(["gc", "--format", "json"]));
     assert!(plain["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", plain);
     assert_eq!(sources(&sb.cargo_home()), 1);
-    // Down to nothing: Cargo removes its downloads; the build directory just used stays.
+    // Down to nothing, what was just used still stays: downloads like the build directory.
     let tight = json_out(sb.haul(&p).args(["gc", "--to", "1", "--format", "json"]));
-    let by_cargo = tight["removed"].as_array().unwrap().iter().find(|r| r["kind"] == "crate and git downloads").unwrap_or_else(|| panic!("{}", tight));
-    assert!(by_cargo["bytes"].as_u64().unwrap() > 0 && by_cargo["why"].as_str().unwrap().starts_with("Cargo:"), "{}", by_cargo);
+    assert!(tight["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", tight);
+    assert_eq!(sources(&sb.cargo_home()), 1);
+    // An hour later by Cargo's clock (which Cargo's own tests move), Cargo removes them; the
+    // build directory, by Haul's, stays.
+    let hour_later = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3_600).to_string();
+    let later = json_out(sb.haul(&p).args(["gc", "--to", "1", "--format", "json"]).env("__CARGO_TEST_LAST_USE_NOW", &hour_later));
+    let by_cargo = later["removed"].as_array().unwrap().iter().find(|r| r["kind"] == "crate and git downloads").unwrap_or_else(|| panic!("{}", later));
+    assert!(by_cargo["bytes"].as_u64().unwrap() > 0 && by_cargo["why"].as_str().unwrap().starts_with("Cargo: Removed "), "{}", by_cargo);
     assert_eq!(sources(&sb.cargo_home()), 0);
     assert!(sb.target_dir(&p).join("debug/p").is_file());
     // What needs it again downloads it again.

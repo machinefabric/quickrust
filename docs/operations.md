@@ -62,18 +62,23 @@ two bounds:
 Both take a size (`40GiB`) or a share of the disk (`10%`). A collection removes first what
 nothing can use (build directories of workspaces that are gone, drivers of toolchains that are
 gone, week-old unfinished downloads, month-old remembered answers, leftovers), then — while the
-cache is above its size, or the disk below its free space — build directories and artifact
-entries, least recently used first, until the cache is back under 90% of its size and the disk
-has a quarter more than its free space; last, the crates and git checkouts downloaded into
-Haul's Cargo home, which Cargo removes itself (`cargo -Zgc clean gc`: it knows when each was
-last used and waits for builds reading them) — by its usual ages at every collection, and down
-to what the bounds leave when they are still exceeded. Never what was used in the last 15
-minutes, a build directory a command holds, or one Cargo is building in. A file the artifact cache and a build
-directory share (a restored unit) counts once and is freed with its last link.
+cache is above its size, or the disk below its free space — build directories, artifact
+entries and sources of installed programs, least recently used first, until the cache is back
+under 90% of its size and the disk has a quarter more than its free space; last, the crates and
+git checkouts downloaded into Haul's Cargo home, which Cargo removes itself (`cargo -Zgc clean
+gc`: it knows when each was last used and waits for builds reading them) — by its usual ages at
+every collection, and, while the bounds are still exceeded, those unused for a month, a week, a
+day, an hour, 15 minutes in turn. Never what was used in the last 15 minutes, a build directory
+a command holds or Cargo is building in, a source an install holds, nor an artifact entry whose
+files such a build directory links (removing it would free little and lose it). A file the
+artifact cache and a build directory share (a restored unit) counts once and is freed with its
+last link.
 
 After every command Haul checks, at the cost of one `statvfs`, whether a collection is due
 (below the free space; above the size by the free space lost since the last count; or a day
-after that count) and then runs `haul gc --background` detached, at the lowest priority. When
+after that count; not within 15 minutes of a collection that could not get within the bounds,
+as on a disk something else fills) and then runs `haul gc --background` detached, at the lowest
+priority. When
 the disk is nearly full (below a quarter of `cache.min-free`) a command collects first, for at
 most ten seconds, and says so. `haul gc` collects now (`--dry-run` says what it would remove,
 `--to SIZE` collects down to a size); `haul cache status` shows the last count and collections.

@@ -1188,16 +1188,19 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         Some(u) => {
             println!("Haul's cache: {} ({}), counted {}", u["total_bytes"].as_u64().map(human_bytes).unwrap_or_default(), haul_cache.display(), u["scanned_ns"].as_u64().map(util::iso8601).unwrap_or_default());
             for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {
-                println!("  {:<20} {:>10}  {}", kind, k["bytes"].as_u64().map(human_bytes).unwrap_or_default(), k["count"]);
+                println!("  {:<24} {:>10}  {}", kind, k["bytes"].as_u64().map(human_bytes).unwrap_or_default(), k["count"]);
+            }
+            if u["unmet"] == json!(true) {
+                println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
             }
         }
         None => println!("Haul's cache: not counted yet ({}); `haul gc --dry-run` counts it", haul_cache.display()),
     }
     if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
-        println!("  bounds              at most {} (cache.max-size = {}); keeps {} of the disk free (cache.min-free = {}); {} free now", human_bytes(m), ctx.cfg.str("cache.max-size"), human_bytes(f), ctx.cfg.str("cache.min-free"), human_bytes(free));
+        println!("  {:<24} at most {} (cache.max-size = {}); keeps {} of the disk free (cache.min-free = {}); {} free now", "bounds", human_bytes(m), ctx.cfg.str("cache.max-size"), human_bytes(f), ctx.cfg.str("cache.min-free"), human_bytes(free));
     }
     for c in hc["recent_collections"].as_array().into_iter().flatten() {
-        println!("  collected {}       {} → {}, {} removed", vstr(c, "at"), c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
+        println!("  {:<24} {}: {} → {}, {} removed", "collected", vstr(c, "at"), c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
     }
     println!();
     println!("Compiler cache: {}", state);
