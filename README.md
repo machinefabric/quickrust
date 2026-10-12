@@ -173,7 +173,11 @@ to Cargo unless you set `output = "haul"`.
   use Haul's Cargo home (`~/.haul/cargo`) and never rustup.
 - An existing `RUSTC_WRAPPER` (from the environment or `.cargo/config.toml`) and
   `RUSTC_WORKSPACE_WRAPPER` keep working; Haul's wrapper runs outside them.
-- `cargo clean` is upstream `cargo clean`. Haul never deletes build output.
+- Builds go to Haul's cache (`~/.haul/cache/builds/<workspace>-<id>/`), never into a
+  `target/` beside your sources. Cargo and every tool under it learn the directory from
+  `CARGO_TARGET_DIR` and `cargo metadata`; `haul path` prints it. A target directory you
+  choose (`--target-dir`, `CARGO_TARGET_DIR`) is used as it is.
+- `cargo clean` is upstream `cargo clean` on that directory.
 - Nothing is written into your repository unless you ask (`HAUL_REPORT`,
   `haul baseline set`, `haul fix --apply`). State lives in `~/.haul`.
 - A build never fails because Haul could not record or analyse it.

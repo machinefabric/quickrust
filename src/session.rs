@@ -313,6 +313,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                     linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
                     early_cutoff: artifacts && cfg.str("fast.early-cutoff") == "auto",
+                    target_dir: engine.target.as_ref().map(|t| t.dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
                 if util::create_private_dir(&dir).and_then(|_| settings.write(&dir)).is_ok() {
@@ -449,12 +450,14 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let parent = std::env::var(crate::ENV_SESSION).ok().filter(|v| !v.is_empty());
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
 
-    let start_dir = {
-        let base = inv.chdir.as_ref().map(|c| cwd.join(c)).unwrap_or_else(|| cwd.clone());
-        match inv.manifest_path.as_ref().and_then(|m| base.join(m).parent().map(Path::to_path_buf)) {
-            Some(d) => d,
-            None => base,
+    let start_dir = crate::builddir::start_dir(&inv, &cwd);
+    // The workspace's build directory is in use (Haul's cache leaves it alone) while this runs.
+    let _in_use = match (&engine.target, &engine.workspace_root) {
+        (Some(t), Some(root)) if t.managed => {
+            crate::builddir::mark_used(&t.dir, root);
+            Some(crate::builddir::in_use(&t.dir))
         }
+        _ => None,
     };
     let subset = if inv.family.builds() || inv.family == Family::External { resolve::cargo_config_subset(&start_dir, &inv.configs) } else { Default::default() };
     resolve::apply_aliases(&mut inv, &subset);
@@ -467,7 +470,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         return Err(format!("could not execute Cargo {}: {}", engine.cargo().display(), err));
     }
 
-    let ws_root = resolve::guess_workspace_root(&start_dir);
+    let ws_root = engine.workspace_root.clone();
     let store = WsStore::open(ws_root.as_deref());
     let store_ok = store.ensure().is_ok();
     let id = util::new_id();

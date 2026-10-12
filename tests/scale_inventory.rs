@@ -17,7 +17,7 @@ fn inventory_of_a_build_directory_of_a_million_files() {
     let sb = Sandbox::new("scale-files");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
-    let target = p.join("target/debug");
+    let target = sb.target_dir(&p).join("debug");
     let started = Instant::now();
     // Incremental sessions hold most files of a real build directory: 1,000 crates × 1,000 files.
     for c in 0..1_000 {

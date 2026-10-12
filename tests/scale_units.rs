@@ -50,7 +50,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     let session = latest_session(&sb);
     let events = Path::new(session["events_dir"].as_str().unwrap()).to_path_buf();
     let start = session["started_wall_ns"].as_u64().unwrap();
-    let deps_dir = p.join("target/debug/deps");
+    let deps_dir = sb.target_dir(&p).join("debug/deps");
     let registry = sb.dir.join("haul-home/cargo/registry/src/fake-0000");
 
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
@@ -83,7 +83,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
         let src = if local { format!("crates/{}/src/lib.rs", name) } else { util_path(&manifest_dir.join("src/lib.rs")) };
         let mut args: Vec<String> = vec!["--crate-name".into(), name.clone(), "--edition=2021".into(), src, "--error-format=json".into(), "--json=diagnostic-rendered-ansi,artifacts,future-incompat".into(), "--crate-type".into(), if proc_macro { "proc-macro".into() } else { "lib".into() }, "--emit=dep-info,metadata,link".into(), "-C".into(), "embed-bitcode=no".into(), "-C".into(), "debuginfo=line-tables-only".into(), "-C".into(), format!("metadata={}", hash), "-C".into(), format!("extra-filename=-{}", hash), "--out-dir".into(), util_path(&deps_dir), "-L".into(), format!("dependency={}", util_path(&deps_dir))];
         if local {
-            args.extend(["-C".into(), format!("incremental={}", util_path(&p.join("target/debug/incremental")))]);
+            args.extend(["-C".into(), format!("incremental={}", util_path(&sb.target_dir(&p).join("debug/incremental")))]);
         }
         for &d in &externs {
             let (dn, dh, dpm, _) = &units[d];

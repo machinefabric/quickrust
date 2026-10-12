@@ -71,6 +71,11 @@ POLICY AND REMEDIATION
     haul fix --dry-run [REC_ID] [--run REF] [--option ALTERNATIVE] [--patch] [--format text|json]
     haul fix --apply REMEDIATION_ID | --rollback REMEDIATION_ID
 
+BUILD OUTPUT LOCATION (Haul keeps each workspace's build directory in its cache, not in `target/`)
+    haul path                        this workspace's target directory
+    haul path bin <NAME> [--release | --profile P] [--target T]
+                                     where `cargo build` puts binary NAME
+
 TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-toolchain.toml choose)
     haul toolchain list
     haul toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
@@ -195,7 +200,7 @@ impl Ctx {
     fn load() -> Result<Ctx, String> {
         let cwd = std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?;
         let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
-        let root = resolve::guess_workspace_root(&cwd);
+        let root = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?.workspace_root;
         Ok(Ctx { store: WsStore::open(root.as_deref()), cwd, cfg })
     }
 
@@ -266,6 +271,7 @@ pub fn main() {
         "inspect" => cmd_inspect(rest),
         "driver" => cmd_driver(rest),
         "toolchain" => cmd_toolchain(rest),
+        "path" => cmd_path(rest),
         "compare" => cmd_compare(rest),
         "benchmark" => cmd_benchmark(rest),
         "experiment" => cmd_experiment(rest),
@@ -470,6 +476,44 @@ fn cmd_driver(raw: &[OsString]) -> CmdResult {
         }
         Some(other) => Err(format!("unknown `haul driver` action `{}` (status, build)", other)),
     }
+}
+
+/// `haul path`: where this workspace's builds go.
+fn cmd_path(raw: &[OsString]) -> CmdResult {
+    let mut a = Args::new(raw);
+    let profile = match (a.flag("--release"), a.opt("--profile")?) {
+        (true, Some(_)) => return Err("--release and --profile exclude each other".into()),
+        (true, None) => "release".to_string(),
+        (false, p) => p.unwrap_or_else(|| "dev".into()),
+    };
+    let target = a.opt("--target")?;
+    let what = a.positional();
+    let name = a.positional();
+    a.finish()?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let engine = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?;
+    let dir = engine.target.ok_or("not inside a Cargo workspace: there is no target directory here")?.dir;
+    match (what.as_deref(), name) {
+        (None, None) => println!("{}", dir.display()),
+        (Some("bin"), Some(name)) => {
+            let profile_dir = match profile.as_str() {
+                "dev" | "test" => "debug",
+                "release" | "bench" => "release",
+                other => other,
+            };
+            let mut p = dir;
+            if let Some(t) = &target {
+                p = p.join(t);
+            }
+            let exe = if target.as_deref().unwrap_or(&crate::toolchain::host()).contains("windows") { format!("{}.exe", name) } else { name };
+            println!("{}", p.join(profile_dir).join(exe).display());
+        }
+        (Some("bin"), None) => return Err("`haul path bin` needs the binary's name".into()),
+        (Some(other), _) => return Err(format!("unknown `haul path` item `{}` (bin)", other)),
+        (None, Some(_)) => unreachable!("a second positional argument needs a first"),
+    }
+    Ok(0)
 }
 
 /// `haul toolchain …`: Haul's Rust toolchains.
@@ -1226,7 +1270,8 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
         None => println!("  existing rustc wrapper   none"),
     }
     println!("Workspace");
-    match (resolve::guess_workspace_root(&cwd), &cfg) {
+    let root = cfg.as_ref().and_then(|c| crate::engine::for_command(&resolve::classify(&[]), &cwd, c).ok()).and_then(|e| e.workspace_root);
+    match (root, &cfg) {
         (Some(root), Some(cfg)) => {
             println!("  root               {}", root.display());
             match discover::metadata(cfg, &cwd, None, None) {

@@ -265,14 +265,14 @@ fn inventory_and_gc_plan_are_read_only_and_conservative() {
     assert_eq!(root["gc_plan"]["candidate_bytes"], 0, "a fresh build has nothing stale");
 
     // Plant stale output: an old unreferenced unit and an old unknown file.
-    let deps = ws.join("target/debug/deps");
+    let deps = sb.target_dir(&ws).join("debug/deps");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120 * 86_400);
-    for (path, size) in [(deps.join("libgone-0123456789abcdef.rlib"), 300_000usize), (ws.join("target/debug/odd/dir/unknown.bin"), 50_000)] {
+    for (path, size) in [(deps.join("libgone-0123456789abcdef.rlib"), 300_000usize), (sb.target_dir(&ws).join("debug/odd/dir/unknown.bin"), 50_000)] {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, vec![0u8; size]).unwrap();
         fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
     }
-    let before = tree(&ws.join("target"));
+    let before = tree(&sb.target_dir(&ws));
     let plan = json_out(sb.haul(&ws).args(["gc", "--dry-run", "--format", "json", "--max-size", "1KiB"]));
     let p = &plan["build_directories"][0]["gc_plan"];
     let groups: Vec<&str> = p["candidates"].as_array().unwrap().iter().map(|c| c["group"].as_str().unwrap()).collect();
@@ -280,7 +280,7 @@ fn inventory_and_gc_plan_are_read_only_and_conservative() {
     assert!(p["candidate_bytes"].as_u64().unwrap() >= 300_000);
     assert_eq!(p["size_budget"]["met_by_plan"], false, "the plan says so when stale output alone does not reach the budget");
     assert!(plan["build_directories"][0]["reclaimability"]["uncertain"]["logical_bytes"].as_u64().unwrap() >= 50_000);
-    assert_eq!(tree(&ws.join("target")), before, "dry-run deleted something");
+    assert_eq!(tree(&sb.target_dir(&ws)), before, "dry-run deleted something");
     let text = stdout(&ok(sb.haul(&ws).args(["gc", "--dry-run"])));
     assert!(text.contains("estimated reclaimable") && text.contains("Nothing was deleted"), "{}", text);
     // P0 has no deleting mode, and never plans implicitly.
@@ -288,7 +288,7 @@ fn inventory_and_gc_plan_are_read_only_and_conservative() {
         let out = run(sb.haul(&ws).args(args));
         assert_eq!(out.status.code(), Some(2));
     }
-    assert_eq!(tree(&ws.join("target")), before);
+    assert_eq!(tree(&sb.target_dir(&ws)), before);
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn gc_plan_is_blocked_while_a_build_is_running() {
     let sb = Sandbox::new("gcrace");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
-    let stale = p.join("target/debug/deps/libgone-00000000.rlib");
+    let stale = sb.target_dir(&p).join("debug/deps/libgone-00000000.rlib");
     fs::write(&stale, vec![0u8; 100_000]).unwrap();
     fs::File::options().write(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400)).unwrap();
     let marker = sb.dir.join("started");
@@ -331,7 +331,7 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     fs::write(&lib, "pub fn double(x: u32) -> u32 { x * 2 } // uncommitted, no trailing newline").unwrap();
     let original = fs::read(&lib).unwrap();
     ok(sb.cargo(&ws).arg("build"));
-    let user_target = tree(&ws.join("target"));
+    let user_target = tree(&sb.target_dir(&ws));
 
     let b = json_out(sb.haul(&ws).args(["benchmark", "--scenario", "no-change", "--reps", "2", "--warmups", "0", "--format", "json"]));
     assert_eq!(b["state"], "complete", "{}", b);
@@ -341,7 +341,7 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     assert_eq!(b["summary"]["scenario"], json!({ "name": "no-change", "cache_state": "warm" }));
     let phases: Vec<&str> = b["runs"].as_array().unwrap().iter().map(|r| r["phase"].as_str().unwrap()).collect();
     assert_eq!(phases, ["prime", "measured", "measured"]);
-    let now = tree(&ws.join("target"));
+    let now = tree(&sb.target_dir(&ws));
     assert_eq!(now.iter().filter(|f| !f.starts_with("haul-bench/")).collect::<Vec<_>>(), user_target.iter().collect::<Vec<_>>(), "the user's own build output is untouched");
     assert!(now.iter().any(|f| f.starts_with("haul-bench/no-change-default/")));
 
@@ -379,7 +379,7 @@ fn clean_scenario_and_failed_builds() {
     assert_eq!(b["state"], "complete");
     assert_eq!(b["summary"]["metrics"]["units_compiled"], 2, "every repetition of a clean build compiles everything");
     assert_eq!(b["summary"]["scenario"]["cache_state"], "cold");
-    assert!(!p.join("target/debug").exists(), "a benchmark does not build into the user's own profile directory");
+    assert!(!sb.target_dir(&p).join("debug").exists(), "a benchmark does not build into the user's own profile directory");
     // A build failure makes the benchmark invalid, never a fast sample.
     fs::write(p.join("src/lib.rs"), "does not compile\n").unwrap();
     let out = run(sb.haul(&p).args(["benchmark", "--scenario", "clean", "--reps", "1", "--warmups", "0", "--format", "json"]));
@@ -524,7 +524,7 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
 
     // With the policy in place the change is recorded, units are no longer incremental, and a clean rebuild hits the cache.
     for _ in 0..2 {
-        fs::remove_dir_all(ws.join("target")).unwrap();
+        fs::remove_dir_all(sb.target_dir(&ws)).unwrap();
         let mut b = sb.cargo(&ws);
         isolate(b.arg("build"));
         ok(&mut b);
@@ -863,7 +863,7 @@ fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
     assert!(cache_results(&sb).contains(&("greet".to_string(), "stored".to_string())), "{:#?}", cache_details(&sb));
     // A tool that rewrites an output in place (rather than replacing the file, as rustc and
     // the linkers do) also rewrites whatever shares that file.
-    let rlib = fs::read_dir(app.join("target/debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|x| x == "rlib")).unwrap();
+    let rlib = fs::read_dir(sb.target_dir(&app).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|x| x == "rlib")).unwrap();
     let mut bytes = fs::read(&rlib).unwrap();
     bytes.truncate(bytes.len() / 2);
     fs::OpenOptions::new().write(true).truncate(true).open(&rlib).unwrap().write_all(&bytes).unwrap();
@@ -984,7 +984,7 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
 
     // Kept objects are linked only as they were written: one changed since, and the binary is
     // compiled again rather than linked from it.
-    let kept = fs::read_dir(w.join("target/debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".haul-objects")).expect("the binary's objects are kept");
+    let kept = fs::read_dir(sb.target_dir(&w).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".haul-objects")).expect("the binary's objects are kept");
     let object = fs::read_dir(&kept).unwrap().next().unwrap().unwrap().path();
     let mut bytes = fs::read(&object).unwrap();
     bytes.push(0);
@@ -1206,7 +1206,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     assert!(cache_results(&sb).contains(&("app".to_string(), "stored".to_string())));
     // `greet` includes code its build script generated in checkout a's target directory: the
     // user is told, and the report counts it.
-    assert!(cache_details(&sb).iter().any(|d| d.starts_with("greet:") && d.contains("foreign_out_dir") && d.contains("/a/target/")), "{:#?}", cache_details(&sb));
+    assert!(cache_details(&sb).iter().any(|d| d.starts_with("greet:") && d.contains("foreign_out_dir") && d.contains(&format!("{}/", sb.target_dir(&a).display()))), "{:#?}", cache_details(&sb));
     assert_eq!(sb.report(&b, "latest")["cache"]["artifacts"]["restored_with_foreign_out_dir"], 1);
     // In a terminal, Haul says so once.
     let (c, d) = (app("c"), app("d"));
@@ -1379,17 +1379,17 @@ fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
     let sb = Sandbox::new("wild");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
-    assert_eq!(linked_by(&p.join("target/debug/p")), "wild");
+    assert_eq!(linked_by(&sb.target_dir(&p).join("debug/p")), "wild");
     assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "3\n", "the wild-linked program works");
     let r = sb.report(&p, "latest");
     assert!(r["policy"]["fast"]["applied"].as_array().unwrap().iter().any(|a| a["key"] == "linker"), "{}", r["policy"]["fast"]);
     // A linker the user chose wins; compat mode keeps rustc's own.
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     ok(sb.cargo(&p).arg("build").env("RUSTFLAGS", "-C link-arg=-fuse-ld=lld"));
-    assert_eq!(linked_by(&p.join("target/debug/p")), "lld");
-    fs::remove_dir_all(p.join("target")).unwrap();
+    assert_eq!(linked_by(&sb.target_dir(&p).join("debug/p")), "lld");
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
-    assert_eq!(linked_by(&p.join("target/debug/p")), "lld");
+    assert_eq!(linked_by(&sb.target_dir(&p).join("debug/p")), "lld");
 }
 
 
@@ -1511,7 +1511,7 @@ fn haul_says_up_to_date_only_when_cargo_would_build_nothing() {
         }), None),
         ("change the manifest", Box::new(|| edit("app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndata = { path = \"../data\" }\nassets = { path = \"../assets\" }\n\n[features]\nextra = []\n")), None),
         ("delete the program", Box::new(|| {
-            fs::remove_file(ws.join("target/debug/app")).unwrap();
+            fs::remove_file(sb.target_dir(&ws).join("debug/app")).unwrap();
         }), None),
         ("nothing", Box::new(|| {}), None),
     ];

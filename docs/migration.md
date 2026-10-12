@@ -70,12 +70,13 @@ marked with `.haul-owned`; safe to delete).
 
 ## Rollback
 
-Remove `~/.haul/bin` from `PATH`, or run `haul self uninstall --yes`. Builds made
-through Haul and builds made by plain Cargo share the same target directory
-without rebuilding each other's artifacts. In fast mode their profile settings
-differ, so each keeps its own set of artifacts there (Cargo names them by a hash
-of the settings); `cargo clean` or `haul gc --dry-run` show the cost. With
-`HAUL_MODE=compat` both build the same artifacts.
+Remove `~/.haul/bin` from `PATH`, or run `haul self uninstall --yes`. Haul builds
+into its own directory for each workspace (`haul path`), so plain Cargo builds into
+`target/` again from scratch, and the two never touch each other's artifacts. Pointing
+plain Cargo at Haul's directory (`CARGO_TARGET_DIR=$(haul path)`) shares it without
+rebuilding: in fast mode their profile settings differ, so each keeps its own set of
+artifacts there (Cargo names them by a hash of the settings); with `HAUL_MODE=compat`
+both build the same artifacts.
 
 One caveat: build scripts that emit `cargo::rerun-if-env-changed=RUSTC_WRAPPER`
 rerun when you switch between Haul and plain Cargo, because Haul's wrapper is in

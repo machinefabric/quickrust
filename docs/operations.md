@@ -50,6 +50,8 @@ off; it never runs in CI. `haul toolchain update` runs it now.
 | `~/.haul/cache/downloads/` | toolchain archives being downloaded (resumed after an interruption) | yes |
 | `~/.haul/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
 | `~/.haul/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |
+| `~/.haul/cache/builds/<workspace>-<id>/` (and `<…>.json`, `<…>.lock`) | each workspace's target directory (`haul path`): Cargo's build output, never a `target/` in the project; the record says which workspace and when it was last used, the lock that a command uses it | yes; the next build of that workspace starts over (its dependencies come back from the artifact cache) |
+| `~/.haul/cache/memo/roots/` | which workspace a directory belongs to, as Cargo said (asked again when a `Cargo.toml` from there up changes) | yes |
 | `<target>/<profile>/deps/<unit>.haul-svh`, `.rlink`, `.haul-objects/`, `.haul-relink` | a library's interface hash; a binary's kept objects and what they were compiled from, for relinking | yes, with the rest of the target directory (`cargo clean`) |
 | `~/.haul/workspaces/<id>/prebuilt/` | stamps of the build phase of `run` / `test` / `bench` in a terminal: the files it depended on, with sizes and times (at most 32 per workspace) | yes; the next such command builds before running |
 | `<target>/haul-bench/` | benchmark and experiment build directories | yes |

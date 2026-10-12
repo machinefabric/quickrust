@@ -150,6 +150,17 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     runs in rustc's place (clippy-driver as a workspace wrapper, a user's wrapper) run as
     they are; a crate the driver fails on is compiled by rustc.
 
+14. **No `target/` in the project (decision of 2026-10-12).** Upstream Cargo builds into
+    `<workspace>/target` unless told otherwise; Haul tells it otherwise for every command:
+    each workspace (as `cargo locate-project --workspace` names it) builds into
+    `~/.haul/cache/builds/<name>-<id>/`, given to Cargo and every tool under it through
+    `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR`, so `cargo metadata` reports it too. A
+    target directory the user chose (`--target-dir`, `--config build.target-dir`,
+    `CARGO_TARGET_DIR`/`CARGO_BUILD_TARGET_DIR`) is used as it is; `build.target-dir` in a
+    Cargo configuration file is overridden. Scripts that hard-code `./target/…` must ask
+    `haul path` instead. Tests: `builds_go_to_hauls_cache_and_never_into_the_project`,
+    `a_target_directory_the_user_chose_is_used…`, `a_build_script_building_another_workspace…`.
+
 ## Open decisions of the specification, as resolved here
 
 | | Decision |

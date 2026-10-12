@@ -30,7 +30,7 @@ fn qa001_plain_build_matches_upstream() {
     // Hashes differ between the two directories (the path is part of a path package's identity),
     // so compare the shape; identical hashes are asserted in-place by `no_rebuild_when_alternating`.
     let shape = |v: Vec<String>| v.into_iter().map(|f| f.rsplit_once('-').map(|(n, _)| n.to_string()).unwrap_or(f)).collect::<Vec<_>>();
-    assert_eq!(shape(artifacts(&wrapped.join("target"))), shape(artifacts(&native.join("target"))));
+    assert_eq!(shape(artifacts(&sb.target_dir(&wrapped))), shape(artifacts(&sb.target_dir(&native))));
     assert!(!tree(&wrapped).iter().any(|f| f.contains(".haul")), "the shim must not create files in the repository");
     assert_eq!(stdout(&ok(sb.cargo(&wrapped).args(["run", "-q"]))), "3\n");
 }
@@ -42,12 +42,12 @@ fn no_rebuild_when_alternating_with_upstream() {
     let sb = Sandbox::new("alternate");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build").env("HAUL_MODE", "compat"));
-    let before = artifacts(&ws.join("target"));
+    let before = artifacts(&sb.target_dir(&ws));
     let up = ok(sb.upstream(&ws).arg("build"));
     assert!(!stderr(&up).contains("Compiling"), "upstream rebuilt after a shim build:\n{}", stderr(&up));
     let again = ok(sb.cargo(&ws).arg("build").env("HAUL_MODE", "compat"));
     assert!(!stderr(&again).contains("Compiling"), "shim rebuilt after an upstream build:\n{}", stderr(&again));
-    assert_eq!(artifacts(&ws.join("target")), before);
+    assert_eq!(artifacts(&sb.target_dir(&ws)), before);
 }
 
 #[test]
@@ -133,7 +133,7 @@ fn builds_and_their_build_scripts_get_hauls_toolchain_and_cargo_home() {
     sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim())).unwrap();\n}\n");
     let stable = sb.toolchain_dir(&p);
     ok(sb.cargo(&p).arg("build").env("CARGO_HOME", sb.dir.join("theirs")));
-    let env_file = fs::read_dir(p.join("target/debug/build")).unwrap().flatten().map(|e| e.path().join("out/env.txt")).find(|f| f.is_file()).expect("the build script ran");
+    let env_file = fs::read_dir(sb.target_dir(&p).join("debug/build")).unwrap().flatten().map(|e| e.path().join("out/env.txt")).find(|f| f.is_file()).expect("the build script ran");
     let lines: Vec<String> = fs::read_to_string(env_file).unwrap().lines().map(str::to_string).collect();
     assert_eq!(lines[0], stable.file_name().unwrap().to_string_lossy(), "nested toolchain programs are pinned to the build's toolchain");
     assert_eq!(lines[1], sb.cargo_home().display().to_string(), "Haul's Cargo home, whatever the environment says");
@@ -164,12 +164,73 @@ fn toolchain_programs_run_through_hauls_proxies() {
 }
 
 #[test]
+fn builds_go_to_hauls_cache_and_never_into_the_project() {
+    let sb = Sandbox::new("builddir");
+    let ws = sb.workspace("ws");
+    let target = sb.target_dir(&ws);
+    assert!(target.starts_with(sb.home.join("cache/builds")), "{}", target.display());
+    // An external subcommand that builds through `$CARGO`, as tools do.
+    let sub = sb.file("bin/cargo-tool", "#!/bin/sh\n\"$CARGO\" build -q -p util || exit 9\n");
+    make_executable(&sub);
+    let path = std::env::join_paths(std::iter::once(sb.dir.join("bin")).chain(std::env::split_paths(&sb.path_with_shim()))).unwrap();
+    for args in [&["build"][..], &["check"], &["test", "--no-run"], &["doc", "--no-deps"], &["clippy"], &["package", "--allow-dirty", "--no-verify", "--offline", "-p", "util"], &["tool"]] {
+        ok(sb.cargo(&ws).args(args).env("PATH", &path));
+        assert!(!ws.join("target").exists(), "`cargo {}` wrote into the project", args.join(" "));
+    }
+    assert!(target.join("debug/app").is_file() && target.join("doc/util/index.html").is_file() && target.join("package/util-0.1.0.crate").is_file());
+    let meta: Value = serde_json::from_slice(&ok(sb.cargo(&ws).args(["metadata", "--format-version", "1", "--no-deps"])).stdout).unwrap();
+    assert_eq!(meta["target_directory"].as_str(), Some(target.to_str().unwrap()), "tools asking Cargo get Haul's directory");
+    assert_eq!(stdout(&ok(sb.haul(&ws).args(["path", "bin", "app"]))).trim(), target.join("debug/app").display().to_string());
+    // A member directory belongs to its workspace's build directory.
+    assert_eq!(sb.target_dir(&ws.join("util")), target);
+    // Another checkout of the same code has a directory of its own.
+    copy_dir(&ws, &sb.dir.join("ws-2"));
+    assert_ne!(sb.target_dir(&sb.dir.join("ws-2")), target);
+    // `cargo clean` empties it, as it would `target/`.
+    ok(sb.cargo(&ws).arg("clean"));
+    assert!(!target.exists());
+}
+
+#[test]
+fn a_target_directory_the_user_chose_is_used_and_cargo_configuration_files_are_not() {
+    let sb = Sandbox::new("usertarget");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).args(["build", "--target-dir", "out"]));
+    assert!(p.join("out/debug/p").is_file());
+    let mine = sb.dir.join("mine");
+    ok(sb.cargo(&p).arg("build").env("CARGO_TARGET_DIR", &mine));
+    assert!(mine.join("debug/p").is_file());
+    assert_eq!(stdout(&ok(sb.haul(&p).arg("path").env("CARGO_TARGET_DIR", &mine))).trim(), mine.display().to_string());
+    ok(sb.cargo(&p).args(["--config", "build.target-dir=\"cli-out\"", "build"]));
+    assert!(p.join("cli-out/debug/p").is_file());
+    // A Cargo configuration file's target directory (a global one, say) gives way to Haul's.
+    sb.file("p/.cargo/config.toml", "[build]\ntarget-dir = \"configured\"\n");
+    ok(sb.cargo(&p).arg("build"));
+    assert!(!p.join("configured").exists());
+    assert!(sb.target_dir(&p).join("debug/p").is_file());
+    assert!(!sb.home.join("cache/builds").read_dir().unwrap().any(|e| e.unwrap().path() == mine), "a directory the user chose is never Haul's");
+}
+
+#[test]
+fn a_build_script_building_another_workspace_builds_it_in_that_workspaces_directory() {
+    let sb = Sandbox::new("nestedws");
+    let other = sb.package("other", "other");
+    let p = sb.package("p", "p");
+    // Like a build script that builds a helper project (a wasm module, a plugin) with `cargo`.
+    sb.file("p/build.rs", &format!("fn main() {{\n    let s = std::process::Command::new(\"cargo\").args([\"build\", \"-q\", \"--manifest-path\", {:?}]).status().unwrap();\n    assert!(s.success());\n}}\n", other.join("Cargo.toml").display().to_string()));
+    ok(sb.cargo(&p).arg("build"));
+    assert!(sb.target_dir(&other).join("debug/other").is_file(), "the other workspace's own directory");
+    assert!(!sb.target_dir(&p).join("debug/other").exists());
+    assert!(!p.join("target").exists() && !other.join("target").exists());
+}
+
+#[test]
 fn qa004_manifest_path_from_another_directory() {
     let sb = Sandbox::new("manifest");
     let p = sb.package("deep/p", "p");
     let manifest = p.join("Cargo.toml");
     ok(sb.cargo(&sb.dir).args(["build", "--manifest-path"]).arg(&manifest));
-    assert!(p.join("target/debug/p").exists());
+    assert!(sb.target_dir(&p).join("debug/p").exists());
     let sessions = sb.sessions();
     assert_eq!(sessions.last().unwrap()["workspace_root"].as_str().unwrap(), p.to_str().unwrap(), "the workspace is found through --manifest-path, not the cwd");
 }
@@ -184,10 +245,10 @@ fn qa005_features_reach_rustc_unchanged() {
     let report = sb.report(&p, "latest");
     let lib = report["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap();
     assert_eq!(lib["features"], serde_json::json!(["a", "b"]));
-    let before = artifacts(&p.join("target"));
+    let before = artifacts(&sb.target_dir(&p));
     let up = ok(sb.upstream(&p).args(["build", "--features", "a,b"]));
     assert!(!stderr(&up).contains("Compiling"), "upstream considers the shim's build stale:\n{}", stderr(&up));
-    assert_eq!(artifacts(&p.join("target")), before);
+    assert_eq!(artifacts(&sb.target_dir(&p)), before);
     ok(sb.cargo(&p).args(["build", "--all-features"]));
     ok(sb.cargo(&p).args(["build", "--no-default-features"]));
 }
@@ -200,7 +261,7 @@ fn qa006_cross_target_check() {
     // The target's standard library is installed on first use.
     ok(sb.cargo(&p).args(["check", "--lib", "--target", target]));
     assert!(sb.toolchain_dir(&p).join("lib/rustlib").join(target).join("lib").is_dir());
-    assert!(p.join("target").join(target).join("debug").is_dir());
+    assert!(sb.target_dir(&p).join(target).join("debug").is_dir());
     let report = sb.report(&p, "latest");
     let lib = report["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap();
     assert_eq!((lib["target"].as_str(), lib["mode"].as_str(), lib["role"].as_str()), (Some(target), Some("check"), Some("target")));
@@ -267,12 +328,12 @@ fn qa010_qa011_qa012_existing_wrappers_are_preserved_in_cargo_order() {
     assert!(sb.report(&p, "latest")["metrics"]["units_compiled"].as_u64().unwrap() >= 2, "Haul still observed the units");
 
     // QA-011: RUSTC_WORKSPACE_WRAPPER alone.
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     ok(sb.cargo(&p).arg("build").env("RUSTC_WORKSPACE_WRAPPER", &ws_wrapper));
     assert!(fs::read_to_string(&ws_log).unwrap().lines().count() >= 2);
 
     // QA-012: both. Cargo's documented order is $RUSTC_WRAPPER $RUSTC_WORKSPACE_WRAPPER $RUSTC.
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     fs::remove_file(&outer_log).unwrap();
     fs::remove_file(&ws_log).unwrap();
     ok(sb.cargo(&p).arg("build").env("RUSTC_WRAPPER", &outer).env("RUSTC_WORKSPACE_WRAPPER", &ws_wrapper));
@@ -312,7 +373,7 @@ fn qa014_check_test_run_doc_bench_behave_like_upstream() {
     let t = ok(sb.cargo(&p).arg("test"));
     assert!(stdout(&t).contains("test tests::adds ... ok"), "{}", stdout(&t));
     ok(sb.cargo(&p).args(["doc", "--no-deps"]));
-    assert!(p.join("target/doc/p/index.html").exists());
+    assert!(sb.target_dir(&p).join("doc/p/index.html").exists());
     ok(sb.cargo(&p).args(["bench", "--no-run"]));
     let families: Vec<String> = sb.sessions().iter().map(|s| s["command"]["family"].as_str().unwrap().to_string()).collect();
     assert_eq!(families, ["check", "test", "doc", "bench"]);
@@ -354,18 +415,18 @@ fn qa016_cargo_clean_keeps_exact_upstream_semantics() {
     let sb = Sandbox::new("clean");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
-    let before = tree(&ws.join("target"));
+    let before = tree(&sb.target_dir(&ws));
     // Smart lifecycle management never deletes through any path in this release.
     ok(sb.haul(&ws).args(["gc", "--dry-run"]));
-    assert_eq!(tree(&ws.join("target")), before, "gc --dry-run must not remove anything");
+    assert_eq!(tree(&sb.target_dir(&ws)), before, "gc --dry-run must not remove anything");
     // Selective clean removes the package's artifacts and nothing else.
     let a = ok(sb.cargo(&ws).args(["clean", "-p", "util"]));
     assert!(stderr(&a).contains("Removed"), "{}", stderr(&a));
-    let after = tree(&ws.join("target"));
+    let after = tree(&sb.target_dir(&ws));
     assert!(!after.iter().any(|f| f.contains("/deps/libutil-")));
     assert!(after.iter().any(|f| f.contains("/deps/libgen-")));
     ok(sb.cargo(&ws).arg("clean"));
-    assert!(!ws.join("target").exists());
+    assert!(!sb.target_dir(&ws).exists());
     assert_eq!(sb.sessions().pop().unwrap()["command"]["family"], "clean");
     // After a clean, an identical rebuild is classified as a cache miss, not as an unknown rebuild.
     ok(sb.cargo(&ws).arg("build"));
@@ -446,10 +507,10 @@ fn qa019_external_subcommands_and_nested_cargo() {
     assert_eq!(nested["instrumented"], true);
 
     // COMP-032: projects can opt nested invocations out; they then go straight to upstream.
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     let opt_out = run(sb.cargo(&p).args(["hello"]).env("PATH", &path).env("HAUL_NESTED", "upstream"));
     assert_eq!(opt_out.status.code(), Some(5));
-    assert!(p.join("target/debug/p").exists());
+    assert!(sb.target_dir(&p).join("debug/p").exists());
     assert_eq!(sb.sessions().len(), 3, "only the outer invocation is recorded when nested ones are opted out");
 }
 
@@ -459,7 +520,7 @@ fn qa020_aliases_are_resolved_by_cargo_and_classified_for_observation() {
     let p = sb.package("p", "p");
     sb.file("p/.cargo/config.toml", "[alias]\nxb = \"build --features a\"\n");
     ok(sb.cargo(&p).arg("xb"));
-    assert!(p.join("target/debug/p").exists());
+    assert!(sb.target_dir(&p).join("debug/p").exists());
     let s = sb.sessions().pop().unwrap();
     assert_eq!((s["command"]["family"].as_str(), s["command"]["alias_of"].as_str(), s["instrumented"].as_bool()), (Some("build"), Some("build"), Some(true)));
     assert_eq!(sb.report(&p, "latest")["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap()["features"], serde_json::json!(["a"]));
@@ -470,7 +531,7 @@ fn qa021_package_and_login_pass_through_and_secrets_never_reach_haul_state() {
     let sb = Sandbox::new("registry");
     let p = sb.package("p", "p");
     let a = ok(sb.cargo(&p).args(["package", "--allow-dirty", "--no-verify", "--offline"]));
-    assert!(p.join("target/package/p-0.1.0.crate").exists(), "{}", stderr(&a));
+    assert!(sb.target_dir(&p).join("package/p-0.1.0.crate").exists(), "{}", stderr(&a));
     // `cargo login` against a mock registry: the token lands in Haul's Cargo home.
     let cargo_home = sb.cargo_home();
     let index = sb.dir.join("mock-index");
@@ -562,7 +623,7 @@ fn qa026_cache_outage_fails_open_or_closed_by_policy() {
     let open = run(sb.cargo(&p).arg("build").env("PATH", &path).env("HAUL_CACHE_PROVIDER", "sccache"));
     assert!(open.status.success(), "fail-open must compile locally: {}", stderr(&open));
     assert!(stderr(&open).contains("haul: warning") && stderr(&open).contains("compiling without it"), "{}", stderr(&open));
-    assert!(p.join("target/debug/p").exists());
+    assert!(sb.target_dir(&p).join("debug/p").exists());
     let s = sb.sessions().pop().unwrap();
     assert_eq!(s["policy"]["cache"]["state"], "degraded");
     assert!(s["wrappers"]["inner"].is_null(), "the unavailable cache is not in the wrapper chain");
@@ -571,11 +632,11 @@ fn qa026_cache_outage_fails_open_or_closed_by_policy() {
     assert!(report["cache"]["hits"].is_null());
     assert!(report["units"].as_array().unwrap().iter().all(|u| u["cacheability"] == "n/a"));
 
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     let closed = run(sb.cargo(&p).arg("build").env("PATH", &path).env("HAUL_CACHE_PROVIDER", "sccache").env("HAUL_CACHE_FAIL", "closed"));
     assert_eq!(closed.status.code(), Some(2), "{}", stderr(&closed));
     assert!(stderr(&closed).contains("cache.fail = closed"));
-    assert!(!p.join("target").exists(), "fail-closed stops before any compilation");
+    assert!(!sb.target_dir(&p).exists(), "fail-closed stops before any compilation");
 }
 
 #[test]
@@ -597,11 +658,12 @@ fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     fs::create_dir_all(&unusable).unwrap();
     std::os::unix::fs::symlink(toolchain_store(), unusable.join("toolchains")).unwrap();
     fs::write(unusable.join("workspaces"), "").unwrap();
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     let no_state = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &unusable));
     assert!(no_state.status.success(), "{}", stderr(&no_state));
     assert!(stderr(&no_state).contains("this run was not recorded"), "{}", stderr(&no_state));
-    assert!(p.join("target/debug/p").exists());
+    let target = stdout(&ok(sb.haul(&p).arg("path").env("HAUL_HOME", &unusable))).trim().to_string();
+    assert!(std::path::Path::new(&target).join("debug/p").exists());
 }
 
 #[test]
@@ -647,7 +709,7 @@ fn recursion_is_refused_with_a_diagnostic() {
     let b = run(sb.cargo(&p).args(["+loop", "build"]));
     assert_eq!(b.status.code(), Some(2), "{}", stderr(&b));
     assert!(stderr(&b).contains("refusing to run Cargo"), "{}", stderr(&b));
-    assert!(!p.join("target").exists());
+    assert!(!sb.target_dir(&p).exists());
 }
 
 #[test]
@@ -659,7 +721,7 @@ fn an_unreachable_dist_server_is_a_clear_error() {
     let out = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &empty).env("HAUL_DIST_SERVER", "http://127.0.0.1:9"));
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("toolchain stable (from default toolchain): could not download http://127.0.0.1:9/dist/channel-rust-stable.toml"), "{}", stderr(&out));
-    assert!(!p.join("target").exists());
+    assert!(!sb.target_dir(&p).exists());
 }
 
 #[test]
@@ -671,7 +733,7 @@ fn explicit_haul_entry_and_upstream_escape_hatch() {
     assert_eq!(sb.sessions().pop().unwrap()["command"]["entry"], "haul");
     // AC-020 / COMP-013: the escape hatch runs upstream with no session and no wrapper.
     let count = sb.sessions().len();
-    fs::remove_dir_all(p.join("target")).unwrap();
+    fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     let (wrapper, log) = logging_wrapper(&sb, "probe");
     let out = ok(sb.haul(&p).args(["upstream", "build"]).env("RUSTC_WRAPPER", &wrapper));
     assert!(stderr(&out).contains("Compiling p"));
@@ -683,7 +745,7 @@ fn explicit_haul_entry_and_upstream_escape_hatch() {
 fn environment_reaches_build_scripts_unchanged() {
     // Compatibility oracle: build-script-visible relevant environment.
     let sb = Sandbox::new("env");
-    let script = "fn main() {\n    let mut vars: Vec<String> = std::env::vars().filter(|(k, _)| !k.starts_with(\"HAUL_\") && k != \"RUSTC_WRAPPER\" && k != \"CARGO\" && k != \"OUT_DIR\" && k != \"CARGO_MANIFEST_DIR\" && k != \"CARGO_MANIFEST_PATH\" && k != \"PATH\" && k != \"DYLD_FALLBACK_LIBRARY_PATH\" && k != \"LD_LIBRARY_PATH\" && k != \"PWD\" && k != \"OLDPWD\" && k != \"DUMP\").map(|(k, v)| format!(\"{k}={v}\")).collect();\n    vars.sort();\n    std::fs::write(std::env::var(\"DUMP\").unwrap(), vars.join(\"\\n\")).unwrap();\n}\n";
+    let script = "fn main() {\n    let mut vars: Vec<String> = std::env::vars().filter(|(k, _)| !k.starts_with(\"HAUL_\") && k != \"RUSTC_WRAPPER\" && k != \"CARGO\" && k != \"OUT_DIR\" && k != \"CARGO_MANIFEST_DIR\" && k != \"CARGO_MANIFEST_PATH\" && k != \"PATH\" && k != \"CARGO_TARGET_DIR\" && k != \"CARGO_BUILD_BUILD_DIR\" && k != \"DYLD_FALLBACK_LIBRARY_PATH\" && k != \"LD_LIBRARY_PATH\" && k != \"PWD\" && k != \"OLDPWD\" && k != \"DUMP\").map(|(k, v)| format!(\"{k}={v}\")).collect();\n    vars.sort();\n    std::fs::write(std::env::var(\"DUMP\").unwrap(), vars.join(\"\\n\")).unwrap();\n}\n";
     let mut dumps = Vec::new();
     for (name, wrapped) in [("wrapped", true), ("native", false)] {
         let p = sb.package(&format!("{}/p", name), "p");
@@ -692,6 +754,9 @@ fn environment_reaches_build_scripts_unchanged() {
         let mut c = if wrapped { sb.cargo(&p) } else { sb.upstream(&p) };
         ok(c.arg("build").env("DUMP", &dump).env("RUSTFLAGS", "--cfg some_flag").env("MY_PROXY_SETTING", "http://proxy.invalid:1"));
         dumps.push(fs::read_to_string(dump).unwrap());
+        // Each project's own build directory, as for OUT_DIR: Haul's, the oracle given the same.
+        assert!(!p.join("target").exists());
+        assert!(sb.target_dir(&p).join("debug/p").is_file());
     }
     let (w, n): (Vec<&str>, Vec<&str>) = (dumps[0].lines().collect(), dumps[1].lines().collect());
     let only_wrapped: Vec<&&str> = w.iter().filter(|l| !n.contains(l)).collect();
@@ -710,7 +775,7 @@ fn invalid_haul_configuration_names_the_field_and_its_source() {
     assert_eq!(out.status.code(), Some(2));
     let err = stderr(&out);
     assert!(err.contains("cache.providr") && err.contains(".haul/config.toml"), "{}", err);
-    assert!(!p.join("target").exists(), "an invalid configuration stops before the build instead of guessing");
+    assert!(!p.join("target").exists() && !sb.home.join("cache/builds").exists(), "an invalid configuration stops before the build instead of guessing");
     // Configuration errors are reported consistently for every command, queries included.
     assert_eq!(run(sb.cargo(&p).arg("--version")).status.code(), Some(2));
     // The escape hatch does not depend on Haul's configuration.
@@ -850,7 +915,7 @@ fn main() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let outer = fs::read_to_string(p.join("make-flags.txt")).unwrap();
     let outer_auth = outer.split_whitespace().find_map(|f| f.strip_prefix("--jobserver-auth=").or_else(|| f.strip_prefix("--jobserver-fds="))).unwrap_or_else(|| panic!("make set no jobserver: {}", outer)).to_string();
-    let seen = fs::read_dir(p.join("target/debug/build")).unwrap().filter_map(|e| fs::read_to_string(e.ok()?.path().join("out/jobserver-auth")).ok()).next().expect("the build script recorded its jobserver");
+    let seen = fs::read_dir(sb.target_dir(&p).join("debug/build")).unwrap().filter_map(|e| fs::read_to_string(e.ok()?.path().join("out/jobserver-auth")).ok()).next().expect("the build script recorded its jobserver");
     assert_eq!(seen, outer_auth, "Cargo used its own jobserver instead of make's");
 }
 
@@ -865,7 +930,7 @@ fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     // The compiler the driver was built for: the toolchain Haul uses here.
     let rustc = sb.toolchain_dir(&ws).join("bin/rustc").display().to_string();
     let outputs = |compiler: &str| -> std::collections::BTreeMap<String, Vec<u8>> {
-        let target = ws.join("target");
+        let target = sb.target_dir(&ws);
         let _ = fs::remove_dir_all(&target);
         ok(sb.upstream(&ws).arg("build").env("RUSTC", compiler).env("CARGO_INCREMENTAL", "0"));
         let mut out = std::collections::BTreeMap::new();

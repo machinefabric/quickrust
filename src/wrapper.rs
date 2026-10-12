@@ -40,6 +40,8 @@ pub struct Settings {
     /// Compile Cargo's units with Haul's compiler driver, when it is built for the compiler, and
     /// key dependents by the interfaces of the crates they compile against (early cut-off).
     pub early_cutoff: bool,
+    /// The build's target directory, which holds generated inputs (build scripts' `OUT_DIR`).
+    pub target_dir: Option<PathBuf>,
 }
 
 const SETTINGS_FILE: &str = "_wrapper.settings";
@@ -149,7 +151,7 @@ pub fn main() {
             let exit = ExitInfo { code: Some(0), signal: None };
             if let Some(dir) = &event_dir {
                 let _ = std::panic::catch_unwind(|| {
-                    let mut ev = build_event(&rustc, &argv, None, false, start_wall, started.elapsed().as_nanos() as u64, exit, None);
+                    let mut ev = build_event(&rustc, &argv, None, false, start_wall, started.elapsed().as_nanos() as u64, exit, None, settings.as_ref().and_then(|s| s.target_dir.as_deref()));
                     ev["cache"] = json!({ "result": "hit", "entry": entry, "foreign_out_dir": foreign_out_dir });
                     if let Ok(bytes) = serde_json::to_vec(&ev) {
                         let _ = util::write_atomic_fast(&dir.join(format!("{:020}-{}.json", start_wall, std::process::id())), &bytes);
@@ -389,7 +391,7 @@ pub fn main() {
     if let Some(dir) = event_dir {
         // Telemetry must never alter the compiler's outcome.
         let _ = std::panic::catch_unwind(|| {
-            let mut ev = build_event(&rustc, &argv, inner.as_ref(), fallback, start_wall, dur_ns, exit, usage);
+            let mut ev = build_event(&rustc, &argv, inner.as_ref(), fallback, start_wall, dur_ns, exit, usage, settings.as_ref().and_then(|s| s.target_dir.as_deref()));
             ev["cache"] = cache;
             if let Some(d) = &driver {
                 ev["driver"] = json!(util::path_str(d));
@@ -679,7 +681,7 @@ fn codegen_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_event(rustc: &OsString, argv: &[OsString], inner: Option<&OsString>, fallback: bool, start_wall: u64, dur_ns: u64, exit: ExitInfo, usage: Option<proc::Usage>) -> Value {
+fn build_event(rustc: &OsString, argv: &[OsString], inner: Option<&OsString>, fallback: bool, start_wall: u64, dur_ns: u64, exit: ExitInfo, usage: Option<proc::Usage>, target_dir: Option<&Path>) -> Value {
     let args = expand_argfiles(argv.iter().map(|a| util::lossy(a)).collect());
     let non_utf8 = argv.iter().any(|a| a.to_str().is_none());
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -759,7 +761,7 @@ fn build_event(rustc: &OsString, argv: &[OsString], inner: Option<&OsString>, fa
         ev["outputs"] = json!(outputs);
         let local = env("CARGO_MANIFEST_DIR").map(|d| !is_external_source(Path::new(&d))).unwrap_or(false);
         if local && exit.success() {
-            if let Some(inputs) = read_inputs(&out_dir.join(format!("{}.d", stem)), &cwd, env("OUT_DIR").as_deref(), out_dir) {
+            if let Some(inputs) = read_inputs(&out_dir.join(format!("{}.d", stem)), &cwd, env("OUT_DIR").as_deref(), target_dir) {
                 ev["inputs"] = inputs;
             }
         }
@@ -812,7 +814,7 @@ pub fn split_depinfo_paths(body: &str) -> Vec<String> {
 }
 
 /// Reads rustc's dep-info for a local crate and fingerprints what it actually read.
-fn read_inputs(dep_info: &Path, cwd: &Path, out_dir_env: Option<&str>, artifact_dir: &Path) -> Option<Value> {
+fn read_inputs(dep_info: &Path, cwd: &Path, out_dir_env: Option<&str>, target_dir: Option<&Path>) -> Option<Value> {
     let text = std::fs::read_to_string(dep_info).ok()?;
     let mut files: Vec<String> = Vec::new();
     let mut env_deps = Vec::new();
@@ -832,7 +834,7 @@ fn read_inputs(dep_info: &Path, cwd: &Path, out_dir_env: Option<&str>, artifact_
         }
     }
     // The target directory holds generated inputs (OUT_DIR lives inside it).
-    let target_root = artifact_dir.ancestors().nth(2).map(util::path_str);
+    let target_root = target_dir.map(util::path_str);
     let mut local = Vec::new();
     let mut generated = Vec::new();
     let mut external = 0u64;
@@ -880,7 +882,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, target_dir: Some(dir.join("t")) };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
         std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"linker_dir":null,"from_the_future":true}"#).unwrap();

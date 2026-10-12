@@ -82,6 +82,13 @@ impl Sandbox {
         self.home.join("cargo")
     }
 
+    /// The target directory of the workspace `cwd` is in: Haul's, in its cache (`haul path`).
+    pub fn target_dir(&self, cwd: &Path) -> PathBuf {
+        let out = run(self.haul(cwd).arg("path"));
+        assert!(out.status.success(), "no target directory: {}", String::from_utf8_lossy(&out.stderr));
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+    }
+
     /// The toolchain Haul uses in `cwd` (installed into the shared store on first use).
     pub fn toolchain_dir(&self, cwd: &Path) -> PathBuf {
         let out = run(self.haul(cwd).args(["toolchain", "which"]));
@@ -110,13 +117,24 @@ impl Sandbox {
     }
 
     /// The toolchain's own Cargo with no Haul anywhere: the compatibility oracle. It gets the
-    /// Cargo home, compiler and PATH Haul gives the Cargo it runs.
+    /// Cargo home, compiler, PATH and (in a workspace) target directory Haul gives the Cargo it
+    /// runs.
     pub fn upstream(&self, cwd: &Path) -> Command {
         let (tc, path) = self.oracle_path(cwd);
         let mut c = self.base(&tc.join("bin/cargo"), cwd);
         Self::oracle_env(&mut c, &tc, &self.cargo_home());
+        self.oracle_target(&mut c, cwd);
         c.env("PATH", path);
         c
+    }
+
+    /// Haul's target directory for `cwd`'s workspace, given to the oracle (none outside one).
+    fn oracle_target(&self, c: &mut Command, cwd: &Path) {
+        let out = run(self.haul(cwd).arg("path"));
+        if out.status.success() {
+            let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            c.env("CARGO_TARGET_DIR", &dir).env("CARGO_BUILD_BUILD_DIR", &dir);
+        }
     }
 
     /// What Haul sets for the Cargo it runs, set for the oracle too.
@@ -137,6 +155,7 @@ impl Sandbox {
         let (tc, path) = self.oracle_path(cwd);
         let mut c = self.in_terminal(cwd, args, &path)?;
         Self::oracle_env(&mut c, &tc, &self.cargo_home());
+        self.oracle_target(&mut c, cwd);
         Some(c)
     }
 

@@ -379,26 +379,6 @@ pub fn existing_rustc_wrapper(subset: &CargoConfigSubset) -> Option<(String, Str
     }
 }
 
-/// Nearest directory at or above `start` that looks like a Cargo workspace root.
-pub fn guess_workspace_root(start: &Path) -> Option<PathBuf> {
-    let mut nearest: Option<PathBuf> = None;
-    let mut dir = Some(start);
-    while let Some(d) = dir {
-        let manifest = d.join("Cargo.toml");
-        if manifest.is_file() {
-            let is_ws = std::fs::read_to_string(&manifest).map(|t| t.lines().any(|l| l.trim_start().starts_with("[workspace"))).unwrap_or(false);
-            if is_ws {
-                return Some(d.to_path_buf());
-            }
-            if nearest.is_none() {
-                nearest = Some(d.to_path_buf());
-            }
-        }
-        dir = d.parent();
-    }
-    nearest
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
