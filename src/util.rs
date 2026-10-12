@@ -91,6 +91,22 @@ pub fn sha256_file(path: &Path) -> io::Result<String> {
     Ok(hex(&h.finalize()))
 }
 
+/// BLAKE3 of a file's content, in hex: the artifact cache's content hash, several times
+/// faster than SHA-256 on the tens of megabytes a library or binary weighs.
+pub fn blake3_file(path: &Path) -> io::Result<String> {
+    let mut f = fs::File::open(path)?;
+    let mut h = blake3::Hasher::new();
+    let mut buf = vec![0u8; 256 * 1024];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(h.finalize().to_hex().to_string())
+}
+
 /// Digest of an ordered list of strings with unambiguous framing.
 pub fn digest_parts<I, S>(parts: I) -> String
 where
@@ -292,6 +308,13 @@ pub fn write_json(path: &Path, v: &Value) -> io::Result<()> {
     let mut s = serde_json::to_vec_pretty(v).map_err(io::Error::other)?;
     s.push(b'\n');
     write_atomic(path, &s)
+}
+
+/// `write_json` without the fsync, for records whose loss after a power failure is harmless.
+pub fn write_json_fast(path: &Path, v: &Value) -> io::Result<()> {
+    let mut s = serde_json::to_vec_pretty(v).map_err(io::Error::other)?;
+    s.push(b'\n');
+    write_atomic_fast(path, &s)
 }
 
 pub fn read_json(path: &Path) -> Option<Value> {

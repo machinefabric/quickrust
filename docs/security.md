@@ -43,9 +43,14 @@ network component, and is never consulted behind a rustc wrapper the user config
   input file rustc read. Inputs rustc does not report (files or variables a proc macro
   reads without declaring them) are not part of the key: such a macro can yield a stale
   hit, as it can with sccache.
-- **Integrity.** Entries are written to a temporary directory and renamed into place;
-  a damaged or missing entry is a miss. A compilation whose inputs changed while it ran
-  is not stored. Anyone who can write to `~/.haul` can plant an artifact — the same
+- **Integrity.** Entries are written to a temporary directory and renamed into place.
+  Outputs are hard-linked into an entry when the cache shares their file system (rustc
+  and the linkers write each output as a new file, so a later build does not touch the
+  entry's) and copied otherwise; dep-info, which rustc rewrites in place, is always
+  copied. Every file's content hash (BLAKE3) is recorded and checked as the file is
+  restored, so a file rewritten in place through a link, torn by a crash or damaged on
+  disk makes the entry a miss and removes it. A compilation whose inputs changed while
+  it ran is not stored. Anyone who can write to `~/.haul` can plant an artifact — the same
   trust boundary as `~/.cargo/registry`, which holds the sources.
 - **Paths.** A restored unit's dep-info and diagnostics are rewritten to the current
   output and `OUT_DIR` paths. Its binary contents are not: a dependency restored into
