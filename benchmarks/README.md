@@ -97,7 +97,9 @@ Each command starts from an empty environment: a pinned toolchain (`--toolchain`
 and the system tools are all of `PATH`; plain Cargo is that toolchain's own `cargo`. Cargo
 gets a Cargo home of the benchmark's own (`<work-dir>/cargo-home`, no `config.toml`, populated
 by `fetch`, used offline), which every Haul home of the run links as its own. Every variant
-and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`.
+and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`. Haul's cache bounds are fixed
+(`HAUL_CACHE_MIN_FREE=1`, `HAUL_CACHE_MAX_SIZE=1TiB`): on a nearly full disk Haul would
+otherwise collect its cache in the background between measurements.
 Nothing from the machine's Cargo configuration, such as a global `build.target-dir` or
 a rustc wrapper, can reach a measurement. The work directory (default
 `/mnt/shared/nvme2p3/haul-bench`, `--work-dir` or `HAUL_BENCH_DIR`) is refused if any parent
