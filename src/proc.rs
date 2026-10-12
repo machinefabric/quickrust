@@ -254,7 +254,9 @@ pub fn interrupted() -> Option<i32> {
 /// of the process dying between child runs.
 /// Starts `cmd` in the background, detached: a session of its own (it outlives this process,
 /// and Ctrl-C at this terminal does not reach it), at the lowest scheduling priority, with
-/// stdin from /dev/null and stdout and stderr to `log`. Init reaps it.
+/// stdin from /dev/null and stdout and stderr to `log`, and nothing else of this process's open
+/// (a pipe that a script reads this process's output from stays this process's: the script is not
+/// kept waiting for the background work). Init reaps it.
 // The process outlives this one on purpose.
 #[allow(clippy::zombie_processes)]
 pub fn spawn_detached(cmd: &mut Command, log: std::fs::File) -> io::Result<()> {
@@ -269,8 +271,68 @@ pub fn spawn_detached(cmd: &mut Command, log: std::fs::File) -> io::Result<()> {
                 Ok(())
             });
         }
+        cmd.spawn().map(|_| ())
     }
-    cmd.spawn().map(|_| ())
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
+        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | IDLE_PRIORITY_CLASS);
+        // Windows hands a new process every inheritable handle of this one, its standard handles
+        // included (those it got from whoever started it). The child's own are the log's (std
+        // gives every child inheritable copies of what it is to use), so this process's are kept
+        // from it while it is created.
+        let _kept = win::StandardHandlesKept::new();
+        cmd.spawn().map(|_| ())
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(which: u32) -> *mut c_void;
+        fn GetHandleInformation(handle: *mut c_void, flags: *mut u32) -> i32;
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+
+    const HANDLE_FLAG_INHERIT: u32 = 1;
+    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE: (DWORD)-10, -11, -12.
+    const STANDARD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+
+    /// While it lives, this process's standard handles are not inheritable; then as they were.
+    pub struct StandardHandlesKept(Vec<*mut c_void>);
+
+    impl StandardHandlesKept {
+        pub fn new() -> StandardHandlesKept {
+            let mut cleared = Vec::new();
+            for which in STANDARD {
+                let h = unsafe { GetStdHandle(which) };
+                if h.is_null() || h as isize == -1 || cleared.contains(&h) {
+                    continue;
+                }
+                let mut flags = 0u32;
+                if unsafe { GetHandleInformation(h, &mut flags) } != 0 && flags & HANDLE_FLAG_INHERIT != 0 && unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) } != 0 {
+                    cleared.push(h);
+                }
+            }
+            StandardHandlesKept(cleared)
+        }
+    }
+
+    impl Drop for StandardHandlesKept {
+        fn drop(&mut self) {
+            for h in &self.0 {
+                unsafe {
+                    SetHandleInformation(*h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                }
+            }
+        }
+    }
 }
 
 pub fn hold_signals() -> imp::Guard {

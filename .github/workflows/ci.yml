@@ -82,6 +82,7 @@ jobs:
   windows-smoke:
     name: smoke (windows)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain
@@ -90,9 +91,10 @@ jobs:
         run: cargo build --release -p haul
       - name: Set up, then a project through Haul
         shell: bash
+        env:
+          HAUL_HOME: ${{ runner.temp }}\haul-home
         run: |
           set -eux
-          export HAUL_HOME="$(cygpath -w "$RUNNER_TEMP/haul-home")"
           target/release/haul.exe setup --no-modify-path 2>&1 | tee setup.log
           if grep -q "compiler driver cannot be built" setup.log; then exit 1; fi
           bin="$(cygpath -u "$HAUL_HOME")/bin"
@@ -107,3 +109,15 @@ jobs:
           cargo test
           haul driver status | grep "^built:"
           haul doctor
+      # Haul's background work, when something did not finish.
+      - name: What Haul left running, and its logs
+        if: failure() || cancelled()
+        shell: bash
+        env:
+          HAUL_HOME: ${{ runner.temp }}\haul-home
+        run: |
+          tasklist | grep -i -E "haul|cargo|rustc" || true
+          home="$(cygpath -u "$HAUL_HOME")"
+          for f in "$home"/cache/gc.log "$home"/cache/gc-log.jsonl "$home"/toolchains/.update.log "$home"/cache/drivers/*/build.log; do
+            [ -f "$f" ] && { echo "== $f"; cat "$f"; }
+          done
