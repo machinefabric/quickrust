@@ -15,8 +15,8 @@ What fast mode does, and the settings that control it:
 |---|---|---|
 | Profile settings (debug info) | — | `--config` arguments to built-in build commands only. A setting the user made in the root manifest, a Cargo config file, `CARGO_PROFILE_*` or `--config` is never overridden; the report's `policy.fast` says what was applied, what was left alone, and why. External subcommands (`cargo nextest`, …) never receive them: Cargo does not pass `--config` on. |
 | rustc's parallel frontend | `fast.frontend-threads` = `auto` (up to 8 on 4+ cores) \| `off` \| a count ≥ 2 | Applied by the rustc wrapper to the units Cargo schedules that are compiled from scratch: dependencies, release and CI builds, and a workspace unit's first compilation in a target directory. Incremental rebuilds never get it: it slows small ones 2–3×; nor does a unit the artifact cache saw compile quickly (a small binary not stored for that reason), whose compilation its start-up would only lengthen. On a stable compiler it needs `RUSTC_BOOTSTRAP=1`, which Haul sets for the compiler processes of all units Cargo schedules (rustc keeps incremental sessions only across compilations made alike), together with `-Zallow-features=` so that `#![feature]` stays rejected. Off behind a user rustc wrapper and when `RUSTC_BOOTSTRAP` is set. |
-| Artifact cache | `cache.artifacts` = `on` \| `off`; `cache.artifacts-max-size` (`10GiB`); `cache.artifacts-min-link-ms` (`300`) | Dependencies are shared across all checkouts; workspace units within the same checkout (their debug information names it). Linked workspace outputs that built faster than the threshold are not stored. Least recently used entries are evicted above the size. Off behind a user rustc wrapper. |
-| Early cut-off | `fast.early-cutoff` = `auto` \| `off` (`HAUL_EARLY_CUTOFF`) | With the artifact cache on: Cargo's units are compiled by Haul's compiler driver — the toolchain's own rustc run through Haul's callbacks (`driver/`), built once per toolchain in the background after the first build that finds it missing (installing the toolchain's `rustc-dev` component; `haul driver build` builds it on demand, `haul driver status` tells). A library's crate hash then covers only what its dependents can observe, so an edit inside a function body they cannot see into (not generic, not inlinable, not `const`/`async`, no `impl Trait` return, adding no closure, macro call or generic instantiation) leaves its dependents' cache keys unchanged: they are restored instead of compiled. When the driver compiles a binary or test executable it keeps the objects (the `.rlink` naming them, the objects hard-linked into `<stem>.haul-objects/`, a `<stem>.haul-relink` record of what they were compiled from), so when only what it links changed it is linked again (`-Zlink-only`) instead of compiled (not for one the cache saw compile quickly). The driver also links before rustc saves its incremental state and tells the wrapper its outputs are written: the build goes on while rustc finishes saving (Unix; not for crates with `#![feature]`, whose unused-feature warnings come later). Units that link are keyed by everything they link. Units whose MIR inlining could copy code across crates (optimised, non-incremental builds) are keyed by content as before. A unit the driver fails on is compiled by rustc instead, and by rustc from then on (`~/.haul/drivers/<key>/failed/` keeps the report). Known limit: rustc's parallel frontend numbers a crate's nested statics in varying order, so such a crate can miss the cut-off once after a cold build. |
+| Artifact cache | `cache.artifacts` = `on` \| `off`; `cache.artifacts-min-link-ms` (`300`) | Dependencies are shared across all checkouts; workspace units within the same checkout (their debug information names it). Linked workspace outputs that built faster than the threshold are not stored. Its space is managed with the rest of Haul's cache (below). Off behind a user rustc wrapper. |
+| Early cut-off | `fast.early-cutoff` = `auto` \| `off` (`HAUL_EARLY_CUTOFF`) | With the artifact cache on: Cargo's units are compiled by Haul's compiler driver — the toolchain's own rustc run through Haul's callbacks (`driver/`), built once per toolchain in the background after the first build that finds it missing (installing the toolchain's `rustc-dev` component; `haul driver build` builds it on demand, `haul driver status` tells). A library's crate hash then covers only what its dependents can observe, so an edit inside a function body they cannot see into (not generic, not inlinable, not `const`/`async`, no `impl Trait` return, adding no closure, macro call or generic instantiation) leaves its dependents' cache keys unchanged: they are restored instead of compiled. When the driver compiles a binary or test executable it keeps the objects (the `.rlink` naming them, the objects hard-linked into `<stem>.haul-objects/`, a `<stem>.haul-relink` record of what they were compiled from), so when only what it links changed it is linked again (`-Zlink-only`) instead of compiled (not for one the cache saw compile quickly). The driver also links before rustc saves its incremental state and tells the wrapper its outputs are written: the build goes on while rustc finishes saving (Unix; not for crates with `#![feature]`, whose unused-feature warnings come later). Units that link are keyed by everything they link. Units whose MIR inlining could copy code across crates (optimised, non-incremental builds) are keyed by content as before. A unit the driver fails on is compiled by rustc instead, and by rustc from then on (`~/.haul/cache/drivers/<key>/failed/` keeps the report). Known limit: rustc's parallel frontend numbers a crate's nested statics in varying order, so such a crate can miss the cut-off once after a cold build. |
 | Linker | `fast.linker` = `auto` \| `off` | Linux with glibc: when `wild` is in `~/.haul/bin` or on `PATH`, host builds of binaries, tests, proc-macros and dynamic libraries link with it instead of rustc's bundled LLD. A `-C linker`, linker-selecting link arguments or linker features from the user (Cargo configuration, `RUSTFLAGS`) win. `~/.haul/linker/ld` links to the wild in use. |
 | Build output | `output` = `haul` \| `cargo` | In a terminal: status line, errors in full, warnings counted, everything stored (`haul warnings`, `haul errors`, `haul log`). `run`, `test` and `bench` build first (rendered), then run the command with the terminal inherited. compat mode defaults to `cargo`. |
 
@@ -38,18 +38,45 @@ releases asked for by their own name (`1.98.1`, `nightly-2026-10-11`) are never 
 `toolchain.auto-update = "off"` (`HAUL_TOOLCHAIN_AUTO_UPDATE=off`) turns the background check
 off; it never runs in CI. `haul toolchain update` runs it now.
 
+## Haul's cache and disk space
+
+Everything under `~/.haul/cache` can be rebuilt or downloaded again, and Haul keeps it within
+two bounds:
+
+| Setting | Default | |
+|---|---|---|
+| `cache.max-size` (`HAUL_CACHE_MAX_SIZE`) | `auto`: 10% of the disk, between 10 and 100 GiB | the most the cache uses |
+| `cache.min-free` (`HAUL_CACHE_MIN_FREE`) | `auto`: 5% of the disk, between 2 and 20 GiB | the free space it leaves the disk |
+
+Both take a size (`40GiB`) or a share of the disk (`10%`). A collection removes first what
+nothing can use (build directories of workspaces that are gone, drivers of toolchains that are
+gone, week-old unfinished downloads, month-old remembered answers, leftovers), then — while the
+cache is above its size, or the disk below its free space — build directories and artifact
+entries, least recently used first, until the cache is back under 90% of its size and the disk
+has a quarter more than its free space. Never what was used in the last 15 minutes, a build
+directory a command holds, or one Cargo is building in. A file the artifact cache and a build
+directory share (a restored unit) counts once and is freed with its last link.
+
+After every command Haul checks, at the cost of one `statvfs`, whether a collection is due
+(below the free space; above the size by the free space lost since the last count; or a day
+after that count) and then runs `haul gc --background` detached, at the lowest priority. When
+the disk is nearly full (below a quarter of `cache.min-free`) a command collects first, for at
+most ten seconds, and says so. `haul gc` collects now (`--dry-run` says what it would remove,
+`--to SIZE` collects down to a size); `haul cache status` shows the last count and collections.
+
 ## Where state lives
 
 | Location | Content | Safe to delete |
 |---|---|---|
 | `~/.haul/` (`HAUL_HOME`) | per-workspace sessions, raw rustc events, stored build output, reports, unit index, benchmarks, remediation records | yes; history is lost |
-| `~/.haul/cache/artifacts/` | the artifact cache (bounded by `cache.artifacts-max-size`) | yes; the next builds compile instead |
+| `~/.haul/cache/artifacts/` | the artifact cache | yes; the next builds compile instead |
+| `~/.haul/cache/usage.json`, `gc-log.jsonl` | the cache's last count, and what collections removed (`haul cache status`) | yes |
 | `~/.haul/toolchains/` | the Rust toolchains Haul installed (`haul toolchain list`); `channels.json` says which release each channel names, the default, and linked toolchains | `haul toolchain remove`; a deleted toolchain is installed again on its next use |
 | `~/.haul/cargo/` | Haul's Cargo home: `config.toml`, credentials, the registry index and sources, git checkouts | the registry and git directories are downloaded again; `config.toml` and `credentials.toml` are yours |
 | `~/.haul/bin/` | Haul as `cargo`, `rustc`, `rustfmt`, `cargo-clippy` and the other toolchain programs | recreated by the next build |
 | `~/.haul/cache/downloads/` | toolchain archives being downloaded (resumed after an interruption) | yes |
-| `~/.haul/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
-| `~/.haul/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |
+| `~/.haul/cache/memo/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
+| `~/.haul/cache/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |
 | `~/.haul/cache/builds/<workspace>-<id>/` (and `<…>.json`, `<…>.lock`) | each workspace's target directory (`haul path`): Cargo's build output, never a `target/` in the project; the record says which workspace and when it was last used, the lock that a command uses it | yes; the next build of that workspace starts over (its dependencies come back from the artifact cache) |
 | `~/.haul/cache/memo/roots/` | which workspace a directory belongs to, as Cargo said (asked again when a `Cargo.toml` from there up changes) | yes |
 | `<target>/<profile>/deps/<unit>.haul-svh`, `.rlink`, `.haul-objects/`, `.haul-relink` | a library's interface hash; a binary's kept objects and what they were compiled from, for relinking | yes, with the rest of the target directory (`cargo clean`) |

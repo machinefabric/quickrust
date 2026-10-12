@@ -19,7 +19,7 @@ What you get on top of an unchanged Cargo:
 - **duplication**: several versions of a dependency, and one version built in several variants, with the dependents responsible;
 - **build scripts** and **proc macros**: cost, rerun behaviour, what waits on them;
 - **cache** behaviour with sccache: hits, misses and non-cacheable requests as separate numbers;
-- **storage**: what is in the build directory by category, and a garbage-collection *plan* (nothing is deleted);
+- **storage**: what is in the build directory by category and what in it is stale, and a cache that keeps itself within its space (`cache.max-size`, `cache.min-free`, `haul gc`);
 - **benchmarks**, A/B **experiments**, **baselines** and CI **regression budgets**;
 - ranked, evidence-backed **recommendations** and reviewable **remediation previews**.
 

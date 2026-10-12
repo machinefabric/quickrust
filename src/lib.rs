@@ -28,6 +28,7 @@ pub mod resolve;
 pub mod rustc_info;
 pub mod session;
 pub mod setup;
+pub mod space;
 pub mod store;
 pub mod toolchain;
 pub mod ui;

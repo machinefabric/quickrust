@@ -85,7 +85,7 @@ pub fn main() {
     // The compiler's account of itself, for the cache key and the levers' channel check; only
     // asked in a Haul session without a user wrapper, where either applies.
     let compiler: Result<String, String> = match (&settings, &inner, rustc.to_str()) {
-        (Some(_), None, Some(r)) => rustc_info::version_verbose(&util::haul_home().join("rustc"), r),
+        (Some(_), None, Some(r)) => rustc_info::version_verbose(&util::memo_dir("rustc"), r),
         (Some(_), None, None) => Err("the compiler's path is not UTF-8".into()),
         _ => Err("off".into()),
     };

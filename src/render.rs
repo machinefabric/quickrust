@@ -307,7 +307,7 @@ pub fn storage(r: &Value, out: &mut String, p: Presentation) {
 
 pub fn gc_plan(inv: &Value, out: &mut String) {
     let p = &inv["gc_plan"];
-    let _ = writeln!(out, "GC plan (dry run) for {}", vstr(inv, "root"));
+    let _ = writeln!(out, "Stale in {}", vstr(inv, "root"));
     let _ = writeln!(out, "  scope: rebuildable output unused for more than {} days", num(&p["stale_days"]));
     let _ = writeln!(out, "  estimated reclaimable: {} in {} group(s)", bytes(&p["candidate_bytes"]), num(&p["candidate_groups"]));
     if let Some(b) = p["blocked_by"].as_str() {
@@ -319,7 +319,7 @@ pub fn gc_plan(inv: &Value, out: &mut String) {
         let _ = writeln!(out, "  size budget {}: currently {}, {} after the plan — {}", bytes(&b["target_bytes"]), bytes(&b["current_bytes"]), bytes(&b["after_plan_bytes"]), if b["met_by_plan"] == true { "met" } else { "NOT met by stale output alone" });
     }
     candidates(inv, 25, out);
-    let _ = writeln!(out, "  Nothing was deleted. This release plans only; `cargo clean` is unchanged.");
+    let _ = writeln!(out, "  Nothing was deleted: Haul's cache removes whole build directories when it needs the space (`haul gc`), and `cargo clean` is unchanged.");
 }
 
 fn candidates(inv: &Value, rows: usize, out: &mut String) {

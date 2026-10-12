@@ -106,14 +106,20 @@ with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$HAUL_HOME`
 
 ## Deleting
 
-This release deletes nothing in build directories. `haul gc` requires
-`--dry-run` and produces a plan. The scan never follows symbolic links, counts a
-link as an entry of its own, and classifies anything it does not recognise as
-`uncertain`, which is never a candidate. While any Cargo holds the build lock or
-any other Haul session is alive, the plan reports zero bytes as reclaimable now.
+Haul deletes only inside its own cache (`~/.haul/cache`), whose content it created and can
+rebuild or download again: workspaces' build directories, artifact cache entries, compiler
+drivers, unfinished downloads, remembered answers. It never deletes in a project, in a target
+directory the user chose, in Haul's Cargo home or among toolchains (`haul toolchain remove`,
+and channels' superseded releases after a day unused, aside). A collection never removes
+anything used in the last 15 minutes, a build directory a Haul command holds (its lock) or one
+a Cargo holds a lock in; it renames what it removes into `cache/tmp` before deleting it, so
+nothing is ever seen half deleted, and logs every removal (`cache/gc-log.jsonl`). The scans
+never follow symbolic links. `haul gc --dry-run` says what a collection would remove.
 
-The only directories Haul removes are benchmark build directories it created
-itself, identified by a marker file; a directory without the marker is refused.
+`haul inventory` plans within a build directory and deletes nothing: it classifies anything it
+does not recognise as `uncertain`, which is never a candidate, and while any Cargo holds the
+build lock or any other Haul session is alive, the plan reports zero bytes as reclaimable now.
+Benchmark build directories Haul created itself are removed only with their marker file.
 
 ## Changes to a repository
 

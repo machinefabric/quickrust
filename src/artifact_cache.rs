@@ -823,7 +823,8 @@ fn has_execute_permission(md: &fs::Metadata) -> bool {
 
 /// Removes an entry. It is renamed away first, so a build looking it up concurrently finds it
 /// whole or not at all. Returns whether it was removed.
-fn discard(root: &Path, dir: &Path) -> bool {
+/// Removes an entry, renamed away first: a build that finds it gone compiles.
+pub fn discard(root: &Path, dir: &Path) -> bool {
     let doomed = root.join("tmp").join(format!("discard-{}-{}", std::process::id(), dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     if fs::create_dir_all(root.join("tmp")).and_then(|_| fs::rename(dir, &doomed)).is_ok() {
         let _ = fs::remove_dir_all(&doomed);
@@ -832,47 +833,10 @@ fn discard(root: &Path, dir: &Path) -> bool {
     false
 }
 
-/// Keeps the cache below `max_bytes` by removing the least recently used entries.
-/// Returns (bytes before, bytes removed). Safe while builds run: an entry is renamed away
-/// before it is deleted, and a build that finds it gone simply compiles.
-pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
-    let mut entries: Vec<(u64, u64, PathBuf)> = Vec::new();
-    for e in fs::read_dir(root.join("e")).into_iter().flatten().flatten() {
-        let dir = e.path();
-        let used = fs::metadata(dir.join("entry.json")).map(|m| util::mtime_ns(&m)).unwrap_or(0);
-        let bytes: u64 = fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|f| f.metadata().ok()).map(|m| m.len()).sum();
-        entries.push((used, bytes, dir));
-    }
-    let total: u64 = entries.iter().map(|e| e.1).sum();
-    let mut over = total.saturating_sub(max_bytes);
-    let mut removed = 0;
-    entries.sort();
-    for (_, bytes, dir) in entries {
-        if over == 0 {
-            break;
-        }
-        if discard(root, &dir) {
-            removed += bytes;
-            over = over.saturating_sub(bytes);
-        }
-    }
-    // Remembered hashes and quick-unit markers are a few bytes each; those not refreshed for two
-    // weeks name files or units long gone, and a live one is simply learned again.
-    let cutoff = util::now_wall_ns().saturating_sub(14 * 86_400 * 1_000_000_000);
-    for e in ["h", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
-        if e.metadata().map(|m| util::mtime_ns(&m) < cutoff).unwrap_or(false) {
-            let _ = fs::remove_file(e.path());
-        }
-    }
-    // A link-input record cannot be learned again without compiling its rlib anew: it stays as
-    // long as that rlib does, unchanged.
-    for e in fs::read_dir(root.join("l")).into_iter().flatten().flatten() {
-        let live = util::read_json(&e.path()).and_then(|r| r["rlib"].as_str().map(PathBuf::from)).and_then(|rlib| fs::metadata(&rlib).ok().map(|md| link_memo_path(root, &md, &rlib))).is_some_and(|expected| expected == e.path());
-        if !live {
-            let _ = fs::remove_file(e.path());
-        }
-    }
-    (total, removed)
+/// Whether the link-input record at `record` still describes its library as it is: one that does
+/// not cannot be learned again without compiling the library anew, and goes (`space`).
+pub fn link_record_live(root: &Path, record: &Path) -> bool {
+    util::read_json(record).and_then(|r| r["rlib"].as_str().map(PathBuf::from)).and_then(|rlib| fs::metadata(&rlib).ok().map(|md| link_memo_path(root, &md, &rlib))).is_some_and(|expected| expected == record)
 }
 
 #[cfg(test)]
@@ -1033,24 +997,6 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(5));
         fs::write(&f, b"second, longer").unwrap();
         assert_eq!(content_hash(&root, &f).unwrap(), blake3::hash(b"second, longer").to_hex().as_str());
-        fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn eviction_removes_least_recently_used_entries_first() {
-        let root = std::env::temp_dir().join(format!("haul-evict-{}", util::new_id()));
-        for (name, age_s) in [("old", 300), ("mid", 200), ("new", 100)] {
-            let d = root.join("e").join(name);
-            fs::create_dir_all(&d).unwrap();
-            fs::write(d.join("lib.rlib"), vec![0u8; 1000]).unwrap();
-            fs::write(d.join("entry.json"), "{}").unwrap();
-            let t = std::time::SystemTime::now() - std::time::Duration::from_secs(age_s);
-            fs::File::options().write(true).open(d.join("entry.json")).unwrap().set_modified(t).unwrap();
-        }
-        let (total, removed) = evict(&root, 2100);
-        assert!(total >= 3000 && removed >= 1000);
-        assert!(!root.join("e/old").exists() && root.join("e/mid").exists() && root.join("e/new").exists());
-        assert_eq!(evict(&root, u64::MAX).1, 0);
         fs::remove_dir_all(&root).ok();
     }
 

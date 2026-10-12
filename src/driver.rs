@@ -4,7 +4,7 @@
 //!
 //! The compiler's internal API differs between releases, so the driver is built for each
 //! toolchain, against that toolchain's `rustc-dev` component, and only used once it reports
-//! exactly the compiler's own `rustc -vV`. It lives in `~/.haul/drivers/<key>/`, the key naming
+//! exactly the compiler's own `rustc -vV`. It lives in `~/.haul/cache/drivers/<key>/`, the key naming
 //! the compiler (commit, host) and the driver's source. A toolchain the driver cannot be built
 //! for keeps the stock compiler; the reason is recorded next to where the driver would be.
 
@@ -30,6 +30,8 @@ const BINARY: &str = "haul-rustc-driver";
 const INTERFACE_BREAKS: &[u32] = &[99];
 /// How a failure to get the toolchain's `rustc-dev` component begins.
 pub const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
+/// In a driver's directory: the toolchain it was built for (`{"sysroot": …}`).
+pub const COMPILER: &str = "compiler.json";
 /// Next to where the driver would be: why it could not be built.
 const BUILD_FAILED: &str = "build-failed";
 /// Next to where the driver would be, while a background build runs.
@@ -47,7 +49,7 @@ pub struct Compiler {
 impl Compiler {
     /// The compiler at `rustc` (a path, or a name on `PATH`), asked once per binary.
     pub fn of(rustc: &str) -> Result<Compiler, String> {
-        let memo = util::haul_home().join("rustc");
+        let memo = util::memo_dir("rustc");
         Ok(Compiler { version_verbose: crate::rustc_info::version_verbose(&memo, rustc)?, sysroot: crate::rustc_info::sysroot(&memo, rustc)? })
     }
 }
@@ -58,7 +60,7 @@ pub fn dir(compiler: &Compiler) -> Result<PathBuf, String> {
     let field = |k: &str| vv.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).ok_or_else(|| format!("`rustc -vV` has no `{}` line", k.trim_end_matches(": ")));
     let (commit, host) = (field("commit-hash: ")?, field("host: ")?);
     let source = util::digest_parts(std::iter::once(MANIFEST.to_string()).chain(SOURCES.iter().flat_map(|(name, text)| [name.to_string(), text.to_string()])).chain(std::iter::once(util::path_str(&util::canon(&compiler.sysroot)))));
-    Ok(util::haul_home().join("drivers").join(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, &source[..16])))
+    Ok(util::cache_dir().join("drivers").join(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, &source[..16])))
 }
 
 /// The driver for this compiler, when it has been built.
@@ -146,6 +148,8 @@ pub fn build(rustc: &Path) -> Result<PathBuf, String> {
     let compiler = Compiler::of(&util::path_str(rustc))?;
     let target = dir(&compiler)?;
     let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
+    // Which toolchain it is for: once that is gone, Haul's cache removes the driver.
+    let _ = util::write_json_fast(&target.join(COMPILER), &serde_json::json!({ "sysroot": util::path_str(&compiler.sysroot) }));
     let result = match find(&compiler) {
         Some(exe) => Ok(exe),
         None => build_locked(rustc, &compiler.version_verbose, &target),
@@ -185,7 +189,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         }
     }
     // A scratch crate: the driver's sources, built with the toolchain's own Cargo.
-    let work = util::haul_home().join("drivers").join(format!("build-{}", std::process::id()));
+    let work = util::cache_dir().join("drivers").join(format!("build-{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(work.join("src")).map_err(|e| e.to_string())?;
     fs::write(work.join("Cargo.toml"), MANIFEST).map_err(|e| e.to_string())?;

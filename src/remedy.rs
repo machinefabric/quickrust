@@ -197,7 +197,7 @@ pub fn preview(report: &Value, root: &Path, only: Option<&str>, option: Option<&
             "build_script_broad_invalidation" => guidance(rec, "declare the script's inputs with `println!(\"cargo::rerun-if-changed=<path>\")` / `cargo::rerun-if-env-changed=<VAR>` for every file, directory and variable it reads. Haul does not generate these lines: it cannot prove what the script reads"),
             "duplicate_dependency_versions" => guidance(rec, "unify with `cargo update -p <name>` or by aligning the version requirements shown in the evidence; review the resulting Cargo.lock diff"),
             "feature_variant_duplication" => guidance(rec, "make the dependents listed in the evidence request the same feature set, for example via `[workspace.dependencies]`"),
-            "stale_artifacts" => guidance(rec, "inspect the plan with `haul gc --dry-run`; this release does not delete build output"),
+            "stale_artifacts" => guidance(rec, "inspect the plan with `haul inventory`; Haul's cache removes whole build directories when it needs the space (`haul gc`)"),
             _ => guidance(rec, "no file change is associated with this recommendation; follow its verification procedure"),
         };
         out.push(rem);
