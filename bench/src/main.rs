@@ -9,6 +9,7 @@
 
 mod measure;
 mod sealed;
+mod verify;
 mod workload;
 
 use measure::Sample;
@@ -317,7 +318,8 @@ fn parse_opts(args: &[String]) -> Opts {
 const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b]
        haul-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
                       [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
-                      [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]";
+                      [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]
+       haul-bench verify [--workload a,b] [--define …] [--record] [--work-dir DIR] [--haul PATH]";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -342,21 +344,62 @@ fn main() {
             }
         }
         "run" => run(&opts, &repo, work, sealed, &chosen),
+        "verify" => verify_command(&opts, &repo, work, sealed, &chosen),
         _ => fail(USAGE),
     }
 }
 
-fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
+/// The binaries under test and fetched workloads, or a hard error saying what is missing.
+fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> Ctx {
     let haul = opts.haul.clone().unwrap_or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("haul"))).unwrap_or_default());
     if !haul.is_file() || !haul.with_file_name("haul-rustc-wrapper").is_file() {
         fail(&format!("{} (and haul-rustc-wrapper next to it) not found: build with `cargo build --release --workspace`, or pass --haul", haul.display()));
     }
     for w in workloads {
-        if !workload::is_fetched(&work, w) {
+        if !workload::is_fetched(work, w) {
             fail(&format!("workload {} is not fetched; run `haul-bench fetch` first", w.name));
         }
     }
-    let ctx = Ctx { work: work.clone(), sealed, haul };
+    Ctx { work: work.to_path_buf(), sealed, haul }
+}
+
+/// Git revision and dirtiness of the Haul checkout; a record without them is worthless.
+fn provenance(repo: &Path) -> (String, bool) {
+    let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the Haul revision in {} (git rev-parse failed)", repo.display())));
+    let status = capture(repo, "git", &["status", "--porcelain"]).unwrap_or_else(|| fail(&format!("cannot read the state of {} (git status failed)", repo.display())));
+    (rev, !status.is_empty())
+}
+
+/// `haul-bench verify`: the correctness gate (see verify.rs).
+fn verify_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
+    let (haul_rev, haul_dirty) = provenance(repo);
+    let ctx = context(opts, &work, sealed, workloads);
+    let mut variants: Vec<Variant> = builtin_variants(false).into_iter().filter(|v| v.name == "cargo" || v.name == "haul").collect();
+    variants.extend(opts.defines.iter().cloned());
+    let (report, agree) = verify::verify(&ctx, &variants, workloads);
+    let entry = json!({
+        "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(),
+        "variants": variants.iter().map(|v| json!({ "name": v.name, "env": v.env.iter().map(|(k, val)| format!("{}={}", k, val)).collect::<Vec<_>>(), "config": v.config })).collect::<Vec<_>>(),
+        "agree": agree, "workloads": report,
+    });
+    println!("
+{}", if agree { "VERIFIED: every variant agrees with upstream Cargo." } else { "NOT VERIFIED: some test outcomes differ from upstream Cargo." });
+    if opts.record {
+        let path = repo.join("benchmarks/verify.jsonl");
+        let mut text = fs::read_to_string(&path).unwrap_or_default();
+        text.push_str(&entry.to_string());
+        text.push('\n');
+        fs::write(&path, text).unwrap_or_else(|e| fail(&format!("cannot write {}: {}", path.display(), e)));
+        println!("recorded in {}", path.display());
+    }
+    if !agree {
+        std::process::exit(1);
+    }
+}
+
+fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
+    let ctx = context(opts, &work, sealed, workloads);
     // Haul's effective configuration is part of what is measured.
     let probe = work.join("probe");
     let _ = fs::create_dir_all(&probe);
@@ -409,13 +452,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
 
     // Provenance is taken before measuring: the binaries were built from this state, and later
     // edits to the checkout must not be attributed to them.
-    // A record without provenance is worthless: no git, no measurement.
-    let state = || {
-        let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the Haul revision in {} (git rev-parse failed)", repo.display())));
-        let status = capture(repo, "git", &["status", "--porcelain"]).unwrap_or_else(|| fail(&format!("cannot read the state of {} (git status failed)", repo.display())));
-        (rev, !status.is_empty())
-    };
-    let (haul_rev, haul_dirty) = state();
+    let (haul_rev, haul_dirty) = provenance(repo);
     let started = Instant::now();
     let mut edit_n = 0u64;
     let mut problems: Vec<String> = Vec::new();
@@ -560,7 +597,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     }
     println!("  elapsed {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 
-    if state() != (haul_rev.clone(), haul_dirty) {
+    if provenance(repo) != (haul_rev.clone(), haul_dirty) {
         eprintln!("haul-bench: note: the Haul checkout changed during the run; the record describes it as it was at the start");
     }
     let entry = json!({
