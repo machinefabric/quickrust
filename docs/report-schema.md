@@ -80,7 +80,9 @@ but not build units, and are told apart by the absence of Cargo's
 `target` \| `unknown`), `primary`, `features`, `freshness` (`compiled` \|
 `restored` \| `failed` \| `fresh` \| `ran`), `start_wall_ns`, `duration_ns`,
 `rmeta_ready_ns`, `cpu_ns`, `max_rss_bytes`, `output_bytes`, `incremental`,
-`links`, `codegen` (the `-C` options rustc received), `linker`, `cacheability`,
+`links`, `codegen` (the `-C` options rustc received), `linker`, `cacheability` (sccache's
+classes), `artifact_cache` (what Haul's artifact cache did: `hit`, `stored`, `miss`, `off`; null
+for fresh units),
 `on_critical_path`, `fingerprint` (component digests: `compiler`, `target`,
 `profile`, `features`, `rustflags`, `environment`, `source`, `generated`,
 `dependencies`), `exact_id`, `portable_id`, `logical_key`.

@@ -53,6 +53,8 @@ After any build that went through Haul:
 haul analyze                    # everything about the latest build run
 haul analyze rebuilds           # one section: timing rebuilds duplication scripts proc-macros codegen cache storage recommendations
 haul analyze worktrees          # identical units built in other worktrees / workspaces
+haul analyze timing --filter source=registry --sort duration_ns --limit 10
+                                # a section's records, narrowed (FIELD=VALUE, all must match), ordered, cut
 haul report --format html -o report.html
 haul runs                       # recorded runs; refer to them as latest, latest~1, or by id prefix
 haul compare latest~1 latest

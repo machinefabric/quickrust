@@ -25,6 +25,7 @@ pub mod store;
 pub mod toolchain_cache;
 pub mod ui;
 pub mod util;
+pub mod view;
 pub mod waste;
 pub mod wrapper;
 
