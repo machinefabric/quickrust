@@ -239,6 +239,12 @@ impl Phase {
         let _ = writeln!(std::io::stderr(), "{} {}{}{}", mark, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
     }
 
+    /// The result line of something done at once: `✓ text`, no time.
+    pub fn done(mut self, text: &str) {
+        self.clear();
+        let _ = writeln!(std::io::stderr(), "{} {}", self.paint("1;32", "✓"), text);
+    }
+
     /// Takes the status line off the screen (output of something else follows).
     pub fn clear_line(&mut self) {
         self.clear();
@@ -313,8 +319,9 @@ pub fn bar(done: u64, total: u64) -> String {
 pub struct ToolchainProgress {
     phase: Option<Phase>,
     what: String,
-    /// The component being added to an installed toolchain, if that is what it shows.
-    adding: Option<String>,
+    /// What is being added to an installed release (`rust-analyzer`, `target wasm32-…`) and
+    /// that release, when the installer says so: then that is what it shows.
+    adding: Option<(String, String)>,
 }
 
 impl ToolchainProgress {
@@ -323,10 +330,6 @@ impl ToolchainProgress {
         ToolchainProgress { phase: None, what: what.to_string(), adding: None }
     }
 
-    /// Adding `component` to the installed toolchain `what`.
-    pub fn adding(what: &str, component: &str) -> ToolchainProgress {
-        ToolchainProgress { phase: None, what: what.to_string(), adding: Some(component.to_string()) }
-    }
 
     fn phase(&mut self) -> &mut Phase {
         self.phase.get_or_insert_with(Phase::start)
@@ -342,7 +345,7 @@ impl ToolchainProgress {
         if let Some(p) = self.phase {
             let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
             match &self.adding {
-                Some(c) => p.finish(true, &format!("{} added to Rust {}", c, release)),
+                Some((what, _)) => p.finish(true, &format!("{} added to Rust {}", what, release)),
                 None => p.finish(true, &format!("Rust {} ready ({})", release, tc.id)),
             }
         }
@@ -358,7 +361,7 @@ impl ToolchainProgress {
     pub fn fail(self, why: &str) {
         if let Some(p) = self.phase {
             match &self.adding {
-                Some(c) => p.finish(false, &format!("{} could not be added to Rust {}: {}", c, self.what, why)),
+                Some((what, release)) => p.finish(false, &format!("{} could not be added to Rust {}: {}", what, release, why)),
                 None => p.finish(false, &format!("Rust {} could not be installed: {}", self.what, why)),
             }
         }
@@ -373,11 +376,15 @@ impl crate::toolchain::install::Report for ToolchainProgress {
 
     fn progress(&mut self, done: usize, total: usize, bytes: u64, current: &str) {
         let doing = match &self.adding {
-            Some(c) => format!("Adding {} to Rust {}", c, self.what),
+            Some((what, release)) => format!("Adding {} to Rust {}", what, release),
             None => format!("Installing Rust {}", self.what),
         };
         let text = format!("{} {}  {}/{} · {}{}", doing, bar(done as u64, total as u64), done, total, util::human_bytes(bytes), if current.is_empty() { String::new() } else { format!(" · {}", current) });
         self.phase().status(&text, done == total);
+    }
+
+    fn adding(&mut self, release: &str, what: &[String]) {
+        self.adding = Some((what.join(", "), release.to_string()));
     }
 }
 

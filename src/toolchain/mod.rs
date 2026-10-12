@@ -309,12 +309,14 @@ fn complete(layout: &Layout, id: &str, host: &str, components: &[String], target
     let manifest_path = dir.join("lib/rustlib/channel-manifest.toml");
     let manifest = dist::Manifest::parse(std::fs::read(&manifest_path).map_err(|e| format!("cannot read {}: {}", manifest_path.display(), e))?).map_err(|e| format!("{}: {}", manifest_path.display(), e))?;
     let mut add: Vec<dist::Component> = vec![];
-    for (c, t) in lacking {
+    for &(c, t) in &lacking {
         let c = manifest.component(&manifest.package(c), t).map_err(|e| format!("Rust {}: {}", record.version, e))?;
         if !add.contains(&c) {
             add.push(c);
         }
     }
+    let what: Vec<String> = lacking.iter().map(|(c, t)| if *c == "rust-std" { format!("target {}", t) } else { c.to_string() }).collect();
+    report.adding(&record.version, &what);
     install::add(layout, &locked, &dir, &add, server, client, report)?;
     Ok(tc)
 }
@@ -520,8 +522,11 @@ pub mod testdist {
         pub srv: Server,
     }
 
+    #[derive(Default)]
     pub struct NoReport {
         pub waited: usize,
+        /// What the installer said it adds, to which release.
+        pub added: Vec<(String, Vec<String>)>,
     }
 
     impl install::Report for NoReport {
@@ -529,6 +534,9 @@ pub mod testdist {
             self.waited += 1;
         }
         fn progress(&mut self, _done: usize, _total: usize, _bytes: u64, _current: &str) {}
+        fn adding(&mut self, release: &str, what: &[String]) {
+            self.added.push((release.to_string(), what.to_vec()));
+        }
     }
 
     /// The files a fake component installs.
@@ -613,7 +621,7 @@ mod tests {
     fn a_channel_is_installed_once_and_then_used_without_the_network() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
-        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         assert_eq!(tc.id, format!("1.99.0-{}", h));
         assert!(!tc.linked);
         assert_eq!(std::process::Command::new(tc.rustc()).output().unwrap().stdout, b"rustc-fake\n");
@@ -627,8 +635,8 @@ mod tests {
         assert_eq!(state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].toolchain, tc.id);
         assert!(std::fs::read_dir(l.downloads()).unwrap().next().is_none(), "archives are dropped once installed");
         let before = d.served();
-        assert_eq!(ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap(), tc);
-        assert_eq!(ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap(), tc);
+        assert_eq!(ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap(), tc);
+        assert_eq!(ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap(), tc);
         assert_eq!(d.served(), before, "an installed toolchain needs no download");
         assert_eq!(owning(&l, &tc.rustc()), Some(tc.clone()));
         assert_eq!(installed(&l), vec![tc]);
@@ -638,19 +646,21 @@ mod tests {
     fn targets_and_components_come_from_the_installed_release() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
-        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         // Stable moves on; the toolchain installed as stable still gets its own release's parts.
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
         let needs = Needs { components: vec!["rustc-dev".into()], targets: vec!["wasm32-unknown-unknown".into()], ..Default::default() };
-        let again = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let mut report = NoReport::default();
+        let again = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut report).unwrap();
         assert_eq!(again, tc);
+        assert_eq!(report.added, vec![("1.99.0".to_string(), vec!["rustc-dev".to_string(), "target wasm32-unknown-unknown".to_string()])], "said as an addition to the release it has");
         assert!(tc.dir.join("lib/rustlib/wasm32-unknown-unknown/lib/libstd-fake.rlib").is_file());
         assert!(tc.dir.join(format!("lib/rustlib/{}/lib/librustc_driver-fake.rlib", h)).is_file());
         assert!(!tc.dir.join("lib/rustlib/.haul-adding").exists());
         let rec = tc.record().unwrap();
         assert!(rec.has("rustc-dev", &h) && rec.has("rust-std", "wasm32-unknown-unknown"));
         assert!(d.srv.requests("/dist/2026-11-12/rustc-dev-1.100.0-".to_string().as_str()).is_empty());
-        let e = ensure(&l, &sel("stable"), &Needs { components: vec!["miri".into()], ..Default::default() }, &d.srv.base, &mut NoReport { waited: 0 }).unwrap_err();
+        let e = ensure(&l, &sel("stable"), &Needs { components: vec!["miri".into()], ..Default::default() }, &d.srv.base, &mut NoReport::default()).unwrap_err();
         assert!(e.contains("no component `miri-preview`") || e.contains("no component `miri`"), "{}", e);
     }
 
@@ -660,43 +670,43 @@ mod tests {
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         publish_release(&d, "/dist/channel-rust-1.99.0.toml", "2026-10-01", "1.99.0", &h);
         let needs = Needs { targets: vec!["wasm32-unknown-unknown".into()], ..Default::default() };
-        let old = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
-        let pinned = ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let old = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport::default()).unwrap();
+        let pinned = ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         assert_eq!(old, pinned);
         // What the channel moves to is prepared (Haul's compiler driver) installed, before the
         // channel names it.
         let mut prepared = vec![];
         let mut prepare = |tc: &Toolchain| prepared.push((tc.id.clone(), tc.record().is_some(), state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].toolchain.clone()));
-        assert!(update(&l, &d.srv.base, None, &mut prepare, &mut NoReport { waited: 0 }).unwrap().is_empty(), "nothing newer yet");
+        assert!(update(&l, &d.srv.base, None, &mut prepare, &mut NoReport::default()).unwrap().is_empty(), "nothing newer yet");
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
-        let moved = update(&l, &d.srv.base, None, &mut prepare, &mut NoReport { waited: 0 }).unwrap();
+        let moved = update(&l, &d.srv.base, None, &mut prepare, &mut NoReport::default()).unwrap();
         assert_eq!(moved, vec![Moved { channel: format!("stable-{}", h), from: old.id.clone(), to: format!("1.100.0-{}", h) }]);
         assert_eq!(prepared, vec![(format!("1.100.0-{}", h), true, old.id.clone())]);
-        let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         assert_eq!(new.id, format!("1.100.0-{}", h));
         assert!(new.record().unwrap().has("rust-std", "wasm32-unknown-unknown"), "the new release gets the old one's targets");
-        assert_eq!(ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap(), old, "a release is not moved");
-        remove(&l, &old.id, &mut NoReport { waited: 0 }).unwrap();
+        assert_eq!(ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap(), old, "a release is not moved");
+        remove(&l, &old.id, &mut NoReport::default()).unwrap();
         assert!(!old.dir.exists());
         assert_eq!(installed(&l), vec![new.clone()]);
-        assert!(remove(&l, "../x", &mut NoReport { waited: 0 }).is_err());
-        assert!(remove(&l, &old.id, &mut NoReport { waited: 0 }).unwrap_err().contains("no toolchain"));
+        assert!(remove(&l, "../x", &mut NoReport::default()).is_err());
+        assert!(remove(&l, &old.id, &mut NoReport::default()).unwrap_err().contains("no toolchain"));
     }
 
     #[test]
     fn an_unchanged_channel_is_confirmed_by_its_checksum_alone() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
-        ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         let before = state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns;
         let manifests = || d.srv.requests("/dist/channel-rust-stable.toml").len();
         let fetched = manifests();
-        assert!(update(&l, &d.srv.base, Some(&format!("stable-{}", h)), &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert!(update(&l, &d.srv.base, Some(&format!("stable-{}", h)), &mut |_: &Toolchain| {}, &mut NoReport::default()).unwrap().is_empty());
         assert_eq!(manifests(), fetched, "the manifest is not downloaded again");
         assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
         assert!(state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns > before);
         // Another channel is not touched by an update of this one.
-        assert!(update(&l, &d.srv.base, Some("nightly-x"), &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert!(update(&l, &d.srv.base, Some("nightly-x"), &mut |_: &Toolchain| {}, &mut NoReport::default()).unwrap().is_empty());
         assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
     }
 
@@ -705,22 +715,22 @@ mod tests {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         publish_release(&d, "/dist/channel-rust-1.98.0.toml", "2026-08-01", "1.98.0", &h);
-        let old = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
-        let pinned = ensure(&l, &sel("1.98.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let old = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
+        let pinned = ensure(&l, &sel("1.98.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         mark_used(&old);
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
-        update(&l, &d.srv.base, None, &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap();
-        assert!(retire(&l, &mut NoReport { waited: 0 }).unwrap().is_empty(), "used within the day");
+        update(&l, &d.srv.base, None, &mut |_: &Toolchain| {}, &mut NoReport::default()).unwrap();
+        assert!(retire(&l, &mut NoReport::default()).unwrap().is_empty(), "used within the day");
         let day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600);
         for tc in [&old, &pinned] {
             std::fs::File::create(tc.dir.join(USED)).unwrap().set_modified(day_ago).unwrap();
         }
-        assert_eq!(retire(&l, &mut NoReport { waited: 0 }).unwrap(), vec![old.id.clone()]);
+        assert_eq!(retire(&l, &mut NoReport::default()).unwrap(), vec![old.id.clone()]);
         assert!(!old.dir.exists());
         assert!(pinned.dir.exists(), "a release asked for by its name is never retired");
-        let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         std::fs::File::create(new.dir.join(USED)).unwrap().set_modified(day_ago).unwrap();
-        assert!(retire(&l, &mut NoReport { waited: 0 }).unwrap().is_empty(), "the release a channel names stays, used or not");
+        assert!(retire(&l, &mut NoReport::default()).unwrap().is_empty(), "the release a channel names stays, used or not");
     }
 
     #[test]
@@ -744,7 +754,7 @@ mod tests {
         // Replace one archive after publishing: its hash no longer matches the manifest.
         let (root, _) = component_archive("cargo", &h, "1.99.0");
         d.srv.route(&format!("/dist/2026-10-01/{}.tar.xz", root), crate::net::testserver::Route { body: b"not an archive".to_vec(), ..Default::default() });
-        let e = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap_err();
+        let e = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap_err();
         assert!(e.contains("is not the published file"), "{}", e);
         assert!(installed(&l).is_empty());
         let staging: Vec<_> = std::fs::read_dir(l.toolchains().join(".staging")).unwrap().flatten().collect();
@@ -757,7 +767,7 @@ mod tests {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-1.99.0.toml", "2026-10-01", "1.99.0", &h);
         let ids: Vec<String> = std::thread::scope(|s| {
-            let hs: Vec<_> = (0..4).map(|_| s.spawn(|| ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap().id)).collect();
+            let hs: Vec<_> = (0..4).map(|_| s.spawn(|| ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap().id)).collect();
             hs.into_iter().map(|h| h.join().unwrap()).collect()
         });
         assert!(ids.iter().all(|i| *i == ids[0]));
@@ -774,14 +784,14 @@ mod tests {
         d.publish("/dist/channel-rust-nightly.toml", "2026-10-12", "1.101.0-nightly", &pkgs);
         d.publish("/dist/2026-10-12/channel-rust-nightly.toml", "2026-10-12", "1.101.0-nightly", &pkgs);
         publish_release(&d, "/dist/2026-10-11/channel-rust-nightly.toml", "2026-10-11", "1.101.0-nightly", &h);
-        let tc = ensure(&l, &sel("nightly"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let tc = ensure(&l, &sel("nightly"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         assert_eq!(tc.id, format!("nightly-2026-10-11-{}", h));
         assert!(tc.bin("rustfmt").is_file());
         // A minimal profile does not need rustfmt: today's nightly does.
         let minimal = Selection { file: Some(file::ToolchainFile { path: "/x/rust-toolchain.toml".into(), spec: Spec::parse("nightly").unwrap(), components: vec![], targets: vec![], profile: Some(Profile::Minimal) }), ..sel("nightly") };
         let l2 = layout();
-        assert_eq!(ensure(&l2, &minimal, &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap().id, format!("nightly-2026-10-12-{}", h));
-        let e = ensure(&layout(), &sel("nightly-2026-10-13"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap_err();
+        assert_eq!(ensure(&l2, &minimal, &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap().id, format!("nightly-2026-10-12-{}", h));
+        let e = ensure(&layout(), &sel("nightly-2026-10-13"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap_err();
         assert!(e.contains("no Rust nightly release of 2026-10-13"), "{}", e);
     }
 
@@ -789,17 +799,17 @@ mod tests {
     fn an_interrupted_add_is_undone_and_a_conflicting_one_changes_nothing() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
-        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         // As if an add of rustc-dev stopped after moving one file in.
         let half = tc.dir.join(format!("lib/rustlib/{}/lib/librustc_driver-fake.rlib", h));
         std::fs::write(&half, "partial").unwrap();
         std::fs::write(tc.dir.join("lib/rustlib/.haul-adding"), format!("rustc-dev\t{}\trustc-dev\tlib/rustlib/{}/lib/librustc_driver-fake.rlib\n", h, h)).unwrap();
-        drop(install::lock(&l, &tc.id, &mut NoReport { waited: 0 }).unwrap());
+        drop(install::lock(&l, &tc.id, &mut NoReport::default()).unwrap());
         assert!(!half.exists() && !tc.dir.join("lib/rustlib/.haul-adding").exists());
         assert!(tc.rustc().is_file(), "what the record holds stays");
         // A file in the way of a component: the add fails before moving anything.
         std::fs::write(&half, "in the way").unwrap();
-        let e = ensure(&l, &sel("stable"), &Needs { components: vec!["rustc-dev".into()], ..Default::default() }, &d.srv.base, &mut NoReport { waited: 0 }).unwrap_err();
+        let e = ensure(&l, &sel("stable"), &Needs { components: vec!["rustc-dev".into()], ..Default::default() }, &d.srv.base, &mut NoReport::default()).unwrap_err();
         assert!(e.contains("would replace"), "{}", e);
         assert_eq!(std::fs::read_to_string(&half).unwrap(), "in the way");
         assert!(!tc.record().unwrap().has("rustc-dev", &h));
@@ -816,11 +826,11 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        let tc = ensure(&l, &sel("mine"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport { waited: 0 }).unwrap();
+        let tc = ensure(&l, &sel("mine"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport::default()).unwrap();
         assert!(tc.linked && tc.dir == dir);
-        let e = ensure(&l, &sel("mine"), &Needs { targets: vec!["wasm32-unknown-unknown".into()], ..Default::default() }, "http://127.0.0.1:9", &mut NoReport { waited: 0 }).unwrap_err();
+        let e = ensure(&l, &sel("mine"), &Needs { targets: vec!["wasm32-unknown-unknown".into()], ..Default::default() }, "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err();
         assert!(e.contains("does not change a linked toolchain"), "{}", e);
-        assert!(ensure(&l, &sel("other"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport { waited: 0 }).unwrap_err().contains("haul toolchain link other"));
+        assert!(ensure(&l, &sel("other"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err().contains("haul toolchain link other"));
     }
 
     #[test]

@@ -87,6 +87,9 @@ pub trait Report {
     fn waiting(&mut self, id: &str);
     /// Archives done of the total, bytes received so far, and the archive last advanced.
     fn progress(&mut self, done: usize, total: usize, bytes: u64, current: &str);
+    /// What is being added to the installed `release` (components; `target <triple>` for a
+    /// target's standard library), rather than a toolchain installed.
+    fn adding(&mut self, release: &str, what: &[String]);
 }
 
 /// Holds a toolchain's install lock, after undoing an interrupted component add.

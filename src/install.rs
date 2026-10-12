@@ -644,7 +644,7 @@ fn uninstall(args: &[String], cwd: &Path) -> Result<i32, String> {
         } else {
             pkgs_of_root[pkg]["bins"] = json!(left);
         }
-        crate::ui::Phase::start().finish(true, &format!("Removed {} ({})", pkg, gone.join(", ")));
+        crate::ui::Phase::start().done(&format!("Removed {} ({})", pkg, gone.join(", ")));
     }
     save_record(&record)?;
     Ok(0)
