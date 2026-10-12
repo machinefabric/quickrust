@@ -1,23 +1,3 @@
-[package]
-name = "haul"
-version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
-description = "Drop-in Cargo replacement: an orchestration, observability and policy layer around upstream Cargo"
-license = "MIT OR Apache-2.0"
-default-run = "haul"
-
-# The benchmark harness is a separate member so its code never ships in Haul.
-[workspace]
-members = [".", "bench"]
-
-[lib]
-name = "haul"
-path = "src/lib.rs"
-
-# `haul` is a multi-call binary: invoked under the name `cargo` it is the
-# compatibility shim. No bin target is named `cargo` on purpose, so that
-# `cargo install` can never overwrite rustup's proxy; use `haul install-shim`.
 [[bin]]
 name = "haul"
 path = "src/bin/haul.rs"
@@ -27,18 +7,38 @@ name = "haul-rustc-wrapper"
 path = "src/bin/haul-rustc-wrapper.rs"
 
 [dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
-toml = "0.8"
-sha2 = "0.10"
-# Content hashes of the artifact cache. 1.8.3 and later need Rust 1.85 (edition 2024);
-# Haul declares 1.80.
 blake3 = "=1.8.2"
+sha2 = "0.10"
+toml = "0.8"
 
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
+[dependencies.serde]
+features = ["derive"]
+version = "1"
+
+[dependencies.serde_json]
+features = ["preserve_order"]
+version = "1"
+
+[lib]
+name = "haul"
+path = "src/lib.rs"
+
+[package]
+default-run = "haul"
+description = "Drop-in Cargo replacement: an orchestration, observability and policy layer around upstream Cargo"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+name = "haul"
+rust-version = "1.80"
+version = "0.99.573"
 
 [profile.release]
-opt-level = 3
 debug = false
+opt-level = 3
 strip = true
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[workspace]
+members = [".", "bench"]
