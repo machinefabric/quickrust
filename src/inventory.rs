@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const CATEGORIES: &[&str] = &[
-    "final", "dependency", "metadata", "incremental", "debug", "build-script-binary", "build-script-output", "proc-macro", "fingerprint", "documentation", "package-output", "compiler-cache",
+    "final", "dependency", "metadata", "incremental", "debug", "relink", "build-script-binary", "build-script-output", "proc-macro", "fingerprint", "documentation", "package-output", "compiler-cache",
     "cargo-registry-cache", "cargo-git-cache", "container-cache", "unknown-generated",
 ];
 
@@ -89,7 +89,10 @@ fn unit_dir<'a>(rel: &[&'a str], build: usize) -> Option<(usize, &'a str)> {
 fn artifact(name: &str, ext: &str, known: &Knowledge) -> (&'static str, String) {
     let stem = artifact_stem(name);
     let cat = match ext {
-        "rmeta" => "metadata",
+        // A library's interface hash, written by Haul's compiler driver beside its metadata.
+        "rmeta" | "haul-svh" => "metadata",
+        // What Haul keeps of a binary's compilation to link it again (`.rlink`, its record).
+        "rlink" | "haul-relink" => "relink",
         "rlib" | "a" | "lib" => "dependency",
         "d" => "fingerprint",
         "o" | "dwo" | "dwp" | "pdb" => "debug",
@@ -113,6 +116,10 @@ pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) ->
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     if rel.iter().any(|c| c.ends_with(".dSYM")) {
         return ("debug", rel[..rel.len().min(3)].join("/"));
+    }
+    // A binary's objects, kept by Haul's compiler driver for relinking.
+    if let Some(unit) = rel.iter().find_map(|c| c.strip_suffix(".haul-objects")) {
+        return ("relink", format!("unit:{}", unit));
     }
     if let Some(i) = rel.iter().take(3).position(|c| LAYOUT_DIRS.contains(c)) {
         let prefix = rel[..=i].join("/");
@@ -543,6 +550,10 @@ mod tests {
         assert_eq!(cat("debug/deps/libfoo-0123.rlib"), "dependency");
         assert_eq!(cat("debug/deps/foo-0123.d"), "fingerprint");
         assert_eq!(cat("debug/deps/foo-0123.abc.rcgu.o"), "debug");
+        assert_eq!(cat("debug/deps/libfoo-0123.haul-svh"), "metadata");
+        assert_eq!(cat("debug/deps/app-0123.rlink"), "relink");
+        assert_eq!(cat("debug/deps/app-0123.haul-relink"), "relink");
+        assert_eq!(cat("debug/deps/app-0123.haul-objects/app-0123.abc.rcgu.o"), "relink");
         assert_eq!(cat("debug/deps/foo-0123"), "final");
         assert_eq!(cat("debug/incremental/foo-xyz/s-1/dep-graph.bin"), "incremental");
         assert_eq!(cat("debug/build/foo-0123/out/gen.rs"), "build-script-output");
