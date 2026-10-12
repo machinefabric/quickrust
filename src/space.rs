@@ -544,7 +544,7 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
             let (r, g) = download_bytes(d);
             by_kind.insert(Kind::Registry.name().to_string(), json!({ "count": 2, "bytes": r + g }));
         }
-        let usage = json!({ "format": 1, "scanned_ns": now, "total_bytes": total, "free_at_scan": fs.available, "fs_total": fs.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind });
+        let usage = json!({ "format": 1, "scanned_ns": now, "total_bytes": total, "free_at_scan": fs.available, "fs_total": fs.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true });
         let _ = util::write_json_fast(&cache.join(USAGE), &usage);
         if !out.removed.is_empty() {
             log(cache, &out, now);
@@ -614,10 +614,23 @@ pub fn after_command(cfg: &Config, haul: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-/// Before a command: when the disk is nearly full (a quarter of `cache.min-free`), collects for at
-/// most ten seconds. `None` when nothing needed doing.
+/// Before a command: a cache never counted and still empty gets its first count without a scan
+/// (nothing in it, the disk's free space now: what it grows by later is bounded by the free space
+/// lost). When the disk is nearly full (a quarter of `cache.min-free`), collects for at most ten
+/// seconds. `None` when nothing needed doing.
 pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
-    let cache = util::cache_dir();
+    before_command_in(cfg, &util::cache_dir(), &util::haul_home())
+}
+
+/// `before_command` for the cache at `cache` in Haul's home `home`.
+fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<Collected, String>> {
+    let cache = cache.to_path_buf();
+    let empty = ["builds", "artifacts", "drivers"].iter().all(|d| !cache.join(d).exists());
+    if empty && usage(&cache).is_none() {
+        if let Ok(fs) = fs_space(home) {
+            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": 1, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "counted": false })));
+        }
+    }
     if !cache.exists() {
         return None;
     }
@@ -756,6 +769,21 @@ mod tests {
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
         assert!(done.removed.is_empty() && done.skipped_in_use == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
+    }
+
+    #[test]
+    fn a_fresh_cache_is_counted_without_a_scan_and_then_checked_by_its_growth() {
+        let home = std::env::temp_dir().join(format!("haul-space-home-{}", util::new_id()));
+        fs::create_dir_all(&home).unwrap();
+        let cache = home.join("cache");
+        // The first command of a fresh Haul home: no collection, a count of nothing.
+        let first = before_command_in(&Config::defaults(), &cache, &home);
+        assert!(first.is_none() || first.as_ref().is_some_and(|r| r.is_ok()));
+        let u = usage(&cache).expect("counted");
+        assert_eq!((u["total_bytes"].as_u64(), u["counted"].as_bool()), (Some(0), Some(false)));
+        let p = Policy { max_bytes: u64::MAX / 4, min_free: 0 };
+        let fs = FsSpace { total: u64::MAX / 2, available: u["free_at_scan"].as_u64().unwrap() };
+        assert!(!due(&cache, &p, &fs, util::now_wall_ns()), "not due right after its first count");
     }
 
     #[test]

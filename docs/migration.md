@@ -64,9 +64,9 @@ haul self uninstall --yes  # removes ~/.haul (toolchains, installed programs, ca
 ```
 
 Files Haul may have written in a repository, only on request:
-`.haul/config.toml`, `.haul/budgets.toml`, `.haul/baselines/*.json`, report
-paths you configured, and `target/haul-bench/` (benchmark build directories,
-marked with `.haul-owned`; safe to delete).
+`.haul/config.toml`, `.haul/budgets.toml`, `.haul/baselines/*.json` and report
+paths you configured. `haul bench` keeps its build directories in the workspace's
+build directory (`$(haul path)/haul-bench/`), part of Haul's cache.
 
 ## Rollback
 

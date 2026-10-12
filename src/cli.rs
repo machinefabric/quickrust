@@ -1177,7 +1177,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         return Ok(0);
     }
     let hc = &v["haul_cache"];
-    match hc["usage"].as_object() {
+    match hc["usage"].as_object().filter(|u| u["counted"] != json!(false)) {
         Some(u) => {
             println!("Haul's cache: {} ({}), counted {}", u["total_bytes"].as_u64().map(human_bytes).unwrap_or_default(), haul_cache.display(), u["scanned_ns"].as_u64().map(util::iso8601).unwrap_or_default());
             for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {

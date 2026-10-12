@@ -24,7 +24,7 @@ behaviour is asserted.
 | Linker / codegen visibility (FR-080) | done | `haul analyze codegen` |
 | Incremental policy evaluator (FR-090) | done | `sccache_policy…` |
 | sccache integration and reporting (FR-100) | done | `src/cache.rs` · `sccache_policy…`, `qa026` |
-| Artifact inventory, reclaimability, GC dry-run (FR-110) | done | `src/inventory.rs` · `inventory_and_gc_plan…`, `gc_plan_is_blocked…` |
+| Artifact inventory, reclaimability, GC (FR-110): `haul gc` keeps the cache within its bounds, `--dry-run` previews | done | `src/inventory.rs`, `src/space.rs` · `inventory_and_its_stale_plan_are_read_only…`, `the_stale_plan_is_blocked_while_a_build_is_running`, `hauls_cache_removes_what_is_gone_then_the_least_recently_used…` |
 | Exact upstream `cargo clean` | done | `qa016` |
 | Worktree identification (FR-120) | done | `worktrees_report…` |
 | Scenario runner (FR-020); comparison (FR-160); experiments | done | `src/bench.rs`, `src/compare.rs` · `benchmark_*`, `experiment_*` |
@@ -36,7 +36,7 @@ behaviour is asserted.
 | Cross-platform process abstraction | done; Windows type-checked, not run | `src/proc.rs` |
 | Compatibility corpus QA-001…030 | done except QA-024 (Windows) | tests/compat.rs |
 | Performance-overhead test | done | `dispatch_overhead_stays_within_budget` |
-| Migration / uninstall documentation; `doctor`; escape hatch | done | [migration.md](migration.md) · `doctor_install_and_uninstall` |
+| Migration / uninstall documentation; `doctor`; escape hatch | done | [migration.md](migration.md) · `doctor_setup_and_uninstall` |
 
 ## Not in this release (P1 and later in the specification)
 

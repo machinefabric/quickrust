@@ -163,6 +163,12 @@ environment. It judges only when it runs a toolchain's own Cargo; pipes, IDEs an
 get Cargo. A test drives a series of changes and checks that whenever Haul says up to date,
 Cargo asked directly finds nothing to do.
 
+Downloads, lock waits and index updates show in the same status line, then as one line
+(`↓ Downloaded 38 crates · 5.6 MiB · 1.84s`). Commands that do not build speak the same
+language: `cargo update` lists what moved (`↑ serde  1.0.209 → 1.0.210`, `+ hashbrown
+0.15.0`, `− autocfg 1.3.0`) and sums it up, `cargo add` shows the dependency with its
+features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line.
+
 Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
 are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and
 `cargo test --doc` get Cargo's output untouched.
@@ -187,15 +193,18 @@ to Cargo unless you set `output = "haul"`.
 - An existing `RUSTC_WRAPPER` (from the environment or `.cargo/config.toml`) and
   `RUSTC_WORKSPACE_WRAPPER` keep working; Haul's wrapper runs outside them.
 - Builds go to Haul's cache (`~/.haul/cache/builds/<workspace>-<id>/`), never into a
-  `target/` beside your sources. Cargo and every tool under it learn the directory from
-  `CARGO_TARGET_DIR` and `cargo metadata`; `haul path` prints it. A target directory you
+  `target/` beside your sources. The cache keeps itself within `cache.max-size` and leaves
+  `cache.min-free` of the disk free, removing what was used least recently, in the
+  background; anything it removes is built or downloaded again when needed. Cargo and
+  every tool under it learn the directory from `CARGO_TARGET_DIR` and `cargo metadata`;
+  `haul path` prints it. A target directory you
   choose (`--target-dir`, `CARGO_TARGET_DIR`) is used as it is.
 - `cargo clean` is upstream `cargo clean` on that directory.
 - Nothing is written into your repository unless you ask (`HAUL_REPORT`,
   `haul baseline set`, `haul fix --apply`). State lives in `~/.haul`.
 - A build never fails because Haul could not record or analyse it.
 
-The test suite checks these against upstream Cargo as the oracle
+The test suite checks these against the toolchain's own Cargo as the oracle
 (`tests/compat.rs`, the QA corpus of the specification).
 
 ## Configuration
@@ -241,6 +250,10 @@ remaining work by release (P0, P1, P2, Future).
 ## Development
 
 ```bash
-cargo test                      # unit tests + compatibility corpus + management-surface suite (real builds, offline)
+cargo test                      # unit tests + compatibility corpus + management-surface suite (real builds)
 cargo clippy --all-targets
 ```
+
+The suites build with toolchains Haul installs into a store shared between runs
+(`HAULTEST_TOOLCHAINS`, default `~/.cache/haul-test-toolchains`; the first run downloads
+them), and with crates from a registry served by the test itself.

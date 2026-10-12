@@ -8,7 +8,7 @@
 **Working product name:** **Haul**  
 **Canonical executable:** `haul`  
 **Drop-in compatibility executable:** `cargo`  
-**Primary operating model:** authoritative wrapper/orchestrator around upstream Cargo, rustc, linkers, compiler caches, artifact stores, and CI rather than a reimplementation of Cargo's package-manager semantics.
+**Primary operating model:** the owner of the Rust environment — toolchains, Cargo home, build directories, installed programs, caches — running the toolchain's own Cargo and rustc as its build engine rather than a reimplementation of Cargo's package-manager semantics (see the revision of 2026-10-12).
 
 ### Product thesis
 
@@ -47,6 +47,8 @@ developer / IDE / CI
 ```
 
 This boundary is intentionally aligned with current upstream work. Cargo already exposes stable machine-readable compilation messages and versioned metadata, while nightly Cargo has experimental `--unit-graph` and `-Zbuild-analysis` facilities for more accurate build-unit graphs, timings, rebuild reasons, and historical sessions. citeturn15view1turn16view0turn16view1 Cargo's 2026 roadmap is also developing a cross-workspace build cache, while the compiler roadmap is explicitly redesigning incremental compilation so compatible `check`, `build`, `test`, and potentially Clippy invocations can share work. citeturn16view4turn16view5
+
+> **Revision (2026-10-12): Haul owns the Rust environment.** Haul is the only thing a developer installs. It installs, selects (in rustup's order: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain file, default), updates and retires Rust toolchains itself under `~/.haul/toolchains`; `haul setup` puts Haul first on `PATH` as `cargo`, `rustc`, `rustfmt` and the other toolchain programs; `haul install` builds and installs programs into `~/.haul/bin` itself. The toolchain's own Cargo remains the build engine — an internal component the user never meets — run with Haul's Cargo home (`~/.haul/cargo`). Projects have no `target/`: each workspace builds into a directory of Haul's disposable cache (`~/.haul/cache/builds/`), given to Cargo and every tool under it through `CARGO_TARGET_DIR`, and the whole cache — build directories, artifact cache, compiler drivers, Cargo's downloads — keeps itself within a size and a free-space bound, removing what is least recently used. Every command's output is Haul's in a terminal. Where the requirements below speak of an upstream Cargo found on `PATH`, of rustup, of a project's `target/`, of delegating `install`, or of Haul never deleting build output, this revision supersedes them (`docs/conformance.md`, deviations 6 and 14, says what changed).
 
 > **Revision (2026-10-11): fast by default.** The product goal is that a developer who replaces `cargo` with Haul on any project *immediately feels that builds are faster* — the way Bun felt next to npm — with no configuration. Haul may therefore, **by default**, change anything that leaves the built program behaving identically: linker, debug-information level, compiler parallelism, a global content-addressed artifact cache, and, where it manages the toolchain itself, nightly-only compiler capabilities once proven. Exact upstream output remains one switch away (`mode = "compat"`, and `haul upstream`). Settings the user made explicitly are never overridden. Every claimed improvement must be backed by a recorded entry of the speed index (`benchmarks/README.md`). Where the rules below and earlier sections speak of optimizations as opt-in, this revision supersedes them; the rest of the specification stands.
 
@@ -493,7 +495,7 @@ Haul's strongest contract is behavioral transparency.
 
 **COMP-009 [C]** `cargo clean` shall preserve upstream semantics. Smart lifecycle management shall use `haul gc`, never silently redefine `cargo clean`. Cargo's native `clean` can remove the entire target directory or selected package/profile/target output. citeturn15view12
 
-**COMP-010 [I]** Publishing, owner, login/logout, yank, install, init/new and registry-oriented commands shall default to transparent delegation with only session-level observability.
+**COMP-010 [I]** Publishing, owner, login/logout, yank, init/new and registry-oriented commands shall be run by the toolchain's Cargo with only session-level observability (and Haul's rendering of their output in a terminal). `install`/`uninstall` are Haul's own (revision of 2026-10-12): Cargo's resolver chooses the release, Haul builds it and installs its binaries into `~/.haul/bin`.
 
 **COMP-011 [R]** Build-affecting commands to instrument include `build`, `check`, `test`, `bench`, `run`, `doc`, `rustc` and applicable external tools such as Clippy when compatible.
 

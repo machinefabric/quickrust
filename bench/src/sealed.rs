@@ -21,6 +21,9 @@ pub struct Sealed {
     pub cargo: PathBuf,
     /// The pinned toolchain, as given.
     pub toolchain: String,
+    /// The machine's wild, which every Haul home of the run has in its `bin` (as `haul install
+    /// wild-linker` would put it there).
+    pub wild: Option<PathBuf>,
     path: String,
     home: String,
 }
@@ -48,7 +51,8 @@ impl Sealed {
         // Only the toolchain and ordinary system tools; never a Haul shim.
         let dirs = [toolchain_dir.join("bin"), PathBuf::from("/usr/local/bin"), PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
         let path = std::env::join_paths(dirs).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
-        Ok(Sealed { cargo_home: work.join("cargo-home"), toolchains: toolchain_home.join("toolchains"), cargo: toolchain_dir.join("bin").join("cargo"), toolchain_dir, toolchain: toolchain.to_string(), path, home })
+        let wild = std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join("wild")).find(|w| w.is_file()));
+        Ok(Sealed { cargo_home: work.join("cargo-home"), toolchains: toolchain_home.join("toolchains"), cargo: toolchain_dir.join("bin").join("cargo"), toolchain_dir, toolchain: toolchain.to_string(), wild, path, home })
     }
 
     /// Makes `home` a Haul home of this run: it links the shared toolchain store and Cargo home.
@@ -58,6 +62,13 @@ impl Sealed {
         for (link, to) in [(home.join("toolchains"), &self.toolchains), (home.join("cargo"), &self.cargo_home)] {
             if std::fs::symlink_metadata(&link).is_err() {
                 std::os::unix::fs::symlink(to, &link).map_err(|e| format!("cannot link {}: {}", link.display(), e))?;
+            }
+        }
+        if let Some(wild) = &self.wild {
+            let bin = home.join("bin");
+            std::fs::create_dir_all(&bin).map_err(|e| format!("cannot create {}: {}", bin.display(), e))?;
+            if std::fs::symlink_metadata(bin.join("wild")).is_err() {
+                std::os::unix::fs::symlink(wild, bin.join("wild")).map_err(|e| format!("cannot link wild into {}: {}", bin.display(), e))?;
             }
         }
         Ok(())
@@ -80,6 +91,10 @@ impl Sealed {
             c.env(k, v);
         }
         c.env("CARGO_HOME", &self.cargo_home).env("RUSTC", self.toolchain_dir.join("bin/rustc")).env("RUSTDOC", self.toolchain_dir.join("bin/rustdoc")).env("CARGO_TARGET_DIR", target_dir);
+        // The toolchain's lib first on the library path, as rustup (and Haul) set it: Cargo puts
+        // the toolchain's rustlib/<host>/lib there for build scripts, and with rustc-dev (the
+        // driver's) the librustc_driver in it finds LLVM only this way.
+        c.env(if cfg!(target_os = "macos") { "DYLD_FALLBACK_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, self.toolchain_dir.join("lib"));
         if !online {
             c.env("CARGO_NET_OFFLINE", "true");
         }
