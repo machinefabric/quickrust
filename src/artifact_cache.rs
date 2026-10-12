@@ -640,29 +640,32 @@ impl Job {
         self.out_dir.join(format!("{}.haul-relink", self.stem))
     }
 
-    fn kept_objects(&self) -> PathBuf {
+    /// Where Haul's driver keeps the objects of this unit's compilation (see `record_kept_objects`).
+    pub fn kept_objects(&self) -> PathBuf {
         self.out_dir.join(format!("{}.haul-objects", self.stem))
     }
 
-    /// Keeps the objects of this unit's compilation (rustc's `-Zno-link`), which started at
-    /// `start_wall_ns`, for later relinks: linking deletes them, so they are hard-linked aside
-    /// (`<stem>.haul-objects/`), and recorded with what they were compiled from (the level-2
-    /// key of `compile_key1`) and each file's identity, so that `prepare_relink` uses them only
-    /// as they were written. Called between compiling and linking.
-    pub fn keep_objects(&self, start_wall_ns: u64) -> Result<(), String> {
-        let key1 = self.compile_key1.as_ref().ok_or("not compiled apart from linking")?;
+    /// Records what Haul's driver kept of this unit's compilation, which started at
+    /// `start_wall_ns`: the `.rlink` it wrote and the objects it names, hard-linked aside before
+    /// linking deleted them (`<stem>.haul-objects/`); with what they were compiled from (the
+    /// level-2 key of `compile_key1`) and each file's identity, so that `prepare_relink` uses
+    /// them only as they were written.
+    pub fn record_kept_objects(&self, start_wall_ns: u64) -> Result<(), String> {
+        let key1 = self.compile_key1.as_ref().ok_or("not relinkable")?;
+        let _ = fs::remove_file(self.relink_marker());
         let (names, inputs) = self.read_inputs(start_wall_ns)?;
         let key2 = level2(key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
         let rlink = self.rlink_path();
-        let objects = linked_objects(&rlink, &self.out_dir, &self.stem)?;
         let kept = self.kept_objects();
-        let _ = fs::remove_file(self.relink_marker());
-        let _ = fs::remove_dir_all(&kept);
-        fs::create_dir_all(&kept).map_err(|e| format!("cannot create {}: {}", kept.display(), e))?;
+        let mut objects: Vec<String> = fs::read_dir(&kept).map_err(|e| format!("the driver kept no objects ({}: {})", kept.display(), e))?.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned())).collect();
+        objects.sort();
+        // Every object the `.rlink` names must be among them.
+        if let Some(missing) = linked_objects(&rlink, &self.out_dir, &self.stem)?.into_iter().find(|o| objects.binary_search(o).is_err()) {
+            return Err(format!("{} names {}, which was not kept", rlink.display(), missing));
+        }
         let identity = |p: &Path| fs::metadata(p).map(|md| content_identity(&md, p)).map_err(|e| format!("{} is unreadable: {}", p.display(), e));
         let mut files = vec![json!([format!("{}.rlink", self.stem), identity(&rlink)?])];
         for o in &objects {
-            fs::hard_link(self.out_dir.join(o), kept.join(o)).map_err(|e| format!("cannot keep {}: {}", o, e))?;
             files.push(json!([o, identity(&kept.join(o))?]));
         }
         fs::create_dir_all(self.root.join("m")).map_err(|e| e.to_string())?;

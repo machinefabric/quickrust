@@ -905,8 +905,11 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
         c
     };
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello-1 <2>\n");
-    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
+    assert_eq!(links(&sb), vec![("app".to_string(), "objects kept".to_string())], "{:#?}", cache_details(&sb));
     assert!(cache_details(&sb).iter().all(|d| !d.contains("driver_failure")), "{:#?}", cache_details(&sb));
+    // The driver says when its outputs are written; the build does not wait for rustc to save
+    // its incremental state.
+    assert!(early_exits(&sb) >= 3, "{}", early_exits(&sb));
 
     // A body `mid` cannot observe: `mid` is restored as it was, `base` is compiled, and the
     // binary, which links `base`'s code, is linked anew.
@@ -925,7 +928,7 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "howdy-1 [2]\n");
     assert!(cache_results(&sb).iter().any(|(n, r)| n == "mid" && r != "hit"), "{:#?}", cache_details(&sb));
     // `mid`'s interface changed, which the binary's own code is compiled against.
-    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
+    assert_eq!(links(&sb), vec![("app".to_string(), "objects kept".to_string())], "{:#?}", cache_details(&sb));
 
     // Kept objects are linked only as they were written: one changed since, and the binary is
     // compiled again rather than linked from it.
@@ -937,10 +940,16 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     let text = fs::read_to_string(&base).unwrap();
     fs::write(&base, text.replace("\"howdy\"", "\"hiya!\"")).unwrap();
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hiya!-1 [2]\n");
-    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
+    assert_eq!(links(&sb), vec![("app".to_string(), "objects kept".to_string())], "{:#?}", cache_details(&sb));
 }
 
-/// The latest instrumented run's units compiled apart from linking or linked again: (crate, how).
+/// How many compilations of the latest instrumented run returned once their outputs were written.
+fn early_exits(sb: &Sandbox) -> usize {
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["early_exit"] == json!(true)).count()
+}
+
+/// The latest instrumented run's units Haul relinks: whether linked again or compiled (crate, how).
 fn links(sb: &Sandbox) -> Vec<(String, String)> {
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
     let mut out: Vec<(String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())

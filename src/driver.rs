@@ -15,9 +15,13 @@ use std::process::{Command, Stdio};
 
 /// Set for the driver: compute the crate hash from what dependents can observe.
 pub const ENV_INTERFACE_HASH: &str = "HAUL_DRIVER_INTERFACE_HASH";
+/// Set for the driver: the descriptor of a pipe on which it says its outputs are written.
+pub const ENV_READY_FD: &str = "HAUL_DRIVER_READY_FD";
+/// Set for the driver: where to keep the objects of a unit Haul relinks.
+pub const ENV_KEEP_OBJECTS: &str = "HAUL_DRIVER_KEEP_OBJECTS";
 
 const MANIFEST: &str = include_str!("../driver/Cargo.toml");
-const SOURCE: &str = include_str!("../driver/src/main.rs");
+const SOURCES: [(&str, &str); 2] = [("main.rs", include_str!("../driver/src/main.rs")), ("early_link.rs", include_str!("../driver/src/early_link.rs"))];
 /// The binary's name inside its directory.
 const BINARY: &str = "haul-rustc-driver";
 /// Next to where the driver would be: why it could not be built.
@@ -29,7 +33,7 @@ const BUILDING: &str = ".building";
 pub fn dir(version_verbose: &str) -> Result<PathBuf, String> {
     let field = |k: &str| version_verbose.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).ok_or_else(|| format!("`rustc -vV` has no `{}` line", k.trim_end_matches(": ")));
     let (commit, host) = (field("commit-hash: ")?, field("host: ")?);
-    let source = &util::digest_parts([MANIFEST.to_string(), SOURCE.to_string()])[..16];
+    let source = &util::digest_parts(std::iter::once(MANIFEST.to_string()).chain(SOURCES.iter().flat_map(|(name, text)| [name.to_string(), text.to_string()])))[..16];
     Ok(util::haul_home().join("drivers").join(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, source)))
 }
 
@@ -164,7 +168,9 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     let _ = fs::remove_dir_all(&work);
     fs::create_dir_all(work.join("src")).map_err(|e| e.to_string())?;
     fs::write(work.join("Cargo.toml"), MANIFEST).map_err(|e| e.to_string())?;
-    fs::write(work.join("src/main.rs"), SOURCE).map_err(|e| e.to_string())?;
+    for (name, text) in SOURCES {
+        fs::write(work.join("src").join(name), text).map_err(|e| e.to_string())?;
+    }
     let lib = toolchain.join("lib");
     let rustflags = format!("-L {} -C link-arg=-Wl,-rpath,{} -Zon-broken-pipe=kill", util::path_str(&lib), util::path_str(&lib));
     let out = Command::new(toolchain.join("bin").join(format!("cargo{}", std::env::consts::EXE_SUFFIX)))

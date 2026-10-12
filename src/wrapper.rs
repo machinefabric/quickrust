@@ -184,18 +184,20 @@ pub fn main() {
     // from linking (rustc's `-Zno-link`, then `-Zlink-only`), its objects kept. When a later
     // build finds it compiled from the same sources against the same dependency interfaces (an
     // edit below it was cut off, and only what it links changed), it is only linked again: for
-    // a large binary a fraction of compiling it (ripgrep's: ~100 ms of ~350 ms). Not for a unit
-    // the cache saw compile quickly, where the second process would cost more than it saves.
+    // a large binary a fraction of compiling it (ripgrep's: ~45 ms of ~350 ms). Not for a unit
+    // the cache saw compile quickly. The driver keeps the objects when it compiles the unit (it
+    // writes the `.rlink` naming them, and they are hard-linked aside before linking deletes
+    // them); relinking is rustc's `-Zlink-only`.
     let input = input_index(&lossy);
-    let split_up = matches!((&driver, &job, unlock, input), (Some(_), Ok(j), Some(_), Some(_)) if j.relinkable() && !j.known_quick());
-    if split_up {
+    let relinkable = matches!((&driver, &job, unlock, input), (Some(_), Ok(j), Some(_), Some(_)) if j.relinkable() && !j.known_quick());
+    if relinkable {
         bootstrap = true;
     }
     if bootstrap {
         argv.extend(unlock.unwrap_or_default().iter().map(OsString::from));
     }
-    // The command that links the unit from the `.rlink` its compilation left.
-    let split: Option<Vec<OsString>> = match (split_up, &job, input) {
+    // The command that links the unit from the `.rlink` its last compilation left.
+    let link_only: Option<Vec<OsString>> = match (relinkable, &job, input) {
         (true, Ok(j), Some(i)) => {
             let mut a = argv.clone();
             a[i] = j.rlink_path().into_os_string();
@@ -204,20 +206,16 @@ pub fn main() {
         }
         _ => None,
     };
-    let relink: Option<PathBuf> = match (&split, &job) {
+    let relink: Option<PathBuf> = match (&link_only, &job) {
         (Some(_), Ok(j)) => j.prepare_relink(),
         _ => None,
     };
-    // Why the objects of a compilation apart from linking could not be kept, if they could not.
-    let not_kept: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
-    let keep = || {
-        if let Ok(j) = &job {
-            if let Err(e) = j.keep_objects(start_wall) {
-                *not_kept.borrow_mut() = Some(e);
-            }
-        }
+    let keep_objects: Option<PathBuf> = match (&link_only, &job) {
+        (Some(_), Ok(j)) => Some(j.kept_objects()),
+        _ => None,
     };
     let mut relinked: Option<bool> = None;
+    let mut early = false;
 
     let mut captured: Option<Vec<u8>> = None;
     let direct = |rustc: &OsString, argv: &[OsString], driver: &Option<PathBuf>| {
@@ -225,6 +223,9 @@ pub fn main() {
             Some(d) => {
                 let mut c = Command::new(d);
                 c.env(crate::driver::ENV_INTERFACE_HASH, "1");
+                if let Some(dir) = &keep_objects {
+                    c.env(crate::driver::ENV_KEEP_OBJECTS, dir);
+                }
                 c
             }
             None => Command::new(rustc),
@@ -256,26 +257,27 @@ pub fn main() {
         // A cacheable miss, or a compilation by Haul's driver: the compiler's stderr streams
         // through and is kept for replay; under the driver, text that is not one of the JSON
         // messages Cargo reads (a crash report) waits until the driver has succeeded.
+        // The driver says when its outputs are written (see `run_teed`).
         None if job.is_ok() || driver.is_some() => {
             let hold = if driver.is_some() { Hold::Text } else { Hold::Nothing };
-            let run = |args: &[OsString], hold: Hold| run_teed(&mut direct(&rustc, args, &driver), hold);
-            let ran = match (&split, &relink) {
+            let compile = || run_teed(&mut direct(&rustc, &argv, &driver), hold, driver.is_some());
+            let ran = match (&link_only, &relink) {
                 // Linked again from its last compilation's objects; a failure (they were changed
                 // after all) is not shown, and the unit is compiled after all.
-                (Some(link_only), Some(_)) => match run(link_only, Hold::All) {
+                (Some(link_only), Some(_)) => match run_teed(&mut direct(&rustc, link_only, &driver), Hold::All, false) {
                     Ok(t) if t.exit.success() => {
                         use std::io::Write;
                         let _ = std::io::stderr().write_all(&t.held).and_then(|_| std::io::stderr().flush());
                         relinked = Some(true);
                         Ok(Teed { forwarded: t.held, held: Vec::new(), ..t })
                     }
-                    _ => compile_apart(&run, &argv, link_only, hold, &keep),
+                    _ => compile(),
                 },
-                (Some(link_only), None) => compile_apart(&run, &argv, link_only, hold, &keep),
-                (None, _) => run(&argv, hold),
+                _ => compile(),
             };
             ran.map(|t| {
                 relinked.get_or_insert(false);
+                early = t.early;
                 let teed = (t.exit, t.usage);
                 captured = Some(t.forwarded);
                 held = Some((t.held, t.artifact_notice));
@@ -305,7 +307,7 @@ pub fn main() {
             driver_failure = Some(report.unwrap_or_default());
             driver = None;
             let rerun = match &job {
-                Ok(_) => run_teed(&mut direct(&rustc, &argv, &None), Hold::Nothing).map(|t| {
+                Ok(_) => run_teed(&mut direct(&rustc, &argv, &None), Hold::Nothing, false).map(|t| {
                     captured = Some(t.forwarded);
                     (t.exit, t.usage)
                 }),
@@ -327,7 +329,11 @@ pub fn main() {
         }
     }
     let dur_ns = started.elapsed().as_nanos() as u64;
-    let not_kept = not_kept.into_inner();
+    // What the driver kept of a compilation Haul relinks, recorded for the next relink.
+    let not_kept: Option<String> = match (&job, &keep_objects, relinked, &driver_failure) {
+        (Ok(j), Some(_), Some(false), None) if exit.success() => j.record_kept_objects(start_wall).err(),
+        _ => None,
+    };
 
     // What the rlib was compiled against, for the units that will link it; best effort, as
     // storing: a unit whose dependency went unrecorded is compiled rather than restored.
@@ -374,12 +380,15 @@ pub fn main() {
             if let Some(report) = &driver_failure {
                 ev["driver_failure"] = json!(util::path_str(report));
             }
-            if let (Some(_), Some(r), None) = (&split, relinked, &driver_failure) {
+            if let (Some(_), Some(r), None) = (&link_only, relinked, &driver_failure) {
                 ev["link"] = json!(match (r, not_kept.as_deref()) {
                     (true, _) => "relinked".to_string(),
-                    (false, None) => "compiled apart".to_string(),
-                    (false, Some(why)) => format!("compiled apart; objects not kept: {}", why),
+                    (false, None) => "objects kept".to_string(),
+                    (false, Some(why)) => format!("objects not kept: {}", why),
                 });
+            }
+            if early {
+                ev["early_exit"] = json!(true);
             }
             if let Ok(bytes) = serde_json::to_vec(&ev) {
                 let name = format!("{:020}-{}.json", start_wall, std::process::id());
@@ -403,6 +412,8 @@ struct Teed {
     held: Vec<u8>,
     /// Whether an `artifact` notice went out: Cargo may have started dependents on it.
     artifact_notice: bool,
+    /// The compiler said its outputs were written and was left to finish on its own.
+    early: bool,
 }
 
 /// What `run_teed` holds back from our stderr for the caller to decide about.
@@ -417,14 +428,36 @@ enum Hold {
 }
 
 /// Runs `cmd` with its stderr copied through to ours as it arrives (except what `hold` holds
-/// back), returning a copy.
-fn run_teed(cmd: &mut Command, hold: Hold) -> std::io::Result<Teed> {
+/// back), returning a copy. With `ready` (Haul's driver, Unix), the compiler gets a pipe on which
+/// it says its outputs are written; once it has, and its stderr has ended, this returns without
+/// waiting for it to finish saving its incremental state (`exit` is then success, `usage`
+/// unknown, and `early` set).
+fn run_teed(cmd: &mut Command, hold: Hold, ready: bool) -> std::io::Result<Teed> {
     use std::io::{Read, Write};
+    enum Event {
+        Exited(std::io::Result<(ExitInfo, Option<proc::Usage>)>),
+        Stderr(Vec<u8>, Vec<u8>, bool),
+        Ready,
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<Event>();
+    #[cfg(unix)]
+    let pipe = if ready { Some(ready_pipe()?) } else { None };
+    #[cfg(not(unix))]
+    let pipe: Option<(i32, i32)> = None;
+    let _ = ready;
+    if let Some((_, w)) = pipe {
+        cmd.env(crate::driver::ENV_READY_FD, w.to_string());
+    }
     cmd.stderr(std::process::Stdio::piped());
-    let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, Vec<u8>, bool)>();
-    let r = proc::run_with(cmd, true, &mut |child| {
+    let stderr_tx = tx.clone();
+    let mut on_spawn = move |child: &mut std::process::Child| {
+        // Only the compiler holds the pipe's writing end now.
+        #[cfg(unix)]
+        if let Some((_, w)) = pipe {
+            unsafe { libc::close(w) };
+        }
         if let Some(mut from) = child.stderr.take() {
-            let tx = tx.clone();
+            let tx = stderr_tx.clone();
             std::thread::spawn(move || {
                 let (mut forwarded, mut held, mut line, mut chunk) = (Vec::new(), Vec::new(), Vec::new(), [0u8; 16 * 1024]);
                 let mut artifact_notice = false;
@@ -460,37 +493,65 @@ fn run_teed(cmd: &mut Command, hold: Hold) -> std::io::Result<Teed> {
                 if hold == Hold::All {
                     artifact_notice = held.windows(ARTIFACT_NOTICE.len()).any(|w| w == ARTIFACT_NOTICE);
                 }
-                let _ = tx.send((forwarded, held, artifact_notice));
+                let _ = tx.send(Event::Stderr(forwarded, held, artifact_notice));
             });
         }
+    };
+    #[cfg(unix)]
+    if let Some((r, _)) = pipe {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let mut byte = 0u8;
+            let n = loop {
+                let n = unsafe { libc::read(r, (&mut byte as *mut u8).cast(), 1) };
+                if n >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                    break n;
+                }
+            };
+            unsafe { libc::close(r) };
+            if n == 1 {
+                let _ = tx.send(Event::Ready);
+            }
+        });
+    }
+    // The compiler is waited for on a thread of its own: this one may stop waiting for it.
+    let mut cmd = std::mem::replace(cmd, Command::new(""));
+    std::thread::spawn(move || {
+        let r = proc::run_with(&mut cmd, true, &mut on_spawn);
+        let _ = tx.send(Event::Exited(r));
     });
-    let (exit, usage) = r?;
-    // A grandchild holding the pipe open must not hang the build.
-    let (forwarded, held, artifact_notice) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
-    Ok(Teed { exit, usage, forwarded, held, artifact_notice })
+    let (mut exited, mut stderr, mut is_ready) = (None, None, false);
+    loop {
+        match (&exited, &stderr, is_ready) {
+            (Some(_), Some(_), _) | (None, Some(_), true) => break,
+            _ => {}
+        }
+        // Once the compiler ended, its stderr ends too unless a grandchild holds it open, which
+        // must not hang the build.
+        let next = if exited.is_some() { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { rx.recv().ok() };
+        match next {
+            Some(Event::Exited(r)) => exited = Some(r?),
+            Some(Event::Stderr(f, h, a)) => stderr = Some((f, h, a)),
+            Some(Event::Ready) => is_ready = true,
+            None => break,
+        }
+    }
+    let (forwarded, held, artifact_notice) = stderr.unwrap_or_default();
+    Ok(match exited {
+        Some((exit, usage)) => Teed { exit, usage, forwarded, held, artifact_notice, early: false },
+        None => Teed { exit: ExitInfo { code: Some(0), signal: None }, usage: None, forwarded, held, artifact_notice, early: true },
+    })
 }
 
-/// Compiles a unit apart from linking it: `-Zno-link` (objects and the `.rlink` naming them
-/// stay in the output directory), `keep` (linking deletes the objects), then `link_only` links
-/// it. One account of both.
-fn compile_apart(run: &dyn Fn(&[OsString], Hold) -> std::io::Result<Teed>, argv: &[OsString], link_only: &[OsString], hold: Hold, keep: &dyn Fn()) -> std::io::Result<Teed> {
-    let mut no_link = argv.to_vec();
-    no_link.push("-Zno-link".into());
-    let compiled = run(&no_link, hold)?;
-    if !compiled.exit.success() {
-        return Ok(compiled);
+/// A pipe for the driver's ready byte: (reading end, closed on exec; writing end, inherited).
+#[cfg(unix)]
+fn ready_pipe() -> std::io::Result<(i32, i32)> {
+    let mut fds = [0i32; 2];
+    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
     }
-    keep();
-    let linked = run(link_only, hold)?;
-    let usage = match (compiled.usage, linked.usage) {
-        (Some(a), Some(b)) => Some(proc::Usage { user_ns: a.user_ns + b.user_ns, sys_ns: a.sys_ns + b.sys_ns, max_rss_bytes: a.max_rss_bytes.max(b.max_rss_bytes) }),
-        (a, b) => a.or(b),
-    };
-    let mut forwarded = compiled.forwarded;
-    forwarded.extend_from_slice(&linked.forwarded);
-    let mut held = compiled.held;
-    held.extend_from_slice(&linked.held);
-    Ok(Teed { exit: linked.exit, usage, forwarded, held, artifact_notice: compiled.artifact_notice || linked.artifact_notice })
+    unsafe { libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC) };
+    Ok((fds[0], fds[1]))
 }
 
 /// The position of the source file rustc compiles among `args`: its one argument that is
