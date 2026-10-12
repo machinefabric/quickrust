@@ -616,33 +616,76 @@ fn policy_explain_shows_each_setting_with_its_origin() {
 }
 
 #[test]
-fn doctor_install_and_uninstall() {
+fn doctor_setup_and_uninstall() {
     // MIG-001, MIG-002.
     let sb = Sandbox::new("install");
     let p = sb.package("p", "p");
-    let doctor = stdout(&ok(sb.haul(&p).arg("doctor")));
-    for item in ["shim path", "active toolchain", "selected by: default toolchain", "  Cargo  ", "  rustc  ", "cargo home", "CARGO ", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "target directory", "build directory", "cache policy", "capabilities", "No problems found."] {
+    let doctor = stdout(&run(sb.haul(&p).arg("doctor")));
+    for item in ["set up             no", "active toolchain", "selected by: default toolchain", "  Cargo  ", "  rustc  ", "cargo home", "CARGO ", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "target directory", "build directory", "cache policy", "capabilities", "No problems found."] {
         assert!(doctor.contains(item), "doctor output lacks `{}`:\n{}", item, doctor);
     }
-    let dir = sb.dir.join("installed-shim");
-    let out = stdout(&ok(sb.haul(&p).args(["install-shim", "--dir"]).arg(&dir)));
-    assert!(out.contains("export PATH="));
-    let shim = dir.join("cargo");
-    assert_eq!(fs::canonicalize(&shim).unwrap(), fs::canonicalize(env!("CARGO_BIN_EXE_haul")).unwrap());
-    // The installed shim works as cargo.
-    let mut path = vec![dir.clone()];
-    path.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    let via = run(std::process::Command::new("cargo").current_dir(&p).arg("--version").env("PATH", std::env::join_paths(path).unwrap()).env("HAUL_HOME", &sb.home));
-    assert!(stdout(&via).starts_with("cargo 1."), "{}", stdout(&via));
-    // A second install is refused; an existing cargo is never overwritten.
-    assert_eq!(run(sb.haul(&p).args(["install-shim", "--dir"]).arg(&dir)).status.code(), Some(2));
-    let occupied = sb.file("occupied/cargo", "#!/bin/sh\necho someone-elses-cargo\n");
-    ok(sb.haul(&p).arg("uninstall-shim"));
-    assert!(!shim.exists() && !dir.exists(), "uninstall removes exactly what install created");
-    let refused = run(sb.haul(&p).args(["install-shim", "--dir"]).arg(occupied.parent().unwrap()));
+    // A user with rustup's ~/.cargo: credentials, a registry, and settings of other kinds.
+    let home = sb.dir.join("user");
+    sb.file("user/.cargo/credentials.toml", "[registries.corp]\ntoken = \"s3cret\"\n");
+    sb.file("user/.cargo/config.toml", "[registries.corp]\nindex = \"sparse+https://corp.example/index/\"\n\n[build]\ntarget-dir = \"/elsewhere\"\n");
+    sb.file("user/.bashrc", "export EDITOR=vi\n");
+    let setup = |extra: &[&str]| run(sb.haul(&p).arg("setup").args(["--toolchain", "none"]).args(extra).env("HOME", &home));
+    let out = setup(&[]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(said.contains("installed in") && said.contains("imported from") && said.contains("credentials, [registries]") && said.contains("not imported: [build]"), "{}", said);
+    let bin = sb.home.join("bin");
+    assert_ne!(fs::canonicalize(bin.join("haul")).unwrap(), fs::canonicalize(env!("CARGO_BIN_EXE_haul")).unwrap(), "a copy of its own, not the binary setup ran from");
+    assert!(bin.join("haul-rustc-wrapper").is_file());
+    for proxy in ["cargo", "rustc", "rustfmt", "cargo-clippy", "rust-analyzer"] {
+        assert_eq!(fs::read_link(bin.join(proxy)).unwrap(), std::path::Path::new("haul"), "{}", proxy);
+    }
+    let cargo_home = sb.cargo_home();
+    assert_eq!(fs::read_to_string(cargo_home.join("credentials.toml")).unwrap(), "[registries.corp]\ntoken = \"s3cret\"\n");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(fs::metadata(cargo_home.join("credentials.toml")).unwrap().permissions().mode() & 0o777, 0o600);
+    }
+    let config = fs::read_to_string(cargo_home.join("config.toml")).unwrap();
+    assert!(config.contains("[registries.corp]") && config.contains("sparse+https://corp.example/index/") && !config.contains("target-dir"), "{}", config);
+    // The shell startup files source Haul's environment, which puts its bin first.
+    for f in [".profile", ".bashrc"] {
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap().matches("haul-home/env\"").count(), 1, "{}", f);
+    }
+    assert!(fs::read_to_string(home.join(".bashrc")).unwrap().starts_with("export EDITOR=vi\n"));
+    let path = stdout(&ok(std::process::Command::new("sh").arg("-c").arg(". \"$1\"; printf %s \"$PATH\"").arg("sh").arg(sb.home.join("env")).env("HOME", &home).env("PATH", "/usr/bin:/bin")));
+    assert!(path.starts_with(&format!("{}:", bin.display())), "{}", path);
+    // Haul as cargo, through the installed proxy.
+    let via = run(std::process::Command::new(bin.join("cargo")).current_dir(&p).arg("--version").env("HAUL_HOME", &sb.home).env("PATH", &path));
+    assert!(stdout(&via).starts_with("cargo 1."), "{}", stderr(&via));
+    // Doctor sees the setup, and that its bin is not first on this test's PATH.
+    let doctor = run(sb.haul(&p).arg("doctor"));
+    assert_eq!(doctor.status.code(), Some(1));
+    assert!(stdout(&doctor).contains("its bin is NOT first on PATH"), "{}", stdout(&doctor));
+    // Again: repairs, never imports twice or edits a file twice.
+    fs::write(home.join(".cargo/credentials.toml"), "changed").unwrap();
+    fs::remove_file(bin.join("rustc")).unwrap();
+    let again = setup(&[]);
+    assert!(again.status.success(), "{}", stderr(&again));
+    assert!(!stdout(&again).contains("imported"), "{}", stdout(&again));
+    assert!(stdout(&again).contains("PATH: already set up"), "{}", stdout(&again));
+    assert!(bin.join("rustc").exists());
+    assert_eq!(fs::read_to_string(cargo_home.join("credentials.toml")).unwrap(), "[registries.corp]\ntoken = \"s3cret\"\n");
+    assert_eq!(fs::read_to_string(home.join(".profile")).unwrap().matches("haul-home/env\"").count(), 1);
+    // Something of someone else's where a proxy goes is never replaced.
+    fs::remove_file(bin.join("rustfmt")).unwrap();
+    fs::write(bin.join("rustfmt"), "#!/bin/sh\necho theirs\n").unwrap();
+    let refused = setup(&[]);
     assert_eq!(refused.status.code(), Some(2));
-    assert_eq!(fs::read_to_string(&occupied).unwrap(), "#!/bin/sh\necho someone-elses-cargo\n");
-    assert_eq!(run(sb.haul(&p).arg("uninstall-shim")).status.code(), Some(2), "nothing recorded, nothing to remove");
+    assert!(stderr(&refused).contains("is not Haul"), "{}", stderr(&refused));
+    assert_eq!(fs::read_to_string(bin.join("rustfmt")).unwrap(), "#!/bin/sh\necho theirs\n");
+    // Uninstalling needs --yes, then removes Haul's home (not what its links point to) and the PATH lines.
+    assert_eq!(run(sb.haul(&p).args(["self", "uninstall"]).env("HOME", &home)).status.code(), Some(2));
+    ok(sb.haul(&p).args(["self", "uninstall", "--yes"]).env("HOME", &home));
+    assert!(!sb.home.exists());
+    assert!(toolchain_store().join("channels.json").exists(), "the linked toolchain store is untouched");
+    assert_eq!(fs::read_to_string(home.join(".bashrc")).unwrap(), "export EDITOR=vi\n");
+    assert!(!fs::read_to_string(home.join(".profile")).unwrap().contains("haul"));
 }
 
 #[test]
@@ -708,8 +751,11 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     let sb = Sandbox::new("fast");
     let p = sb.package("p", "p");
     let debuginfo = |r: &Value| -> Vec<String> { r["units"].as_array().unwrap().iter().filter(|u| u["freshness"] == "compiled").map(|u| u["codegen"]["debuginfo"].as_str().unwrap_or("0").to_string()).collect() };
+    // The binary counts as quick to link however busy the machine is (from its first
+    // compilation on: that is the one that shows it small).
+    let quick = "600000";
 
-    ok(sb.cargo(&p).arg("build"));
+    ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
     let r = sb.report(&p, "latest");
     assert!(!debuginfo(&r).is_empty() && debuginfo(&r).iter().all(|d| d == "line-tables-only"), "{:?}", debuginfo(&r));
     let applied: Vec<&str> = r["policy"]["fast"]["applied"].as_array().unwrap().iter().map(|a| a["key"].as_str().unwrap()).collect();
@@ -734,8 +780,6 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
         let first = threads_by_unit(&sb);
         assert!(!first.is_empty() && first.iter().all(|(incremental, threads)| *incremental && *threads), "{:?}", first);
         fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
-        // The binary counts as quick to link however busy the machine is.
-        let quick = "600000";
         ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
         let rebuild = threads_by_unit(&sb);
         assert!(!rebuild.is_empty() && rebuild.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", rebuild);
