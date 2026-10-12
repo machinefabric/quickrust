@@ -5,6 +5,9 @@
 # in `file`, and every application replaces it with `replace`, where `@N@` becomes a
 # number unique to that edit. `leaf` is a crate nothing else depends on; `core` is a
 # crate others build on, so editing it rebuilds its dependents too.
+#
+# `args` are appended to every Cargo command; `test-args` replace them for the
+# correctness gate (`haul-bench verify`), which needs a selection that has tests.
 
 [[workload]]
 name = "haul"
@@ -30,5 +33,7 @@ description = "axum 0.8.9 `todos` example: tokio + axum + tower-http + serde + t
 git = "https://github.com/tokio-rs/axum"
 rev = "c59208c86fded335cd85e388030ad59347b0e5ae"
 args = ["-p", "example-todos"]
+# The example has no tests; the correctness gate runs those of the crates it is built on.
+test-args = ["-p", "axum-core", "-p", "axum"]
 leaf = { file = "examples/todos/src/main.rs", find = '''"Unhandled internal error: {error}"''', replace = '''"Unhandled internal error @N@: {error}"''' }
 core = { file = "axum-core/src/response/into_response_parts.rs", find = '''"failed to convert key to a header name"''', replace = '''"failed to convert key to a header name @N@"''' }

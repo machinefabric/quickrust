@@ -18,7 +18,7 @@ use std::path::Path;
 type Outcomes = BTreeMap<String, String>;
 
 fn run_suite(ctx: &Ctx, v: &Variant, w: &Workload, co: &Path) -> (i32, Outcomes) {
-    let out = ctx.command(v, w, co, &["test", "--no-fail-fast"], true).output().unwrap_or_else(|e| fail(&format!("[{} / {}] cargo test: {}", w.name, v.name, e)));
+    let out = ctx.command(v, w, co, &["test", "--no-fail-fast"], false).args(&w.test_args).output().unwrap_or_else(|e| fail(&format!("[{} / {}] cargo test: {}", w.name, v.name, e)));
     let mut outcomes = Outcomes::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
         // libtest: `test path::to::name ... ok` (or FAILED / ignored, possibly with a reason).
@@ -65,6 +65,10 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
             names.into_iter().filter(|n| runs.iter().map(|r| r.get(*n)).collect::<BTreeSet<_>>().len() > 1).cloned().collect()
         };
         let reference = &per_variant["cargo"];
+        if reference.iter().any(|r| !r.keys().any(|n| !n.starts_with('<'))) {
+            // A suite that runs nothing would make every variant agree by construction.
+            fail(&format!("[{}] upstream Cargo ran no tests (or the suite did not build): set `test-args` in workloads.toml to a package selection with tests", w.name));
+        }
         let reference_flaky = flaky(reference);
         let mut rows = Vec::new();
         println!("\n{} @ {}", w.name, &w.rev[..w.rev.len().min(10)]);
