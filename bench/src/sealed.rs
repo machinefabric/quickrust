@@ -6,7 +6,7 @@
 //! `config.toml` (`<work>/cargo-home`, which every Haul home of the run links as its own) and an
 //! explicit target directory, so nothing from the machine's own configuration (a global
 //! `build.target-dir`, a rustc wrapper, profile overrides) can leak into a measurement or let two
-//! variants share build output.
+//! variants share build output. Haul's cache bounds are fixed, not taken from the disk's free space.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -87,6 +87,11 @@ impl Sealed {
             ("CARGO_TERM_COLOR", "never"),
             ("CARGO_TERM_PROGRESS_WHEN", "never"),
             ("CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "never"),
+            // Haul's cache bounds apart from this machine's free space: on a full disk Haul would
+            // collect in the background between measurements (what that costs is not what a
+            // scenario measures; the check whether to is still made after every command).
+            ("HAUL_CACHE_MIN_FREE", "1"),
+            ("HAUL_CACHE_MAX_SIZE", "1TiB"),
         ] {
             c.env(k, v);
         }
