@@ -68,6 +68,24 @@ One repetition runs, per variant, the whole loop from nothing built:
 | `rebuild-after-clean` | `cargo clean`, then `cargo build` |
 | `second-checkout` | `cargo build` in a second, untouched checkout of the same commit |
 
+`second-checkout` is also what a new git worktree costs: Haul gives each checkout its own
+build directory, keyed by its path, and its dependencies come from the artifact cache.
+Seeding the new directory with a copy of a sibling's was measured instead (2026-10-12,
+workload `haul`, rustc 1.98.1, ext4 without reflinks) and not adopted:
+
+| Second checkout | Wall |
+|---|---|
+| built through the artifact cache | 1.74s |
+| of which restoring every unit (`cargo clean`, `cargo build` in the same checkout) | 0.28s |
+| copying the sibling's build directory | 0.09s |
+
+The rest is compiling the workspace's own crates, which a copy cannot save: their
+outputs name their checkout (`CARGO_MANIFEST_DIR`, `file!()`, debug information), so
+Cargo must rebuild them, and a copy whose sources look older than the sibling's outputs
+would wrongly pass as up to date. Seeding could only win the dependencies' share of the
+0.28s. What would shorten a second checkout is reusing workspace units whose outputs do not
+depend on their path, proven byte-identical across checkouts first.
+
 `--quick` runs the `haul` workload, variants `cargo` and `haul`, scenarios
 `cold-build no-op edit-leaf edit-core rebuild-after-clean second-checkout`, 3 repetitions. `--full` runs
 everything, 5 repetitions after one untimed warm-up repetition.
