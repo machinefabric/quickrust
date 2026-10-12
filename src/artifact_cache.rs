@@ -162,6 +162,7 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
         key.push(format!("workspace={}", util::path_str(&cwd)));
     }
     let mut test = false;
+    let mut scheduled_by_cargo = false;
     let (mut crate_name, mut out_dir, mut extra, mut types) = (None, None, String::new(), Vec::new());
     let mut i = 0;
     while i < args.len() {
@@ -201,6 +202,7 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
             if let Some(e) = v.strip_prefix("extra-filename=") {
                 extra = e.to_string();
             }
+            scheduled_by_cargo |= v.starts_with("metadata=");
             key.push(format!("-C{}", v));
         } else if a.starts_with("-Zthreads") {
             // How many threads rustc's frontend uses does not change what it produces.
@@ -213,6 +215,11 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
             key.push(args[i].clone());
         }
         i += 1;
+    }
+    // Build scripts run rustc themselves to probe the compiler (autocfg, version checks); those
+    // must run every time. Cargo passes `-C metadata` to every unit it schedules, probes never.
+    if !scheduled_by_cargo {
+        return Err("a compiler probe run by a build script, not a unit Cargo scheduled".into());
     }
     let crate_name = crate_name.ok_or("no crate name")?;
     let out_dir = out_dir.ok_or("no output directory")?;
