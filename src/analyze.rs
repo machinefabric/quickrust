@@ -381,22 +381,55 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
 }
 
 /// Loads wrapper events for a session, oldest first. Returns `(compile events, probe count)`.
-pub fn load_events(dir: &Path) -> (Vec<Value>, u64) {
+/// What a session's rustc-level events say, read one event at a time: a build of ten thousand
+/// units has as many events, and only what is derived from them is kept.
+#[derive(Default)]
+pub struct Events {
+    /// The compilations of units Cargo scheduled.
+    pub units: Vec<Unit>,
+    /// Compilers that build scripts ran to probe the toolchain: real cost, not units.
+    pub script_probes: usize,
+    pub script_probe_ns: u64,
+    /// Toolchain queries the wrapper saw (`rustc -vV`, `--print`).
+    pub queries: u64,
+    /// The compiler of the first compilation.
+    pub rustc: Option<String>,
+    /// Artifact-cache results by kind (`hit`, `stored`, `miss`, `off`) and the time restores took.
+    pub cache_results: HashMap<String, usize>,
+    pub restore_ns: u64,
+}
+
+pub fn load_events(dir: &Path, sccache_active: bool, tok: &Tokenizer) -> Events {
     let mut names: Vec<PathBuf> = std::fs::read_dir(dir).map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.path()).collect()).unwrap_or_default();
     names.sort();
-    let mut compiles = Vec::new();
-    let mut probes = 0;
+    let mut out = Events::default();
     for p in names {
         if p.file_name().map(|n| n == "cargo-messages.json").unwrap_or(true) || p.extension().map(|e| e != "json").unwrap_or(true) {
             continue;
         }
-        match util::read_json(&p) {
-            Some(v) if v["kind"] == json!("compile") => compiles.push(v),
-            Some(_) => probes += 1,
-            None => {}
+        let Some(ev) = util::read_json(&p) else { continue };
+        if ev["kind"] != json!("compile") {
+            out.queries += 1;
+            continue;
+        }
+        if out.rustc.is_none() {
+            out.rustc = ev["rustc"].as_str().map(str::to_string);
+        }
+        if let Some(r) = ev["cache"]["result"].as_str() {
+            *out.cache_results.entry(r.to_string()).or_default() += 1;
+            if r == "hit" {
+                out.restore_ns += ev["dur_ns"].as_u64().unwrap_or(0);
+            }
+        }
+        match parse_unit(&ev, sccache_active, tok) {
+            Some(u) => out.units.push(u),
+            None => {
+                out.script_probes += 1;
+                out.script_probe_ns += ev["dur_ns"].as_u64().unwrap_or(0);
+            }
         }
     }
-    (compiles, probes)
+    out
 }
 
 /// Facts about one build-script execution, read from what Cargo left on disk.
@@ -691,15 +724,15 @@ fn unavailable(map: &mut serde_json::Map<String, Value>, field: &str, reason: im
 }
 
 /// Adds what Haul's own artifact cache did in this run to the report's `cache` section.
-fn artifact_cache_summary(mut cache: Value, session: &Value, events: &[Value]) -> Value {
-    let count = |r: &str| events.iter().filter(|e| e["cache"]["result"] == json!(r)).count();
+fn artifact_cache_summary(mut cache: Value, session: &Value, events: &Events) -> Value {
+    let count = |r: &str| events.cache_results.get(r).copied().unwrap_or(0);
     cache["artifacts"] = json!({
         "state": session["policy"]["cache"]["artifacts"],
         "restored": count("hit"),
         "stored": count("stored"),
         "missed": count("miss"),
         "not_cacheable": count("off"),
-        "restore_time_ns": events.iter().filter(|e| e["cache"]["result"] == json!("hit")).filter_map(|e| e["dur_ns"].as_u64()).sum::<u64>(),
+        "restore_time_ns": events.restore_ns,
     });
     cache
 }
@@ -736,16 +769,12 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
     let instrumented = session["instrumented"] == json!(true) && session["events_in_parent"] != json!(true);
 
     let mut index = waste::Index::load(&store.index_path())?;
-    let (events, probes) = match session["events_dir"].as_str() {
-        Some(d) => load_events(Path::new(d)),
-        None => (Vec::new(), 0),
+    let mut events = match session["events_dir"].as_str() {
+        Some(d) => load_events(Path::new(d), sccache_active, &tok),
+        None => Events::default(),
     };
-    let rustc_hint = events.first().and_then(|e| e["rustc"].as_str()).map(str::to_string);
-    let parsed: Vec<Unit> = events.iter().filter_map(|e| parse_unit(e, sccache_active, &tok)).collect();
-    // What is left are compilers started by build scripts to probe the toolchain: real cost, not units.
-    let script_probes = events.len() - parsed.len();
-    let script_probe_ns: u64 = events.iter().filter(|e| parse_unit(e, sccache_active, &tok).is_none()).filter_map(|e| e["dur_ns"].as_u64()).sum();
-    let (mut graph, mut scripts) = build_graph(parsed, start, start + wall, &index.by_stem());
+    let (probes, rustc_hint, script_probes, script_probe_ns) = (events.queries, events.rustc.clone(), events.script_probes, events.script_probe_ns);
+    let (mut graph, mut scripts) = build_graph(std::mem::take(&mut events.units), start, start + wall, &index.by_stem());
     let cp = critical_path(&graph);
     for (i, _) in &cp.path {
         graph.units[*i].on_critical_path = true;
