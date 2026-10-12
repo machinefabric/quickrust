@@ -85,8 +85,11 @@ TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-too
 
 INSTALLATION
     haul doctor
-    haul install-shim [--dir DIR]
-    haul uninstall-shim
+    haul setup [--no-modify-path] [--toolchain T|none]
+                                     install Haul for this user: ~/.haul/bin first on PATH (cargo, rustc,
+                                     rustfmt, … are Haul), credentials and registries imported once from
+                                     ~/.cargo, the stable toolchain installed
+    haul self uninstall --yes        remove ~/.haul and the PATH lines
 
 RUN REFERENCES
     latest, latest~N, a run id or a unique prefix/suffix of one; in `compare`
@@ -274,8 +277,8 @@ pub fn main() {
         "cache" => cmd_cache(rest),
         "fix" => cmd_fix(rest),
         "doctor" => cmd_doctor(rest),
-        "install-shim" => cmd_install(rest),
-        "uninstall-shim" => cmd_uninstall(rest),
+        "setup" => cmd_setup(rest),
+        "self" => cmd_self(rest),
         // Anything else is Cargo syntax (including `+toolchain` and global flags).
         _ => session::run_and_exit(args, Mode::Explicit),
     };
@@ -1174,8 +1177,14 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     let (exe, _) = resolve::self_identity();
     println!("Haul {}", env!("CARGO_PKG_VERSION"));
     println!("  haul binary        {}", exe.display());
-    let shim = session::shim_path();
-    println!("  shim path          {}", shim.as_ref().map(|p| path_str(p)).unwrap_or_else(|| "not installed on PATH (`haul install-shim`); `haul <command>` works without it".into()));
+    let (setup, first) = crate::setup::status();
+    match &setup {
+        Some(r) => println!("  set up             {} (Haul {}); its bin is {} on PATH", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"), if first { "first" } else { "NOT first" }),
+        None => println!("  set up             no (`haul setup` installs Haul for this user); `haul <command>` works without it"),
+    }
+    if setup.is_some() && !first {
+        problem(format!("`cargo` on PATH is not {}: open a new shell, or check the PATH set up by `haul setup`", crate::engine::bin_dir().join("cargo").display()));
+    }
     let wrapper = exe.parent().map(|d| d.join(if cfg!(windows) { "haul-rustc-wrapper.exe" } else { "haul-rustc-wrapper" }));
     match wrapper.filter(|w| util::is_executable(w)) {
         Some(w) => println!("  rustc wrapper      {}", w.display()),
@@ -1199,12 +1208,6 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
             match version_of(&engine.rustc(), &["-V"]) {
                 Some(v) => println!("  rustc              {}", v),
                 None => problem(format!("{} -V failed", engine.rustc().display())),
-            }
-            if let Some(s) = &shim {
-                // The shim only takes effect if it precedes every other cargo on PATH.
-                if util::which("cargo").map(|first| util::canon(&first) != util::canon(s)).unwrap_or(false) {
-                    problem(format!("{} is not the first `cargo` on PATH; another cargo shadows the shim", s.display()));
-                }
             }
         }
         Err(e) => problem(e),
@@ -1270,64 +1273,66 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
 }
 
-fn install_record() -> PathBuf {
-    util::haul_home().join("install.json")
-}
-
-fn cmd_install(raw: &[OsString]) -> CmdResult {
+/// `haul setup`: Haul installed for this user (see `setup.rs`).
+fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
-    let dir = a.opt("--dir")?.map(PathBuf::from).unwrap_or_else(|| util::haul_home().join("shim"));
+    let toolchain = a.opt("--toolchain")?.unwrap_or_else(|| "stable".into());
+    let modify_path = !a.flag("--no-modify-path");
     a.finish()?;
-    if install_record().exists() {
-        return Err(format!("a shim installation is already recorded in {}; run `haul uninstall-shim` first", install_record().display()));
+    let opts = crate::setup::Options { modify_path, toolchain: (toolchain != "none").then_some(toolchain) };
+    let phase = crate::ui::Phase::start();
+    let done = crate::setup::setup(&opts)?;
+    let tilde = |p: &Path| util::home_dir().and_then(|h| p.strip_prefix(&h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| p.display().to_string());
+    phase.finish(true, &format!("Haul {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, tilde(&done.bin), done.proxies.saturating_sub(4)));
+    match (&done.path_edits[..], modify_path) {
+        (_, false) => println!("  PATH left alone (--no-modify-path): put {} first on PATH yourself", tilde(&done.bin)),
+        ([], true) => println!("  PATH: already set up"),
+        (files, true) => println!("  PATH: {} first, from {}", tilde(&done.bin), files.iter().map(|f| tilde(f)).collect::<Vec<_>>().join(", ")),
     }
-    let (exe, _) = resolve::self_identity();
-    let dir = std::env::current_dir().map_err(|e| e.to_string())?.join(dir);
-    let shim = dir.join(if cfg!(windows) { "cargo.exe" } else { "cargo" });
-    // Never replace an existing cargo (rustup's proxy in particular): the original setup must survive (MIG-001).
-    if std::fs::symlink_metadata(&shim).is_ok() {
-        return Err(format!("{} already exists; choose an empty directory with --dir. Haul never overwrites an existing cargo.", shim.display()));
+    if let Some((from, imported, skipped)) = &done.import {
+        if !imported.is_empty() {
+            println!("  imported from {}: {}", tilde(from), imported.join(", "));
+        }
+        if !skipped.is_empty() {
+            println!("  not imported: {} (builds of projects under your home still read {}/config.toml)", skipped.join(", "), tilde(from));
+        }
     }
-    let dir_created = !dir.exists();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&exe, &shim).map_err(|e| format!("cannot create {}: {}", shim.display(), e))?;
-    #[cfg(not(unix))]
-    std::fs::hard_link(&exe, &shim).or_else(|_| std::fs::copy(&exe, &shim).map(|_| ())).map_err(|e| format!("cannot create {}: {}", shim.display(), e))?;
-    util::write_json(&install_record(), &json!({
-        "shim": path_str(&shim), "dir": path_str(&dir), "dir_created": dir_created, "target": path_str(&exe),
-        "installed_at": util::iso8601(util::now_wall_ns()),
-    }))
-    .map_err(|e| format!("the shim was created but the install record could not be written: {}", e))?;
-    println!("Installed the Haul cargo shim at {}", shim.display());
-    println!("Put its directory first on PATH to make `cargo` resolve to Haul:\n");
-    println!("    export PATH=\"{}:$PATH\"\n", dir.display());
-    println!("Nothing else was changed."); 
-    println!("Escape hatch: `haul upstream <args>`. Remove with `haul uninstall-shim`. Check with `haul doctor`.");
+    if let Some(spec) = &opts.toolchain {
+        let layout = crate::toolchain::Layout::current();
+        let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+        let server = Config::load(&cwd).map(|c| c.str("toolchain.dist-server").to_string()).unwrap_or_else(|_| crate::toolchain::dist::UPSTREAM.to_string());
+        let sel = crate::toolchain::Selection { spec: crate::toolchain::spec::Spec::parse(spec)?, source: crate::toolchain::Source::Plus, file: None };
+        let mut progress = crate::ui::ToolchainProgress::new(spec);
+        match crate::toolchain::ensure(&layout, &sel, &crate::toolchain::Needs::default(), &server, &mut progress) {
+            Ok(tc) if progress.worked() => progress.finish(&tc),
+            Ok(tc) => println!("  Rust: {} is installed ({})", spec, tc.id),
+            Err(e) => {
+                progress.fail(&e);
+                return Err(e);
+            }
+        }
+    }
+    if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {
+        println!("\nOpen a new shell, or run:  . \"{}\"", tilde(&util::haul_home().join("env")));
+    }
     Ok(0)
 }
 
-fn cmd_uninstall(raw: &[OsString]) -> CmdResult {
-    Args::new(raw).finish()?;
-    let rec = util::read_json(&install_record()).ok_or_else(|| format!("no shim installation is recorded in {}", install_record().display()))?;
-    let shim = PathBuf::from(vstr(&rec, "shim"));
-    let (exe, id) = resolve::self_identity();
-    match std::fs::symlink_metadata(&shim) {
-        // Only remove what is verifiably ours.
-        Ok(_) if util::canon(&shim) == exe || (id.is_some() && util::file_identity(&shim) == id) || util::canon(&shim) == Path::new(&vstr(&rec, "target")) => {
-            std::fs::remove_file(&shim).map_err(|e| format!("cannot remove {}: {}", shim.display(), e))?;
-            println!("Removed {}", shim.display());
+/// `haul self uninstall`: Haul removed from this machine.
+fn cmd_self(raw: &[OsString]) -> CmdResult {
+    let mut a = Args::new(raw);
+    let action = a.positional();
+    let yes = a.flag("--yes");
+    a.finish()?;
+    match action.as_deref() {
+        Some("uninstall") if !yes => Err(format!("`haul self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `haul setup` added", util::haul_home().display())),
+        Some("uninstall") => {
+            for r in crate::setup::uninstall()? {
+                println!("removed {}", r);
+            }
+            Ok(0)
         }
-        Ok(_) => return Err(format!("{} is no longer the Haul shim; leaving it in place. Remove {} manually once you have checked it.", shim.display(), install_record().display())),
-        Err(_) => println!("{} was already gone", shim.display()),
+        Some(other) => Err(format!("unknown `haul self` action `{}` (uninstall)", other)),
+        None => Err("`haul self` needs an action: uninstall".into()),
     }
-    if rec["dir_created"] == json!(true) {
-        // remove_dir only succeeds on an empty directory, so nothing else can be lost.
-        if std::fs::remove_dir(vstr(&rec, "dir")).is_ok() {
-            println!("Removed {}", vstr(&rec, "dir"));
-        }
-    }
-    std::fs::remove_file(install_record()).map_err(|e| format!("cannot remove {}: {}", install_record().display(), e))?;
-    println!("`cargo` now resolves to {} again. Recorded runs remain in {}; delete that directory to remove them.", rec["upstream_cargo_at_install"].as_str().unwrap_or("your original Cargo"), util::haul_home().display());
-    Ok(0)
 }

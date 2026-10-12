@@ -29,8 +29,10 @@ behind it is [docs/report.md](docs/report.md).
 ## Install
 
 ```bash
-cargo install --locked --path . # installs `haul` and `haul-rustc-wrapper`; never a binary named `cargo`
-haul doctor                     # shows what Haul resolved and whether anything is wrong
+cargo build --release --locked  # builds `haul` and `haul-rustc-wrapper`
+target/release/haul setup       # installs Haul for you: ~/.haul/bin first on PATH (cargo, rustc, rustfmt, …
+                                # are Haul), credentials and registries imported once from ~/.cargo, stable Rust
+haul doctor                     # shows what Haul uses and whether anything is wrong
 ```
 
 Haul installs the toolchains it builds with into `~/.haul/toolchains` on first use (from
@@ -41,12 +43,12 @@ optional.
 
 ## Use
 
-Three ways in, from least to most invasive (see [docs/migration.md](docs/migration.md)):
+After `haul setup`, `cargo` is Haul (see [docs/migration.md](docs/migration.md)):
 
 ```bash
+cargo build                     # through Haul; so are rustc, rustfmt, cargo clippy, rust-analyzer's calls
+haul build                      # the same, by Haul's own name
 haul upstream build             # the toolchain's Cargo, nothing else — the escape hatch, always available
-haul build                      # Cargo syntax, through Haul
-haul install-shim               # then put the printed directory first on PATH: `cargo build` is now Haul
 ```
 
 After any build that went through Haul:

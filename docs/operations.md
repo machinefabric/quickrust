@@ -79,7 +79,7 @@ A policy status only ever replaces a *successful* Cargo status.
 ## CI
 
 ```bash
-haul install-shim --dir "$RUNNER_TEMP/haul-shim" && export PATH="$RUNNER_TEMP/haul-shim:$PATH"
+haul setup --no-modify-path && export PATH="$HOME/.haul/bin:$PATH"
 HAUL_REPORT="$RUNNER_TEMP/haul/{session}.json" cargo build --locked
 haul ci evaluate
 ```

@@ -17,30 +17,27 @@ Cargo and rustc, Haul's Cargo home, the `CARGO`, `RUSTC`, `RUSTC_WRAPPER` and
 `RUSTC_WORKSPACE_WRAPPER` values, target and build directories, cache policy and
 the capability set, and exits non-zero if something is wrong.
 
-## Stage 2 — explicit wrapper
+## Stage 2 — explicit commands
 
-Use `haul <cargo command>` wherever you would type `cargo`. Upstream `cargo`
-stays the default executable. Gate: `cargo test --test compat` passes in this
-repository, and your own project builds, tests and runs identically.
+Use `haul <cargo command>` wherever you would type `cargo`; `cargo` itself is
+unchanged. Gate: `cargo test --test compat` passes in this repository, and your own
+project builds, tests and runs identically.
 
-## Stage 3 — CI shim
+## Stage 3 — set up
 
 ```bash
-haul install-shim --dir "$RUNNER_TEMP/haul-shim"
-export PATH="$RUNNER_TEMP/haul-shim:$PATH"
-cargo build --locked       # now Haul
+haul setup                 # ~/.haul/bin first on PATH; `cargo` is now Haul
 ```
 
-## Stage 4 — project launcher
-
-Put the shim directory first on `PATH` in the project's dev shell, devcontainer
-or equivalent. `haul upstream <args>` remains the escape hatch.
-
-## Stage 5 — machine-wide (optional)
-
-Put the shim directory first on `PATH` in your shell profile. Haul never
-replaces rustup's own `~/.cargo/bin/cargo`: `install-shim` refuses to overwrite
-any existing `cargo`.
+`haul setup` copies Haul into `~/.haul/bin`, where `cargo`, `rustc`, `rustdoc`,
+`rustfmt`, `cargo-clippy`, `rust-analyzer` and the other toolchain programs are Haul
+too; adds one line sourcing `~/.haul/env` to `.profile` (and to `.bashrc`,
+`.bash_profile` and `.zshenv` where they exist; fish gets `conf.d/haul.fish`); imports
+registry credentials and the `[registries] [registry] [source] [net] [http]` tables of
+`~/.cargo/config.toml` once into Haul's Cargo home (`~/.haul/cargo`); and installs
+stable Rust. Running it again repairs what is missing. In CI, `haul setup
+--no-modify-path` and `export PATH="$HOME/.haul/bin:$PATH"`. rustup and `~/.cargo`
+are left as they are, and no longer used.
 
 ## Which toolchain runs
 
@@ -63,9 +60,7 @@ stops with a diagnostic. rustup and `~/.cargo` are never used.
 ## Uninstalling
 
 ```bash
-haul uninstall-shim        # removes exactly what install-shim created (recorded in ~/.haul/install.json)
-cargo uninstall haul
-rm -rf ~/.haul             # recorded runs, indexes, benchmarks
+haul self uninstall --yes  # removes ~/.haul (toolchains, installed programs, caches, records) and the PATH lines
 ```
 
 Files Haul may have written in a repository, only on request:
@@ -75,8 +70,8 @@ marked with `.haul-owned`; safe to delete).
 
 ## Rollback
 
-Remove the shim directory from `PATH`, or run `haul uninstall-shim`. Builds made
-through Haul and builds made by upstream Cargo share the same target directory
+Remove `~/.haul/bin` from `PATH`, or run `haul self uninstall --yes`. Builds made
+through Haul and builds made by plain Cargo share the same target directory
 without rebuilding each other's artifacts. In fast mode their profile settings
 differ, so each keeps its own set of artifacts there (Cargo names them by a hash
 of the settings); `cargo clean` or `haul gc --dry-run` show the cost. With
