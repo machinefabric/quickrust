@@ -294,6 +294,9 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
         ok(sb.cargo(p).arg("build"));
     }
     let (ta, tb, tc) = (sb.target_dir(&a), sb.target_dir(&b), sb.target_dir(&c));
+    // A collection first: it waits for one the builds started in the background, and counts the
+    // cache, so that no other starts before the ones this test runs.
+    ok(sb.haul(&a).arg("gc"));
     // b was last used three hours ago, a two; c just now. The workspace of the third is deleted.
     let backdate = |t: &std::path::Path, hours: u64| {
         let meta = t.with_file_name(format!("{}.json", t.file_name().unwrap().to_string_lossy()));
@@ -309,6 +312,7 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
     let tg = sb.target_dir(&gone);
     backdate(&tg, 1);
     fs::remove_dir_all(&gone).unwrap();
+    assert!(tg.exists());
     // Within bounds: only the build directory of the workspace that is gone goes.
     let plain = json_out(sb.haul(&a).args(["gc", "--format", "json"]));
     assert!(!tg.exists() && ta.exists() && tb.exists() && tc.exists(), "{}", plain);
@@ -327,6 +331,37 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
     assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "3\n");
     let status = stdout(&ok(sb.haul(&a).args(["cache", "status"])));
     assert!(status.contains("Haul's cache:") && status.contains("build directories") && status.contains("collected"), "{}", status);
+}
+
+#[test]
+fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_short() {
+    let sb = Sandbox::new("registry-gc");
+    let reg = common::registry::Registry::start();
+    reg.publish(&common::registry::Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello from the registry\"\n}\n"));
+    reg.serve_crates_io_for(&sb.home);
+    let p = sb.package("p", "p");
+    sb.file("p/Cargo.toml", "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = \"1.0\"\n");
+    sb.file("p/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
+    sb.file("p/src/lib.rs", "");
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "hello from the registry\n");
+    let downloads = || reg.requests().iter().filter(|r| r.starts_with("/dl/greet")).count();
+    assert_eq!(downloads(), 1);
+    let sources = |h: &std::path::Path| fs::read_dir(h.join("registry/src")).map(|d| d.flatten().flat_map(|i| fs::read_dir(i.path()).into_iter().flatten().flatten()).count()).unwrap_or(0);
+    assert_eq!(sources(&sb.cargo_home()), 1, "Haul's Cargo home holds the source");
+    // Within bounds, nothing of the downloads goes (they were just used).
+    let plain = json_out(sb.haul(&p).args(["gc", "--format", "json"]));
+    assert!(plain["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", plain);
+    assert_eq!(sources(&sb.cargo_home()), 1);
+    // Down to nothing: Cargo removes its downloads; the build directory just used stays.
+    let tight = json_out(sb.haul(&p).args(["gc", "--to", "1", "--format", "json"]));
+    let by_cargo = tight["removed"].as_array().unwrap().iter().find(|r| r["kind"] == "crate and git downloads").unwrap_or_else(|| panic!("{}", tight));
+    assert!(by_cargo["bytes"].as_u64().unwrap() > 0 && by_cargo["why"].as_str().unwrap().starts_with("Cargo:"), "{}", by_cargo);
+    assert_eq!(sources(&sb.cargo_home()), 0);
+    assert!(sb.target_dir(&p).join("debug/p").is_file());
+    // What needs it again downloads it again.
+    ok(sb.cargo(&p).arg("clean"));
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "hello from the registry\n");
+    assert_eq!(downloads(), 2);
 }
 
 #[test]

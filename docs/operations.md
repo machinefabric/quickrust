@@ -53,8 +53,11 @@ nothing can use (build directories of workspaces that are gone, drivers of toolc
 gone, week-old unfinished downloads, month-old remembered answers, leftovers), then — while the
 cache is above its size, or the disk below its free space — build directories and artifact
 entries, least recently used first, until the cache is back under 90% of its size and the disk
-has a quarter more than its free space. Never what was used in the last 15 minutes, a build
-directory a command holds, or one Cargo is building in. A file the artifact cache and a build
+has a quarter more than its free space; last, the crates and git checkouts downloaded into
+Haul's Cargo home, which Cargo removes itself (`cargo -Zgc clean gc`: it knows when each was
+last used and waits for builds reading them) — by its usual ages at every collection, and down
+to what the bounds leave when they are still exceeded. Never what was used in the last 15
+minutes, a build directory a command holds, or one Cargo is building in. A file the artifact cache and a build
 directory share (a restored unit) counts once and is freed with its last link.
 
 After every command Haul checks, at the cost of one `statvfs`, whether a collection is due

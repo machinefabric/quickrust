@@ -1089,7 +1089,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     let fs = crate::space::fs_space(util::haul_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::haul_home().display(), e))?;
     let policy = crate::space::policy(&cfg, &fs);
     let phase = crate::ui::Phase::start();
-    let done = crate::space::collect(&cache, &policy, to, dry_run, None)?;
+    let done = crate::space::collect(&cache, crate::space::downloads().as_ref(), &policy, to, dry_run, None)?;
     if background {
         return Ok(0);
     }
