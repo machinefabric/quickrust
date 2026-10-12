@@ -736,7 +736,7 @@ pub fn after_command(cfg: &Config, haul: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let log = fs::File::create(cache.join("gc.log")).map_err(|e| e.to_string())?;
-    let mut c = std::process::Command::new(haul);
+    let mut c = crate::resolve::haul_command(haul);
     c.args(["gc", "--background"]);
     crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", haul.display(), e))?;
     Ok(true)

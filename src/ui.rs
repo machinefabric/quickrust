@@ -93,7 +93,7 @@ pub fn prebuild(how: Prebuild, haul: &Path, target: &str) -> (Vec<String>, Vec<S
         Prebuild::Runner => {
             // For the triple itself: a runner set for the triple takes precedence over any
             // `cfg(...)` one the user configured, which must not run the program here.
-            let runner = serde_json::to_string(&[util::path_str(haul), NOOP_RUNNER.to_string()]).unwrap_or_default();
+            let runner = serde_json::to_string(&[util::path_str(haul), crate::resolve::AS_HAUL.to_string(), NOOP_RUNNER.to_string()]).unwrap_or_default();
             (Vec::new(), vec!["--config".into(), format!("target.{}.runner={}", target, runner)])
         }
     }

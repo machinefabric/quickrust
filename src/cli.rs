@@ -248,20 +248,25 @@ fn empty_graph() -> Graph {
 pub fn main() {
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
-    let args: Vec<OsString> = argv.collect();
-    let invoked_as = Path::new(&argv0).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    if invoked_as == "cargo" {
-        session::run_and_exit(args, Mode::Shim);
-    }
-    if crate::engine::PROXIES.contains(&invoked_as.as_str()) {
-        crate::engine::run_proxy(&invoked_as, args);
+    let mut args: Vec<OsString> = argv.collect();
+    let itself = args.first().is_some_and(|a| a == resolve::AS_HAUL);
+    if itself {
+        args.remove(0);
+        // The runner Haul sets while it builds what `cargo run` needs: the program is run
+        // afterwards, by `cargo run` itself.
+        if args.first().is_some_and(|a| a == crate::ui::NOOP_RUNNER) {
+            std::process::exit(0);
+        }
+    } else {
+        let invoked_as = Path::new(&argv0).file_stem().map(|s| s.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        if invoked_as == "cargo" {
+            session::run_and_exit(args, Mode::Shim);
+        }
+        if crate::engine::PROXIES.contains(&invoked_as.as_str()) {
+            crate::engine::run_proxy(&invoked_as, args);
+        }
     }
     let command = args.first().map(|a| util::lossy(a)).unwrap_or_default();
-    // The runner Haul sets while it builds what `cargo run` needs: the program is run afterwards,
-    // by `cargo run` itself.
-    if command == crate::ui::NOOP_RUNNER {
-        std::process::exit(0);
-    }
     let rest = if args.is_empty() { &args[..] } else { &args[1..] };
     let result: CmdResult = match command.as_str() {
         "" | "help" | "--help" | "-h" => {

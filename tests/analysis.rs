@@ -287,6 +287,34 @@ fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
 }
 
 #[test]
+fn what_haul_starts_in_the_background_is_haul_whatever_name_it_runs_by() {
+    // On Windows Haul's `cargo` is a hard link, and the running binary's path names it
+    // `cargo.exe`; a hard link here makes the same so. It is made beside the binary (a link must
+    // be on its filesystem); writing a copy instead could leave it busy for a parallel test's
+    // fork when it is run.
+    let sb = Sandbox::new("itself");
+    let p = sb.package("p", "p");
+    let linked = std::path::Path::new(env!("CARGO_BIN_EXE_haul")).with_file_name(format!("as-cargo-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&linked);
+    fs::create_dir_all(&linked).unwrap();
+    let cargo = linked.join("cargo");
+    fs::hard_link(env!("CARGO_BIN_EXE_haul"), &cargo).unwrap();
+    // A cache last counted long ago: the build starts a collection.
+    sb.file("haul-home/cache/usage.json", r#"{"format": 1, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0}"#);
+    ok(sb.with_shim(&cargo.display().to_string(), &p).arg("build"));
+    // The collection counts the cache when it is done (a command only records that it never was).
+    let usage = sb.home.join("cache/usage.json");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while !fs::read(&usage).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).is_some_and(|u| u["counted"] == json!(true)) {
+        assert!(std::time::Instant::now() < deadline, "no collection ran as Haul; its log: {:?}", fs::read_to_string(sb.home.join("cache/gc.log")));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    let commands: Vec<String> = sb.sessions().iter().map(|s| s["command"]["argv"].to_string()).collect();
+    fs::remove_dir_all(&linked).unwrap();
+    assert_eq!(commands.len(), 1, "only the build was a Cargo command: {:?}", commands);
+}
+
+#[test]
 fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
     let sb = Sandbox::new("collect");
     let (a, b, c) = (sb.package("a", "a"), sb.package("b", "b"), sb.package("c", "c"));

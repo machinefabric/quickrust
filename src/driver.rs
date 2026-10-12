@@ -127,7 +127,7 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
         Err(e) => return Err(format!("cannot create {}: {}", marker.display(), e)),
     }
     let log = fs::File::create(target.join("build.log")).map_err(|e| e.to_string())?;
-    let mut c = Command::new(haul);
+    let mut c = crate::resolve::haul_command(haul);
     c.args(["driver", "build", "--rustc", &util::path_str(rustc)]);
     // It outlives the build that started it, and that build's terminal signals (Ctrl-C) do not
     // reach it.

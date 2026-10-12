@@ -360,6 +360,19 @@ pub fn apply_aliases(inv: &mut Invocation, subset: &CargoConfigSubset) {
     }
 }
 
+/// The first argument that makes the binary Haul whatever name it runs by: Haul starting itself
+/// (background work, the runner `cargo run` gets while Haul builds). Its `cargo`, `rustc`, … are
+/// the same binary, and on Windows, where they are hard links, the running binary's path names
+/// whichever of them it was run as.
+pub const AS_HAUL: &str = "__haul";
+
+/// Haul itself, as a command (`AS_HAUL`): the binary at `exe` (`self_identity`).
+pub fn haul_command(exe: &Path) -> std::process::Command {
+    let mut c = std::process::Command::new(exe);
+    c.arg(AS_HAUL);
+    c
+}
+
 /// Canonical path and identity of the running executable.
 pub fn self_identity() -> (PathBuf, Option<(u64, u64)>) {
     let exe = std::env::current_exe().map(|p| canon(&p)).unwrap_or_default();
