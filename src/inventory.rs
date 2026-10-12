@@ -54,10 +54,14 @@ impl Tally {
 struct Group {
     tally: Tally,
     newest_mtime_ns: u64,
+    /// Allocated bytes of files that also have names outside the scanned directory (Haul's
+    /// artifact cache links outputs into its entries): deleting them here frees nothing.
+    shared_outside: u64,
 }
 
-/// Every name of one hard-linked inode: (relative path components, logical bytes, allocated bytes, mtime).
-type LinkedNames = Vec<(Vec<String>, u64, u64, u64)>;
+/// Every name of one hard-linked inode: (relative path components, logical bytes, allocated
+/// bytes, mtime, link count).
+type LinkedNames = Vec<(Vec<String>, u64, u64, u64, u64)>;
 
 const LAYOUT_DIRS: &[&str] = &["deps", "build", "incremental", ".fingerprint", "examples"];
 
@@ -169,11 +173,12 @@ fn allocated_bytes(md: &fs::Metadata) -> u64 {
     }
 }
 
-fn hardlink_key(md: &fs::Metadata) -> Option<(u64, u64)> {
+/// Identity and link count of a file with more than one name.
+fn hardlink_key(md: &fs::Metadata) -> Option<((u64, u64), u64)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        (md.nlink() > 1).then(|| (md.dev(), md.ino()))
+        (md.nlink() > 1).then(|| ((md.dev(), md.ino()), md.nlink()))
     }
     #[cfg(not(unix))]
     {
@@ -250,8 +255,9 @@ fn in_unit_out(rel: &[&str]) -> bool {
     rel.iter().take(3).position(|c| *c == "build").and_then(|i| unit_dir(rel, i)).is_some_and(|(_, part)| part == "out")
 }
 
+/// Counts one file; returns its group.
 #[allow(clippy::too_many_arguments)]
-fn account(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Knowledge, run_units: &HashSet<String>, cats: &mut BTreeMap<&'static str, Tally>, total: &mut Tally, groups: &mut HashMap<(&'static str, String), Group>) {
+fn account<'g>(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Knowledge, run_units: &HashSet<String>, cats: &mut BTreeMap<&'static str, Tally>, total: &mut Tally, groups: &'g mut HashMap<(&'static str, String), Group>) -> &'g mut Group {
     let inner = inner(rel);
     let (cat, group) = classify(inner, known, run_units);
     let group = if inner.len() != rel.len() { format!("{}/{}/{}", rel[0], rel[1], group) } else { group };
@@ -260,6 +266,7 @@ fn account(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Kn
     let g = groups.entry((cat, group)).or_default();
     g.tally.add(logical, allocated);
     g.newest_mtime_ns = g.newest_mtime_ns.max(mtime_ns);
+    g
 }
 
 /// Scans one build/target directory.
@@ -274,7 +281,7 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
     let mut error_count = 0u64;
     let mut lock_dirs: Vec<PathBuf> = Vec::new();
     let mut run_units: HashSet<String> = HashSet::new();
-    let mut deferred: LinkedNames = Vec::new();
+    let mut deferred: Vec<(Vec<String>, u64, u64, u64)> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     let note_err = |what: String, errors: &mut Vec<String>, count: &mut u64| {
         *count += 1;
@@ -335,9 +342,9 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
                     }
                 }
             }
-            if let Some(key) = hardlink_key(&md) {
+            if let Some((key, nlink)) = hardlink_key(&md) {
                 // Decided after the walk, once every name of the inode is known.
-                linked.entry(key).or_default().push((rel_owned.clone(), logical, allocated, util::mtime_ns(&md)));
+                linked.entry(key).or_default().push((rel_owned.clone(), logical, allocated, util::mtime_ns(&md), nlink));
                 continue;
             }
             if in_unit_out(&rel) {
@@ -354,6 +361,7 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
     // Cargo uplifts outputs from `deps/` (a unit's `out/` in the newer layout) by hard link. One
     // inode is counted once (FR-110.3), under the name that identifies its build unit, whichever
     // name the walk happened to reach first.
+    let mut shared_outside = 0u64;
     for (_, mut names) in linked {
         let pick = names
             .iter()
@@ -362,10 +370,15 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
                 rel.contains(&"deps") || in_unit_out(&rel)
             })
             .unwrap_or(0);
-        let (rel_owned, logical, allocated, mtime) = names.swap_remove(pick);
+        let seen = names.len() as u64;
+        let (rel_owned, logical, allocated, mtime, nlink) = names.swap_remove(pick);
         hardlink_dup += names.iter().map(|n| n.1).sum::<u64>();
         let rel: Vec<&str> = rel_owned.iter().map(String::as_str).collect();
-        account(&rel, logical, allocated, mtime, known, &run_units, &mut cats, &mut total, &mut groups);
+        let g = account(&rel, logical, allocated, mtime, known, &run_units, &mut cats, &mut total, &mut groups);
+        if nlink > seen {
+            g.shared_outside += allocated;
+            shared_outside += allocated;
+        }
     }
 
     let cutoff = opts.now_ns.saturating_sub(opts.stale_days * 86_400 * 1_000_000_000);
@@ -389,7 +402,8 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
         if class != "rebuildable" {
             continue;
         }
-        candidate_bytes += g.tally.allocated;
+        // What deleting the group frees: not the files it shares with other directories.
+        candidate_bytes += g.tally.allocated - g.shared_outside;
         let stem = group.strip_prefix("unit:");
         if let Some(stem) = stem {
             if counted_units.insert(stem.to_string()) {
@@ -408,6 +422,7 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
             "files": g.tally.files,
             "logical_bytes": g.tally.logical,
             "allocated_bytes": g.tally.allocated,
+            "shared_outside_bytes": g.shared_outside,
             "age_days": opts.now_ns.saturating_sub(g.newest_mtime_ns) / (86_400 * 1_000_000_000),
             "reason": reason,
             "regeneration_cost_ns": stem.and_then(|s| known.cost_ns.get(s)),
@@ -433,6 +448,7 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
         "logical_bytes": total.logical,
         "allocated_bytes": total.allocated,
         "hardlink_duplicate_bytes_excluded": hardlink_dup,
+        "shared_outside_bytes": shared_outside,
         "symlinks_not_followed": symlinks,
         "categories": categories,
         "reclaimability": by_reclaim.iter().map(|(k, t)| ((*k).to_string(), t.json())).collect::<serde_json::Map<_, _>>(),
@@ -642,5 +658,29 @@ mod tests {
         assert_eq!(v["logical_bytes"], 8_000);
         assert_eq!(v["hardlink_duplicate_bytes_excluded"], 8_000);
         fs::remove_dir_all(&root).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_also_linked_from_outside_free_nothing_when_deleted() {
+        // Haul's artifact cache links outputs into its entries: deleting the build directory's
+        // name of such a file frees no space.
+        let base = std::env::temp_dir().join(format!("haul-shared-{}", util::new_id()));
+        let root = base.join("target");
+        fs::create_dir_all(root.join("debug/deps")).unwrap();
+        fs::create_dir_all(base.join("cache")).unwrap();
+        fs::write(root.join("debug/deps/libold-1.rlib"), vec![0u8; 40_000]).unwrap();
+        fs::write(root.join("debug/deps/libown-2.rlib"), vec![0u8; 8_000]).unwrap();
+        fs::hard_link(root.join("debug/deps/libold-1.rlib"), base.join("cache/libold-1.rlib")).unwrap();
+        touch_old(&root.join("debug/deps/libold-1.rlib"), 90);
+        touch_old(&root.join("debug/deps/libown-2.rlib"), 90);
+        let v = scan(&root, &Knowledge::default(), &Options { stale_days: 30, now_ns: util::now_wall_ns(), size_budget: None });
+        assert_eq!(v["logical_bytes"], 48_000, "the file is still part of the directory");
+        let shared = v["shared_outside_bytes"].as_u64().unwrap();
+        assert!(shared >= 40_000, "{}", v);
+        let candidates = v["gc_plan"]["candidate_bytes"].as_u64().unwrap();
+        let own = v["gc_plan"]["candidates"].as_array().unwrap().iter().find(|c| c["group"] == "unit:own-2").unwrap()["allocated_bytes"].as_u64().unwrap();
+        assert_eq!(candidates, own, "only the unshared file frees space: {}", v["gc_plan"]);
+        fs::remove_dir_all(&base).ok();
     }
 }

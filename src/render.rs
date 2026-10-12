@@ -277,6 +277,9 @@ pub fn inventory(inv: &Value, out: &mut String) {
     if inv["hardlink_duplicate_bytes_excluded"].as_u64().unwrap_or(0) > 0 {
         let _ = writeln!(out, "  hard-linked copies counted once: {} excluded", bytes(&inv["hardlink_duplicate_bytes_excluded"]));
     }
+    if inv["shared_outside_bytes"].as_u64().unwrap_or(0) > 0 {
+        let _ = writeln!(out, "  shared with other directories (Haul's artifact cache links outputs): {} — deleting them here frees nothing", bytes(&inv["shared_outside_bytes"]));
+    }
     for e in inv["errors"]["samples"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "  unreadable: {}", num(e));
     }

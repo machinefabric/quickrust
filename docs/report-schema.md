@@ -147,14 +147,17 @@ an argument file, or dependency binaries other than build scripts), `restore_tim
 ## `artifacts[]`
 
 `root`, `files`, `logical_bytes`, `allocated_bytes`,
-`hardlink_duplicate_bytes_excluded`, `symlinks_not_followed`, `complete`,
+`hardlink_duplicate_bytes_excluded`, `shared_outside_bytes` (allocated bytes of files that also
+have names outside the directory, such as Haul's artifact cache: deleting them here frees
+nothing, and `candidate_bytes` leaves them out), `symlinks_not_followed`, `complete`,
 `errors`, `categories` (by `final`, `dependency`, `metadata`, `incremental`,
 `debug`, `build-script-binary`, `build-script-output`, `proc-macro`,
 `fingerprint`, `documentation`, `package-output`, `unknown-generated`),
 `reclaimability` (by `required`, `reusable`, `rebuildable`, `uncertain`),
 `active`, `gc_plan` { `mode` (`dry-run`), `stale_days`, `candidate_groups`,
 `candidate_bytes`, `reclaimable_now_bytes`, `blocked_by`,
-`regeneration_estimate`, `size_budget`, `candidates[]` }.
+`regeneration_estimate`, `size_budget`, `candidates[]` (each with its
+`shared_outside_bytes`) }.
 
 ## `recommendations[]`
 
