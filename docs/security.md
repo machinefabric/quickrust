@@ -13,11 +13,12 @@ Both forward the user's arguments and environment unchanged. What they add, in
 fast mode (compat mode adds nothing):
 
 - the profile settings, as `--config` arguments before the subcommand;
-- `-Zthreads=N` for Cargo's non-incremental units, with `RUSTC_BOOTSTRAP=1` set for
-  those compiler processes only. That variable also lets such a process accept other
-  unstable flags and `#![feature]`s; a crate that enables a nightly feature
-  unconditionally would compile under Haul where plain stable Cargo rejects it.
-  Build scripts and the compiler probes they run never see it;
+- `-Zthreads=N` for the units Cargo schedules that are compiled from scratch, with
+  `RUSTC_BOOTSTRAP=1` set for the compiler processes of Cargo's units (on a stable
+  compiler). That variable would also let such a process accept `#![feature]`s, so
+  Haul passes `-Zallow-features=` with it: a crate that enables a nightly feature is
+  rejected as under plain stable Cargo. Build scripts and the compiler probes they run
+  never see it, and nothing of this applies when the user sets `RUSTC_BOOTSTRAP`;
 - the artifact cache (below);
 - when the user has installed `wild`, linking with it: the binary found on `PATH` is
   trusted like any tool there, through the link `~/.haul/linker/ld`;

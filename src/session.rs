@@ -323,10 +323,12 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 // Haul's artifact cache: fast mode only, and never behind a wrapper the user
                 // configured, which may be a cache with rules of its own.
                 let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
-                // The parallel frontend: not behind a user wrapper, and not when the user decides
-                // about RUSTC_BOOTSTRAP themselves.
-                let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
-                let linker = if cfg.str("mode") == "fast" && cfg.str("fast.linker") == "auto" && inner.is_none() { fast_linker() } else { None };
+                // The parallel frontend and the linker need `-Z` flags (RUSTC_BOOTSTRAP on a stable
+                // compiler): not behind a user wrapper, and not when the user decides about
+                // RUSTC_BOOTSTRAP themselves.
+                let unlockable = cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none();
+                let threads = if unlockable { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
+                let linker = if unlockable && cfg.str("fast.linker") == "auto" { fast_linker() } else { None };
                 let settings = crate::wrapper::Settings {
                     artifact_cache: artifacts.then(|| artifact_cache.to_path_buf()),
                     frontend_threads: threads,

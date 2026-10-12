@@ -235,8 +235,9 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
             }
             "-W" | "-A" | "-D" | "-F" | "-Z" | "--remap-path-prefix" | "--sysroot" | "--codegen" | "-l" => {
                 let v = value(&mut i);
-                // The parallel frontend's thread count changes how rustc works, not what it builds.
-                if !(name == "-Z" && v.starts_with("threads")) {
+                // Fast mode's parallel frontend and its stable feature gate change how rustc
+                // works, not what it builds.
+                if !(name == "-Z" && (v.starts_with("threads") || v.starts_with("allow-features"))) {
                     flag_parts.push(format!("{} {}", name, tok.apply(&v)));
                 }
             }

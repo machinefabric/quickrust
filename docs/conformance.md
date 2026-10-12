@@ -113,19 +113,24 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 11. **Fast by default (spec revision of 2026-10-11).** In the default `mode =
     "fast"`, Haul changes what upstream Cargo would build in ways that keep program
     behaviour identical: debug-information settings, rustc's parallel frontend for
-    non-incremental units, a global artifact cache, rustup's proxy skipped, and its
+    units compiled from scratch, a global artifact cache, rustup's proxy skipped, and its
     own terminal output. `mode = "compat"` builds exactly upstream's builds; the
     compatibility corpus's byte-for-byte oracle tests run in compat mode, and fast
     mode has tests of its own (settings yield to the user, the parallel frontend
-    reaches only non-incremental units, the cache restores correctly and never
+    never reaches an incremental rebuild, `#![feature]` stays rejected on a stable
+    compiler, the cache restores correctly and never
     serves an edited source, fast mode and upstream keep separate artifacts instead
     of rebuilding each other). Every lever is measured by the speed index and checked
     against the benchmark workloads' own test suites before it becomes a default.
 
-12. **`RUSTC_BOOTSTRAP` for the parallel frontend.** The stable compiler contains the
-    parallel frontend behind `-Z`. Haul's wrapper sets `RUSTC_BOOTSTRAP=1` for the
-    compiler processes of Cargo's non-incremental units only, never for build scripts
-    or the compiler probes they run, so crates do not switch to nightly code paths.
+12. **`RUSTC_BOOTSTRAP` for `-Z` levers.** The stable compiler contains the parallel
+    frontend and the linker selection Haul uses behind `-Z`. Haul's wrapper sets
+    `RUSTC_BOOTSTRAP=1` for the compiler processes of the units Cargo schedules, with
+    `-Zallow-features=` so that `#![feature]` is rejected as on stable (with rustc's
+    "not in the list of allowed features" error instead of the stable-channel one).
+    Never for build scripts or the compiler probes they run, so crates do not switch to
+    nightly code paths; not on a nightly compiler; and no such lever applies when the
+    user sets `RUSTC_BOOTSTRAP` themselves.
 
 ## Open decisions of the specification, as resolved here
 
