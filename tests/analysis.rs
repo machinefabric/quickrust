@@ -920,6 +920,15 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     assert!(results.contains(&("mid".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
     // Its own objects unchanged (same sources, same interfaces below), the binary is only linked again.
     assert_eq!(links(&sb), vec![("app".to_string(), "relinked".to_string())], "{:#?}", cache_details(&sb));
+
+    // A macro call added to that body (on the same line: lines below would move `wrap`, which
+    // `mid` instantiates) is invisible to `mid` too.
+    let text = fs::read_to_string(&base).unwrap();
+    fs::write(&base, text.replace("    format!(\"{}-{}\", \"howdy\", 1)", "    { eprintln!(\"traced\"); format!(\"{}-{}\", \"howdy\", 1) }")).unwrap();
+    let traced = ok(cargo().args(["run", "-q"]));
+    assert_eq!((stdout(&traced).as_str(), stderr(&traced).contains("traced")), ("howdy-1 <2>\n", true), "{}", stderr(&traced));
+    assert!(cache_results(&sb).contains(&("mid".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
+    assert_eq!(links(&sb), vec![("app".to_string(), "relinked".to_string())], "{:#?}", cache_details(&sb));
     assert!(results.iter().any(|(n, r)| n == "base" && r != "hit") && results.iter().any(|(n, r)| n == "app" && r != "hit"), "{:#?}", cache_details(&sb));
 
     // A generic body is compiled into `mid`: `mid` is compiled again.
