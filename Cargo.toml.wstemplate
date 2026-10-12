@@ -34,6 +34,14 @@ sha2 = "0.10"
 # Content hashes of the artifact cache. 1.8.3 and later need Rust 1.85 (edition 2024);
 # Haul declares 1.80.
 blake3 = "=1.8.2"
+# Downloads (toolchains, registry index lines, crates): rustls with ring, roots from webpki-roots,
+# proxies from the environment. ureq 3 needs Rust 1.85.
+ureq = { version = "2.12", default-features = false, features = ["tls", "proxy-from-env"] }
+# Toolchain components are .tar.xz; liblzma is built from its bundled sources.
+liblzma = { version = "0.4", features = ["static"] }
+flate2 = "1"
+tar = { version = "0.4", default-features = false }
+semver = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
