@@ -29,7 +29,7 @@ const BINARY: &str = "haul-rustc-driver";
 /// between releases).
 const INTERFACE_BREAKS: &[u32] = &[99];
 /// How a failure to get the toolchain's `rustc-dev` component begins.
-pub const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
+const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 /// In a driver's directory: the toolchain it was built for (`{"sysroot": …}`).
 pub const COMPILER: &str = "compiler.json";
 /// Next to where the driver would be: why it could not be built.

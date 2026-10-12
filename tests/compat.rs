@@ -320,7 +320,7 @@ fn toolchain_programs_load_their_own_libraries_whatever_the_library_path_says() 
     let mut doctor = sb.haul(&p);
     with_decoy(doctor.arg("doctor"));
     assert!(stdout(&run(&mut doctor)).contains("  rustc              rustc 1."));
-    let Some(_) = build_driver(&sb, &p) else { return };
+    build_driver(&sb, &p);
     let mut driver = sb.haul(&p);
     with_decoy(driver.args(["driver", "build"]));
     ok(&mut driver);
@@ -1048,7 +1048,7 @@ fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     // changed by them, every output must be rustc's, byte for byte.
     let sb = Sandbox::new("driver");
     let ws = sb.workspace("ws");
-    let Some(driver) = build_driver(&sb, &ws) else { return };
+    let driver = build_driver(&sb, &ws);
     let driver = driver.to_string_lossy().into_owned();
     // The compiler the driver was built for: the toolchain Haul uses here.
     let rustc = sb.toolchain_dir(&ws).join("bin/rustc").display().to_string();

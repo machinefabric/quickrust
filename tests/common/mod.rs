@@ -349,22 +349,12 @@ pub fn git(cwd: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
 }
 
-/// How Haul reports that the toolchain's `rustc-dev` component, which its compiler driver is
-/// built against, cannot be installed (`haul driver build` / `haul driver status`).
-pub const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
-
-/// Builds Haul's compiler driver for the toolchain `cwd` uses; its path. `None` (with the reason
-/// on stderr) only where the toolchain's `rustc-dev` component cannot be installed (its files
-/// clash with another component's in some releases' packaging): the driver cannot exist there.
-/// Any other failure to build it fails the test.
-pub fn build_driver(sb: &Sandbox, cwd: &Path) -> Option<PathBuf> {
+/// Builds Haul's compiler driver for the toolchain `cwd` uses (adding its `rustc-dev` component
+/// from the toolchain's own release); its path. Failing to is a failure of the test.
+pub fn build_driver(sb: &Sandbox, cwd: &Path) -> PathBuf {
     let built = run(sb.haul(cwd).args(["driver", "build"]));
-    if !built.status.success() && stderr(&built).contains(NO_RUSTC_DEV) {
-        eprintln!("not run: Haul's compiler driver cannot be built here: {}", stderr(&built).trim());
-        return None;
-    }
     assert!(built.status.success(), "{}", stderr(&built));
-    Some(PathBuf::from(stdout(&built).trim()))
+    PathBuf::from(stdout(&built).trim())
 }
 
 #[cfg(unix)]
