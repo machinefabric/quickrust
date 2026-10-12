@@ -69,6 +69,8 @@ pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering
         Family::Build | Family::Check | Family::Clippy | Family::Doc => Rendering::Build,
         Family::Clean => Rendering::Lines,
         Family::Passthrough if passthrough_rendered => Rendering::Lines,
+        // Queries that may download what they describe; their stdout is the terminal's.
+        Family::Query if matches!(inv.command.as_deref(), Some("tree" | "metadata")) && !has("--help") && !has("-h") => Rendering::Lines,
         Family::Test | Family::Bench if has("--no-run") => Rendering::Build,
         // Doc tests are built while they run; there is nothing to build first.
         Family::Test | Family::Bench if has("--doc") => Rendering::Off,
@@ -126,9 +128,29 @@ pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
 /// A size as Cargo prints it (`645.0KiB`, `242B`) as Haul prints sizes (`645.0 KiB`, `242 B`).
 fn cargo_size(s: &str) -> String {
     match s.find(|c: char| c.is_ascii_alphabetic()) {
-        Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => format!("{} {}", &s[..i], &s[i..]),
+        Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') && ["B", "KiB", "MiB", "GiB", "TiB"].contains(&&s[i..]) => format!("{} {}", &s[..i], &s[i..]),
         _ => s.to_string(),
     }
+}
+
+/// `text` with every size in it as Haul prints sizes (`cargo_size`): `943B (694B compressed)`.
+fn cargo_sizes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 8);
+    let mut word = String::new();
+    let flush = |word: &mut String, out: &mut String| {
+        out.push_str(&cargo_size(word));
+        word.clear();
+    };
+    for c in text.chars() {
+        if c == ' ' || c == '(' || c == ')' || c == ',' {
+            flush(&mut word, &mut out);
+            out.push(c);
+        } else {
+            word.push(c);
+        }
+    }
+    flush(&mut word, &mut out);
+    out
 }
 
 pub fn color() -> bool {
@@ -907,10 +929,11 @@ impl Renderer {
                     Line::Status { verb, .. } => verb,
                     _ => "",
                 };
-                // `Removed 125 files, 75.8MiB total`
-                let rest = match (verb, rest.strip_suffix(" total").and_then(|r| r.split_once(", "))) {
-                    ("Removed", Some((files, size))) => format!("{}{}{}", files, self.paint("2", " · "), cargo_size(size)),
-                    _ => rest.to_string(),
+                // `Removed 125 files, 75.8MiB total`, `Packaged 4 files, 943B (694B compressed)`
+                let rest = cargo_sizes(rest.strip_suffix(" total").filter(|_| verb == "Removed").unwrap_or(rest));
+                let rest = match rest.split_once(" files, ") {
+                    Some((n, more)) if n.parse::<u64>().is_ok() => format!("{} files{}{}", n, self.paint("2", " · "), more),
+                    _ => rest,
                 };
                 Some(format!("{} {} {}", paint_mark(self, "1;32", "✓"), verb, rest))
             }
@@ -920,6 +943,8 @@ impl Renderer {
                 }
                 None
             }
+            // Cargo's notes (`note: see more `Cargo.toml` keys …`): asides, dimly.
+            Line::Other(t) if t.trim_start().starts_with("note: ") => Some(self.paint("2", t.trim_end())),
             _ => Some(line.to_string()),
         };
         if let Some(text) = out {
@@ -984,7 +1009,8 @@ impl Renderer {
             format!("{} after {}", self.paint("1;33", "■ Interrupted"), human_dur(wall_ns))
         } else if !exit.success() {
             format!("{} after {}", self.paint("1;31", &format!("✗ cargo {} failed", l.command)), human_dur(wall_ns))
-        } else if l.result {
+        } else if l.result || matches!(l.command.as_str(), "tree" | "metadata") {
+            // The command's result says it (`Removed …`), or is what it printed.
             return;
         } else {
             let changes: Vec<String> = [(l.updated, "updated"), (l.downgraded, "downgraded"), (l.added, "added"), (l.removed, "removed")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
@@ -1209,6 +1235,8 @@ mod tests {
     fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
         assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "✓ Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
         assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files · 75.8 MiB\n");
+        assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "✓ Packaged 4 files · 943 B (694 B compressed)\n");
+        assert_eq!(cargo_sizes("1.5KiB, 3B (x) 10MiBs 2.0Gi"), "1.5 KiB, 3 B (x) 10MiBs 2.0Gi");
         let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
         assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\n✗ cargo update failed after 920ms\n");
     }

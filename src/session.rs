@@ -479,8 +479,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let subset = if inv.family.builds() || inv.family == Family::External { resolve::cargo_config_subset(&start_dir, &inv.configs) } else { Default::default() };
     resolve::apply_aliases(&mut inv, &subset);
 
-    // Queries, help output and opted-out nested invocations: replace ourselves with Cargo.
-    if spec.scenario.is_none() && (inv.command.is_none() || inv.family == Family::Query || nested_upstream) {
+    // Queries, help output and opted-out nested invocations: replace ourselves with Cargo; a
+    // query whose downloads Haul shows in a terminal (`cargo tree`) is rendered like `cargo fetch`.
+    let shown_query = inv.family == Family::Query && spec.scenario.is_none() && !spec.stdout_to_stderr && crate::ui::rendering(&inv, &spec.args, &cfg) == Rendering::Lines;
+    if spec.scenario.is_none() && (inv.command.is_none() || (inv.family == Family::Query && !shown_query) || nested_upstream) {
         let mut cmd = engine.command(&spec.args, &inv);
         cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
         let err = proc::exec(&mut cmd);
