@@ -38,11 +38,14 @@ pub struct Spec {
     /// Send the delegated command's stdout to our stderr. Used by management commands
     /// (benchmarks, experiments) whose own stdout carries their result.
     pub stdout_to_stderr: bool,
+    /// A private artifact cache (benchmarks and experiments, whose repetitions must not reuse
+    /// each other's results); the shared one in `HAUL_HOME` otherwise.
+    pub artifact_cache: Option<PathBuf>,
 }
 
 impl Spec {
     pub fn new(args: Vec<OsString>, mode: Mode) -> Spec {
-        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None, stdout_to_stderr: false }
+        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None, stdout_to_stderr: false, artifact_cache: None }
     }
 }
 
@@ -196,7 +199,7 @@ struct Plan {
 }
 
 /// Decides wrapper composition and cache/incremental policy for one session.
-fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, store: &WsStore, id: &str) -> Result<Plan, String> {
+fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, store: &WsStore, id: &str, artifact_cache: &Path) -> Result<Plan, String> {
     let mut p = Plan {
         env_set: Vec::new(),
         env_remove: Vec::new(),
@@ -321,7 +324,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 // about RUSTC_BOOTSTRAP themselves.
                 let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
                 let settings = crate::wrapper::Settings {
-                    artifact_cache: artifacts.then(|| util::haul_home().join("cache").join("artifacts")),
+                    artifact_cache: artifacts.then(|| artifact_cache.to_path_buf()),
                     frontend_threads: threads,
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                 };
@@ -450,7 +453,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let store = WsStore::open(ws_root.as_deref());
     let store_ok = store.ensure().is_ok();
     let id = util::new_id();
-    let mut plan = plan(&inv, &cfg, &subset, &store, &id)?;
+    let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::haul_home().join("cache").join("artifacts"));
+    let mut plan = plan(&inv, &cfg, &subset, &store, &id, &artifact_cache)?;
     if !store_ok {
         plan.instrumented = false;
     }
@@ -652,7 +656,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
     if plan.policy["cache"]["artifacts"] == json!("on") && id.as_bytes()[24] % 16 == 0 {
-        crate::artifact_cache::evict(&util::haul_home().join("cache").join("artifacts"), cfg.int("cache.artifacts-max-size"));
+        crate::artifact_cache::evict(&artifact_cache, cfg.int("cache.artifacts-max-size"));
     }
     outcome.store = Some(store);
     Ok(outcome)
