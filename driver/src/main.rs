@@ -20,14 +20,19 @@
 //!   names, options, visibilities, …).
 //!
 //! Procedural macros, whose bodies run inside their dependents' compilations, keep rustc's hash.
+//!
+//! With `HAUL_DRIVER_READY_FD` set (Unix), the outputs are linked before rustc saves its
+//! incremental state, and the wrapper is told when they are written (see `early_link`).
 //! The crate hash goes to `<out-dir>/lib<crate name><extra filename>.haul-svh` for Haul's wrapper.
 
 #![feature(rustc_private)]
 
+extern crate rustc_codegen_ssa;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
 extern crate rustc_hir;
 extern crate rustc_interface;
+extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
@@ -49,6 +54,9 @@ use rustc_session::config::{CrateType, OutFileName, OutputType};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
+#[cfg(unix)]
+mod early_link;
+
 const INTERFACE_HASH: &str = "HAUL_DRIVER_INTERFACE_HASH";
 
 /// rustc's own `crate_hash` query, for the crates whose bodies their dependents observe.
@@ -56,12 +64,23 @@ static STOCK_CRATE_HASH: OnceLock<for<'tcx> fn(TyCtxt<'tcx>, LocalCrate) -> Svh>
 
 struct Callbacks {
     interface_hash: bool,
+    /// The pipe on which to say the outputs are written (see `early_link`).
+    ready_fd: Option<i32>,
 }
 
 impl rustc_driver::Callbacks for Callbacks {
     fn config(&mut self, config: &mut rustc_interface::interface::Config) {
         // As rustc's own driver sets it: it decides how paths are printed into metadata.
         config.opts.trimmed_def_paths = true;
+        #[cfg(unix)]
+        if let Some(fd) = self.ready_fd {
+            let keep = std::env::var_os(early_link::KEEP_OBJECTS).map(std::path::PathBuf::from);
+            config.make_codegen_backend = Some(Box::new(move |sess| {
+                let early = rustc_session::EarlyDiagCtxt::new(sess.opts.error_format);
+                let backend = rustc_interface::util::get_codegen_backend(&early, &sess.opts.sysroot, sess.opts.unstable_opts.codegen_backend.as_deref(), &sess.target);
+                Box::new(early_link::EarlyLink::new(backend, fd, keep))
+            }));
+        }
         if self.interface_hash {
             config.override_queries = Some(|_, providers| {
                 let _ = STOCK_CRATE_HASH.set(providers.queries.crate_hash);
@@ -399,6 +418,10 @@ fn main() -> std::process::ExitCode {
     rustc_driver::init_rustc_env_logger(&early);
     rustc_driver::install_ice_hook("https://github.com/jowharshamshiri/haul/issues", |_| ());
     rustc_driver::install_ctrlc_handler();
-    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some() };
+    #[cfg(unix)]
+    let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok());
+    #[cfg(not(unix))]
+    let ready_fd = None;
+    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), ready_fd };
     rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&rustc_driver::args::raw_args(&early), &mut callbacks))
 }
