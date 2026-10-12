@@ -1,0 +1,4 @@
+# Haul declares `rust-version = "1.80"`: new dependencies resolve to releases that still build on
+# it (CI's MSRV job builds with `--locked`).
+[resolver]
+incompatible-rust-versions = "fallback"

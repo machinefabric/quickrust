@@ -4,6 +4,7 @@
 //! process boundary around them (policy, observation, lifecycle, budgets).
 
 pub mod analyze;
+pub mod archive;
 pub mod artifact_cache;
 pub mod bench;
 pub mod cache;
@@ -14,6 +15,7 @@ pub mod discover;
 pub mod driver;
 pub mod fast;
 pub mod inventory;
+pub mod net;
 pub mod prebuilt;
 pub mod proc;
 pub mod recommend;
