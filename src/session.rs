@@ -338,6 +338,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                         "artifact_cache": if artifacts { Some(path_str(&util::haul_home().join("cache").join("artifacts"))) } else { None },
                         "frontend_threads": threads,
                         "unit_times": path_str(&util::haul_home().join("cache").join("unit-times")),
+                        "min_workspace_store_ns": cfg.int("cache.artifacts-min-workspace-ms") * 1_000_000,
                     });
                     let _ = util::write_atomic_fast(&dir.join(crate::WRAPPER_CONFIG), &serde_json::to_vec(&wrapper_config).unwrap_or_default());
                     p.events_dir = Some(dir);

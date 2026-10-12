@@ -206,6 +206,11 @@ fn rewrite(text: &[u8], pairs: &[(String, String)]) -> Vec<u8> {
 }
 
 impl Job {
+    /// A workspace unit (sources can change), as opposed to a dependency.
+    pub fn is_local(&self) -> bool {
+        self.local
+    }
+
     fn manifest(&self) -> PathBuf {
         self.root.join("m").join(format!("{}.json", self.key1))
     }

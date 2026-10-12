@@ -129,6 +129,8 @@ pub fn main() {
 
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
+        // A workspace unit that compiles in a moment is not worth a copy on every edit.
+        (Ok(j), Some(_)) if exit.success() && j.is_local() && dur_ns < settings["min_workspace_store_ns"].as_u64().unwrap_or(300_000_000) => json!({ "result": "miss", "not_stored": "quick to compile" }),
         (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
             Ok(Ok(())) => json!({ "result": "stored" }),
             Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
