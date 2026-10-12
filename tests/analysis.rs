@@ -8,6 +8,7 @@ mod common;
 use common::*;
 use serde_json::{json, Value};
 use std::fs;
+use std::io::Write;
 use std::process::Stdio;
 
 fn json_out(cmd: &mut std::process::Command) -> Value {
@@ -763,6 +764,35 @@ fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
         .collect();
     out.sort();
     out
+}
+
+#[test]
+fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
+    let sb = Sandbox::new("rewritten");
+    let dep = sb.dir.join("cargo-home/registry/src/fake-0000/greet-1.0.0");
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n");
+    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
+    sb.file("app/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
+    let app = sb.dir.join("app");
+
+    ok(sb.cargo(&app).arg("build"));
+    assert!(cache_results(&sb).contains(&("greet".to_string(), "stored".to_string())), "{:#?}", cache_details(&sb));
+    // A tool that rewrites an output in place (rather than replacing the file, as rustc and
+    // the linkers do) also rewrites whatever shares that file.
+    let rlib = fs::read_dir(app.join("target/debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|x| x == "rlib")).unwrap();
+    let mut bytes = fs::read(&rlib).unwrap();
+    bytes.truncate(bytes.len() / 2);
+    fs::OpenOptions::new().write(true).truncate(true).open(&rlib).unwrap().write_all(&bytes).unwrap();
+
+    ok(sb.cargo(&app).arg("clean"));
+    let run = ok(sb.cargo(&app).args(["run", "-q"]));
+    assert_eq!(stdout(&run), "hello\n");
+    assert!(cache_results(&sb).contains(&("greet".to_string(), "stored".to_string())), "the damaged entry was discarded, compiled and stored again: {:#?}", cache_details(&sb));
+
+    ok(sb.cargo(&app).arg("clean"));
+    ok(sb.cargo(&app).arg("build"));
+    assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
 }
 
 #[test]

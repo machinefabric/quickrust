@@ -11,11 +11,19 @@
 //!   artifact it names; Cargo's `CARGO_*` variables; the content of `OUT_DIR`;
 //! - **key, level 2**: level 1 plus the values of the environment variables rustc reported
 //!   reading (`# env-dep:` in its dep-info), which are only known after one compilation;
-//! - **hit**: outputs are copied (never linked: a later build may touch them) and so get a
+//! - **store**: outputs are hard-linked into the entry when the cache shares their file
+//!   system (rustc and the linkers write every output as a new file, so the next build of
+//!   the unit leaves the entry's file alone), and copied otherwise. The dep-info is always
+//!   copied: rustc rewrites it in place. Every file's content hash (BLAKE3) is kept with
+//!   the entry, so its bookkeeping needs no fsync either;
+//! - **hit**: outputs are copied (never linked: a later build of that unit, here or in
+//!   another checkout, would see a modification time another checkout set) and so get a
 //!   current modification time, which Cargo's staleness check expects; the dep-info and
 //!   the replayed stderr have the output and `OUT_DIR` paths of the cached build replaced
 //!   by this build's, because Cargo derives its own fingerprints and its pipelining
 //!   (`artifact` notices) from them, and stores the diagnostics it replays as warnings.
+//!   Every file is checked against its content hash as it is restored: a file rewritten in
+//!   place through a link, torn by a crash or damaged on disk discards the entry.
 //!
 //! Any cache problem means "compile normally": the cache can only ever save time.
 //!
@@ -28,7 +36,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "haul-artifact-cache-1";
+const FORMAT: &str = "haul-artifact-cache-2";
 
 /// One cacheable compilation, prepared before rustc runs.
 pub struct Job {
@@ -111,7 +119,7 @@ fn content_hash(root: &Path, path: &Path) -> std::io::Result<String> {
             return Ok(h);
         }
     }
-    let h = util::sha256_file(path)?;
+    let h = util::blake3_file(path)?;
     remember_hash(root, path, &h)?;
     Ok(h)
 }
@@ -140,7 +148,7 @@ fn tree_digest(root: &Path) -> Option<String> {
             if md.is_dir() {
                 stack.push(e.path());
             } else {
-                parts.push(format!("{}={}", rel, util::sha256_file(&e.path()).ok()?));
+                parts.push(format!("{}={}", rel, util::blake3_file(&e.path()).ok()?));
             }
         }
     }
@@ -253,7 +261,7 @@ fn level2(key1: &str, names: &[String], inputs: &[String], cwd: &Path) -> Option
         if f.starts_with("<OUT_DIR>") {
             continue;
         }
-        parts.push(format!("{}={}", f, util::sha256_file(&cwd.join(f)).ok()?));
+        parts.push(format!("{}={}", f, util::blake3_file(&cwd.join(f)).ok()?));
     }
     Some(util::digest_parts(parts))
 }
@@ -312,12 +320,15 @@ impl Job {
         let restore = || -> std::io::Result<Vec<u8>> {
             for f in entry["files"].as_array().into_iter().flatten().filter_map(Value::as_str) {
                 let bytes = fs::read(dir.join(f))?;
+                if Some(blake3::hash(&bytes).to_hex().as_str()) != entry["hashes"][f].as_str() {
+                    return Err(std::io::Error::other(format!("{} does not have the content it was stored with", f)));
+                }
                 let bytes = if f.ends_with(".d") { rewrite(&bytes, &pairs) } else { bytes };
                 // A fresh file, so Cargo's mtime-based staleness check sees a new output.
                 util::write_atomic_fast(&self.out_dir.join(f), &bytes)?;
                 // Its content is known: dependents hashing it for their own keys need not read it.
-                if let Some(h) = entry["hashes"][f].as_str() {
-                    remember_hash(&self.root, &self.out_dir.join(f), h)?;
+                if is_linkable(f) {
+                    remember_hash(&self.root, &self.out_dir.join(f), entry["hashes"][f].as_str().unwrap_or_default())?;
                 }
                 #[cfg(unix)]
                 if entry["executable"].as_array().into_iter().flatten().any(|x| x.as_str() == Some(f)) {
@@ -333,8 +344,12 @@ impl Job {
                 let _ = fs::File::options().write(true).open(dir.join("entry.json")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
                 Lookup::Hit { stderr, entry: key2 }
             }
-            // A damaged entry is a miss; the compilation that follows overwrites the outputs.
-            Err(_) => Lookup::Miss,
+            // A damaged entry is a miss; the compilation that follows overwrites the outputs and,
+            // with the entry gone, stores it again.
+            Err(_) => {
+                discard(&self.root, &dir);
+                Lookup::Miss
+            }
         }
     }
 
@@ -370,7 +385,7 @@ impl Job {
         // lookups hash), even when an identical entry was stored before.
         let manifest = json!({ "env_deps": names, "inputs": inputs });
         if dir.join("entry.json").exists() {
-            return util::write_json(&self.manifest(), &manifest).map_err(|e| e.to_string());
+            return util::write_json_fast(&self.manifest(), &manifest).map_err(|e| e.to_string());
         }
         let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
         let tmp = self.root.join("tmp").join(format!("{}-{}", key2, std::process::id()));
@@ -384,10 +399,21 @@ impl Job {
             if !md.is_file() || util::mtime_ns(&md) + 1_000_000_000 < start_wall_ns {
                 continue;
             }
-            fs::copy(&p, tmp.join(&name)).map_err(|e| e.to_string())?;
-            if is_linkable(&name) {
-                hashes.insert(name.clone(), json!(content_hash(&self.root, &p).map_err(|e| e.to_string())?));
+            let dst = tmp.join(&name);
+            if name.ends_with(".d") || fs::hard_link(&p, &dst).is_err() {
+                fs::copy(&p, &dst).map_err(|e| e.to_string())?;
             }
+            // What the entry holds, hashed from the entry itself. An output dependents link
+            // against is hashed through the memo, and so is the target directory's file, for
+            // their lookups; when the two are one linked file, the second is a memo hit.
+            let hash = if is_linkable(&name) {
+                let h = content_hash(&self.root, &dst).map_err(|e| e.to_string())?;
+                content_hash(&self.root, &p).map_err(|e| e.to_string())?;
+                h
+            } else {
+                util::blake3_file(&dst).map_err(|e| e.to_string())?
+            };
+            hashes.insert(name.clone(), json!(hash));
             if has_execute_permission(&md) {
                 executable.push(name.clone());
             }
@@ -399,13 +425,13 @@ impl Job {
         }
         fs::write(tmp.join("stderr"), stderr).map_err(|e| e.to_string())?;
         let entry = json!({ "files": files, "executable": executable, "hashes": hashes, "out_dir": util::path_str(&self.out_dir), "out_dir_env": self.out_dir_env, "env_deps": names, "inputs": inputs, "stored_at": util::iso8601(util::now_wall_ns()) });
-        util::write_json(&tmp.join("entry.json"), &entry).map_err(|e| e.to_string())?;
+        util::write_json_fast(&tmp.join("entry.json"), &entry).map_err(|e| e.to_string())?;
         fs::create_dir_all(self.root.join("e")).map_err(|e| e.to_string())?;
         // Another build may have stored the same entry meanwhile; either copy is the same.
         if fs::rename(&tmp, &dir).is_err() {
             let _ = fs::remove_dir_all(&tmp);
         }
-        util::write_json(&self.manifest(), &manifest).map_err(|e| e.to_string())
+        util::write_json_fast(&self.manifest(), &manifest).map_err(|e| e.to_string())
     }
 }
 
@@ -422,6 +448,17 @@ fn has_execute_permission(md: &fs::Metadata) -> bool {
         let _ = md;
         false
     }
+}
+
+/// Removes an entry. It is renamed away first, so a build looking it up concurrently finds it
+/// whole or not at all. Returns whether it was removed.
+fn discard(root: &Path, dir: &Path) -> bool {
+    let doomed = root.join("tmp").join(format!("discard-{}-{}", std::process::id(), dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    if fs::create_dir_all(root.join("tmp")).and_then(|_| fs::rename(dir, &doomed)).is_ok() {
+        let _ = fs::remove_dir_all(&doomed);
+        return true;
+    }
+    false
 }
 
 /// Keeps the cache below `max_bytes` by removing the least recently used entries.
@@ -443,9 +480,7 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
         if over == 0 {
             break;
         }
-        let doomed = root.join("tmp").join(format!("evict-{}-{}", std::process::id(), dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-        if fs::create_dir_all(root.join("tmp")).and_then(|_| fs::rename(&dir, &doomed)).is_ok() {
-            let _ = fs::remove_dir_all(&doomed);
+        if discard(root, &dir) {
             removed += bytes;
             over = over.saturating_sub(bytes);
         }
@@ -485,7 +520,7 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let f = root.join("libdep.rlib");
         fs::write(&f, b"first").unwrap();
-        assert_eq!(content_hash(&root, &f).unwrap(), util::sha256_hex(b"first"));
+        assert_eq!(content_hash(&root, &f).unwrap(), blake3::hash(b"first").to_hex().as_str());
         // Remembered: a planted wrong value for this exact file identity is what comes back,
         // which shows the file is not read again.
         remember_hash(&root, &f, &"0".repeat(64)).unwrap();
@@ -493,7 +528,7 @@ mod tests {
         // A rewrite changes the identity: the new content is hashed.
         std::thread::sleep(std::time::Duration::from_millis(5));
         fs::write(&f, b"second, longer").unwrap();
-        assert_eq!(content_hash(&root, &f).unwrap(), util::sha256_hex(b"second, longer"));
+        assert_eq!(content_hash(&root, &f).unwrap(), blake3::hash(b"second, longer").to_hex().as_str());
         fs::remove_dir_all(&root).ok();
     }
 
