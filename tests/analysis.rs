@@ -766,6 +766,54 @@ fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
 }
 
 #[test]
+fn compiler_probes_run_by_build_scripts_are_never_cached() {
+    let sb = Sandbox::new("probes");
+    // Like autocfg: a build script compiles small programs with the same rustc (through the
+    // wrapper Cargo hands it) to learn what the compiler supports. Probes must run every time and
+    // may fail by design; neither outcome is an artifact to keep.
+    sb.file("cargo-home/registry/src/fake-0000/probed-1.0.0/Cargo.toml", "[package]\nname = \"probed\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file(
+        "cargo-home/registry/src/fake-0000/probed-1.0.0/build.rs",
+        r#"use std::process::Command;
+
+fn probe(name: &str, code: &str) -> bool {
+    let out = std::env::var("OUT_DIR").unwrap();
+    let src = format!("{out}/{name}.rs");
+    std::fs::write(&src, code).unwrap();
+    let rustc = std::env::var("RUSTC").unwrap();
+    let mut cmd = match std::env::var("RUSTC_WRAPPER") {
+        Ok(w) if !w.is_empty() => { let mut c = Command::new(w); c.arg(rustc); c }
+        _ => Command::new(rustc),
+    };
+    cmd.args(["--crate-name", name, "--crate-type", "lib", "--emit", "metadata", "--out-dir", &out, &src]);
+    cmd.status().unwrap().success()
+}
+
+fn main() {
+    assert!(probe("probe_works", "pub fn f() {}"));
+    assert!(!probe("probe_fails", "pub fn f() -> u8 { \"no\" }"));
+    println!("cargo::rustc-cfg=probed");
+    println!("cargo::rustc-check-cfg=cfg(probed)");
+}
+"#,
+    );
+    sb.file("cargo-home/registry/src/fake-0000/probed-1.0.0/src/lib.rs", "#[cfg(probed)]\npub fn probed() -> bool {\n    true\n}\n");
+    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprobed = {{ path = {:?} }}\n\n[profile.dev.package.probed]\nincremental = false\n", sb.dir.join("cargo-home/registry/src/fake-0000/probed-1.0.0").display().to_string()));
+    sb.file("app/src/main.rs", "fn main() {\n    assert!(probed::probed());\n}\n");
+    let app = sb.dir.join("app");
+
+    for round in ["first build", "after clean, with the cache warm"] {
+        ok(sb.cargo(&app).arg("build"));
+        let results = cache_results(&sb);
+        for probe in ["probe_works", "probe_fails"] {
+            let seen: Vec<_> = results.iter().filter(|(n, _)| n == probe).map(|(_, r)| r.as_str()).collect();
+            assert_eq!(seen, vec!["off"], "{round}: {probe} ran through the wrapper and was kept out of the cache: {:#?}", cache_details(&sb));
+        }
+        ok(sb.cargo(&app).arg("clean"));
+    }
+}
+
+#[test]
 fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let sb = Sandbox::new("artifacts");
     // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.
