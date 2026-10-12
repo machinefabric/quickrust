@@ -564,7 +564,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     }
     let warmups = opts.warmups.unwrap_or(if opts.full { 1 } else { 0 });
 
-    let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe) });
+    let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe), "wild": ctx.sealed.wild.as_ref().map(|w| w.display().to_string()) });
     eprintln!("haul-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
 
     // Provenance is taken before measuring: the binaries were built from this state, and later
