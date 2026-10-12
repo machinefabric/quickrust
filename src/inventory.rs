@@ -67,8 +67,44 @@ pub fn artifact_stem(file_name: &str) -> &str {
     base.strip_prefix("lib").unwrap_or(base)
 }
 
+/// Whether a path component is a Cargo unit hash (16 hexadecimal digits).
+fn is_unit_hash(c: &str) -> bool {
+    c.len() == 16 && c.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// In Cargo's newer layout a unit has a directory of its own, `build/<package>/<unit hash>/`
+/// holding `fingerprint/`, `out/` and, for a build script's run, `run/`. Returns the length of
+/// the unit directory's path and the part of it `rel` is in.
+fn unit_dir<'a>(rel: &[&'a str], build: usize) -> Option<(usize, &'a str)> {
+    let (hash, part) = (rel.get(build + 2)?, rel.get(build + 3)?);
+    (is_unit_hash(hash) && matches!(*part, "fingerprint" | "out" | "run") && rel.len() > build + 4).then_some((build + 3, *part))
+}
+
+/// Category of a compiler output by its name: what `deps/` holds in Cargo's classic layout and a
+/// unit's `out/` in the newer one.
+fn artifact(name: &str, ext: &str, known: &Knowledge) -> (&'static str, String) {
+    let stem = artifact_stem(name);
+    let cat = match ext {
+        "rmeta" => "metadata",
+        "rlib" | "a" | "lib" => "dependency",
+        "d" => "fingerprint",
+        "o" | "dwo" | "dwp" | "pdb" => "debug",
+        "dylib" | "so" | "dll" => {
+            if known.proc_macro_stems.contains(stem) {
+                "proc-macro"
+            } else {
+                "dependency"
+            }
+        }
+        "" | "exe" | "wasm" => "final",
+        _ => "unknown-generated",
+    };
+    (cat, format!("unit:{}", stem))
+}
+
 /// Category and aggregation group of one file, from its path relative to the scan root.
-pub fn classify(rel: &[&str], known: &Knowledge) -> (&'static str, String) {
+/// `run_units` are the unit directories of build-script runs in Cargo's newer layout.
+pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) -> (&'static str, String) {
     let name = rel.last().copied().unwrap_or("");
     let ext = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     if rel.iter().any(|c| c.ends_with(".dSYM")) {
@@ -82,6 +118,17 @@ pub fn classify(rel: &[&str], known: &Knowledge) -> (&'static str, String) {
             ".fingerprint" => ("fingerprint", format!("unit:{}", sub)),
             "examples" => (if ext == "d" { "fingerprint" } else { "final" }, prefix),
             "build" => {
+                if let Some((len, part)) = unit_dir(rel, i) {
+                    let unit = rel[..len].join("/");
+                    return match part {
+                        "fingerprint" => ("fingerprint", format!("unit:{}-{}", rel[i + 1], rel[i + 2])),
+                        // What the script printed, and what it generated into `OUT_DIR`.
+                        "run" => ("build-script-output", unit),
+                        _ if run_units.contains(&unit) => ("build-script-output", unit),
+                        _ if name.starts_with("build_script_") || name.starts_with("build-script-") => ("build-script-binary", unit),
+                        _ => artifact(name, ext, known),
+                    };
+                }
                 let group = format!("{}/{}", prefix, sub);
                 if rel.get(i + 2) == Some(&"out") {
                     ("build-script-output", group)
@@ -91,26 +138,7 @@ pub fn classify(rel: &[&str], known: &Knowledge) -> (&'static str, String) {
                     ("build-script-output", group)
                 }
             }
-            _ => {
-                let stem = artifact_stem(name);
-                let group = format!("unit:{}", stem);
-                let cat = match ext {
-                    "rmeta" => "metadata",
-                    "rlib" | "a" | "lib" => "dependency",
-                    "d" => "fingerprint",
-                    "o" | "dwo" | "dwp" | "pdb" => "debug",
-                    "dylib" | "so" | "dll" => {
-                        if known.proc_macro_stems.contains(stem) {
-                            "proc-macro"
-                        } else {
-                            "dependency"
-                        }
-                    }
-                    "" | "exe" | "wasm" => "final",
-                    _ => "unknown-generated",
-                };
-                (cat, group)
-            }
+            _ => artifact(name, ext, known),
         };
     }
     if rel.first() == Some(&"doc") || rel.get(1) == Some(&"doc") {
@@ -205,10 +233,27 @@ fn reclaimability(category: &str, group: &str, newest_mtime_ns: u64, known: &Kno
 
 /// Adds one file to its category and group.
 #[allow(clippy::too_many_arguments)]
-fn account(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Knowledge, cats: &mut BTreeMap<&'static str, Tally>, total: &mut Tally, groups: &mut HashMap<(&'static str, String), Group>) {
-    // Haul's own benchmark/experiment directories are complete target directories one level down.
-    let inner = if matches!(rel.first(), Some(&"haul-bench") | Some(&"haul-exp")) && rel.len() > 2 { &rel[2..] } else { rel };
-    let (cat, group) = classify(inner, known);
+/// The path below Haul's own benchmark/experiment directories, which are complete target
+/// directories one level down.
+fn inner<'a, 'b>(rel: &'a [&'b str]) -> &'a [&'b str] {
+    if matches!(rel.first(), Some(&"haul-bench") | Some(&"haul-exp")) && rel.len() > 2 {
+        &rel[2..]
+    } else {
+        rel
+    }
+}
+
+/// Whether `rel` is inside a unit's `out/` in Cargo's newer layout, whose category depends on
+/// whether the unit is a build script's run: known only once the whole directory was walked.
+fn in_unit_out(rel: &[&str]) -> bool {
+    let rel = inner(rel);
+    rel.iter().take(3).position(|c| *c == "build").and_then(|i| unit_dir(rel, i)).is_some_and(|(_, part)| part == "out")
+}
+
+#[allow(clippy::too_many_arguments)]
+fn account(rel: &[&str], logical: u64, allocated: u64, mtime_ns: u64, known: &Knowledge, run_units: &HashSet<String>, cats: &mut BTreeMap<&'static str, Tally>, total: &mut Tally, groups: &mut HashMap<(&'static str, String), Group>) {
+    let inner = inner(rel);
+    let (cat, group) = classify(inner, known, run_units);
     let group = if inner.len() != rel.len() { format!("{}/{}/{}", rel[0], rel[1], group) } else { group };
     cats.entry(cat).or_default().add(logical, allocated);
     total.add(logical, allocated);
@@ -228,6 +273,8 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
     let mut errors: Vec<String> = Vec::new();
     let mut error_count = 0u64;
     let mut lock_dirs: Vec<PathBuf> = Vec::new();
+    let mut run_units: HashSet<String> = HashSet::new();
+    let mut deferred: LinkedNames = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
     let note_err = |what: String, errors: &mut Vec<String>, count: &mut u64| {
         *count += 1;
@@ -260,13 +307,19 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
                     continue;
                 }
             };
-            if md.is_dir() {
-                stack.push(path);
-                continue;
-            }
             let rel_path = path.strip_prefix(root).unwrap_or(&path);
             let rel_owned: Vec<String> = rel_path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
             let rel: Vec<&str> = rel_owned.iter().map(String::as_str).collect();
+            if md.is_dir() {
+                // `build/<package>/<unit hash>/run`: the unit is a build script's run.
+                let r = inner(&rel);
+                let n = r.len();
+                if n >= 4 && r[n - 1] == "run" && is_unit_hash(r[n - 2]) && r[n - 4] == "build" && n - 4 < 3 {
+                    run_units.insert(r[..n - 1].join("/"));
+                }
+                stack.push(path);
+                continue;
+            }
             let (logical, allocated) = (md.len(), allocated_bytes(&md));
             if md.file_type().is_symlink() {
                 symlinks += 1;
@@ -287,17 +340,32 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
                 linked.entry(key).or_default().push((rel_owned.clone(), logical, allocated, util::mtime_ns(&md)));
                 continue;
             }
-            account(&rel, logical, allocated, util::mtime_ns(&md), known, &mut cats, &mut total, &mut groups);
+            if in_unit_out(&rel) {
+                deferred.push((rel_owned.clone(), logical, allocated, util::mtime_ns(&md)));
+                continue;
+            }
+            account(&rel, logical, allocated, util::mtime_ns(&md), known, &run_units, &mut cats, &mut total, &mut groups);
         }
     }
-    // Cargo uplifts outputs from `deps/` by hard link. One inode is counted once (FR-110.3), under
-    // the name that identifies its build unit, whichever name the walk happened to reach first.
+    for (rel_owned, logical, allocated, mtime) in deferred {
+        let rel: Vec<&str> = rel_owned.iter().map(String::as_str).collect();
+        account(&rel, logical, allocated, mtime, known, &run_units, &mut cats, &mut total, &mut groups);
+    }
+    // Cargo uplifts outputs from `deps/` (a unit's `out/` in the newer layout) by hard link. One
+    // inode is counted once (FR-110.3), under the name that identifies its build unit, whichever
+    // name the walk happened to reach first.
     for (_, mut names) in linked {
-        let pick = names.iter().position(|n| n.0.iter().any(|c| c == "deps")).unwrap_or(0);
+        let pick = names
+            .iter()
+            .position(|n| {
+                let rel: Vec<&str> = n.0.iter().map(String::as_str).collect();
+                rel.contains(&"deps") || in_unit_out(&rel)
+            })
+            .unwrap_or(0);
         let (rel_owned, logical, allocated, mtime) = names.swap_remove(pick);
         hardlink_dup += names.iter().map(|n| n.1).sum::<u64>();
         let rel: Vec<&str> = rel_owned.iter().map(String::as_str).collect();
-        account(&rel, logical, allocated, mtime, known, &mut cats, &mut total, &mut groups);
+        account(&rel, logical, allocated, mtime, known, &run_units, &mut cats, &mut total, &mut groups);
     }
 
     let cutoff = opts.now_ns.saturating_sub(opts.stale_days * 86_400 * 1_000_000_000);
@@ -450,7 +518,7 @@ mod tests {
 
     fn cat(path: &str) -> &'static str {
         let parts: Vec<&str> = path.split('/').collect();
-        classify(&parts, &Knowledge::default()).0
+        classify(&parts, &Knowledge::default(), &HashSet::new()).0
     }
 
     #[test]
@@ -475,9 +543,47 @@ mod tests {
     #[test]
     fn proc_macro_identity_comes_from_observed_units() {
         let mut k = Knowledge::default();
-        assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k).0, "dependency");
+        assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k, &HashSet::new()).0, "dependency");
         k.proc_macro_stems.insert("mac-9".into());
-        assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k).0, "proc-macro");
+        assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k, &HashSet::new()).0, "proc-macro");
+    }
+
+    #[test]
+    fn classifies_cargo_build_dir_layout() {
+        // Cargo's newer layout: one directory per unit, `build/<package>/<unit hash>/`.
+        let h = "0123456789abcdef";
+        assert_eq!(cat(&format!("debug/build/memchr/{h}/out/libmemchr-{h}.rlib")), "dependency");
+        assert_eq!(cat(&format!("debug/build/memchr/{h}/out/libmemchr-{h}.rmeta")), "metadata");
+        assert_eq!(cat(&format!("debug/build/memchr/{h}/out/memchr-{h}.d")), "fingerprint");
+        assert_eq!(cat(&format!("debug/build/ripgrep/{h}/out/integration-{h}")), "final");
+        assert_eq!(cat(&format!("debug/build/ripgrep/{h}/out/build_script_build")), "build-script-binary");
+        assert_eq!(cat(&format!("debug/build/memchr/{h}/fingerprint/lib-memchr")), "fingerprint");
+        assert_eq!(cat(&format!("debug/build/serde/{h}/run/stderr")), "build-script-output");
+        // A build script's run: its `out/` is what the script generated, whatever the names.
+        let runs: HashSet<String> = [format!("debug/build/cc-user/{h}")].into();
+        let gen = |f: &str| classify(&["debug", "build", "cc-user", h, "out", f], &Knowledge::default(), &runs).0;
+        assert_eq!(gen("libnative.a"), "build-script-output");
+        assert_eq!(gen("bindings.rs"), "build-script-output");
+        assert_eq!(classify(&["debug", "build", "memchr", h, "out", "libmemchr.rlib"], &Knowledge::default(), &runs).0, "dependency");
+    }
+
+    #[test]
+    fn a_scan_tells_a_build_scripts_generated_files_from_a_units_outputs() {
+        let root = std::env::temp_dir().join(format!("haul-bd-{}", util::new_id()));
+        let (lib, run) = ("1111111111111111", "2222222222222222");
+        for (dir, file, bytes) in [
+            (format!("debug/build/native/{lib}/out"), format!("libnative-{lib}.rlib"), 3_000),
+            (format!("debug/build/native/{run}/out"), "libbundled.a".to_string(), 5_000),
+            (format!("debug/build/native/{run}/run"), "stderr".to_string(), 100),
+        ] {
+            fs::create_dir_all(root.join(&dir)).unwrap();
+            fs::write(root.join(&dir).join(file), vec![0u8; bytes]).unwrap();
+        }
+        let v = scan(&root, &Knowledge::default(), &Options { stale_days: 30, now_ns: util::now_wall_ns(), size_budget: None });
+        let by_cat = |c: &str| v["categories"][c]["logical_bytes"].as_u64().unwrap_or(0);
+        assert_eq!(by_cat("dependency"), 3_000, "{}", v["categories"]);
+        assert_eq!(by_cat("build-script-output"), 5_100, "{}", v["categories"]);
+        fs::remove_dir_all(&root).ok();
     }
 
     fn touch_old(p: &Path, days: u64) {
