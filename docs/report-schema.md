@@ -31,7 +31,7 @@ Rules (API-001 … API-004):
 | `critical_path`, `critical_path_model` | the longest dependency chain and how trustworthy it is |
 | `units`, `edges` | the observed build DAG |
 | `rebuilds` | why each compiled unit ran |
-| `duplication` | multiple versions and build variants |
+| `duplication` | multiple versions (`versions[]`: `state` `necessary` for SemVer-incompatible versions, `separate-sources` for compatible ones, which Cargo keeps apart only because they come from different sources) and build variants |
 | `build_scripts`, `proc_macros`, `codegen` | per-concern analyses |
 | `artifacts` | build-directory inventory and GC plan, one entry per directory |
 | `recommendations` | ranked findings |

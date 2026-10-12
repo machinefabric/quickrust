@@ -491,12 +491,15 @@ pub fn duplication(meta: Option<&Metadata>, graph: &Graph, index: &Index) -> Val
                 continue;
             }
             let vs: Vec<String> = ps.iter().map(|p| util::vstr(p, "version")).collect();
+            // Cargo resolves one SemVer-compatible version per source: compatible versions of one
+            // crate side by side always come from different sources (registry, git, path), which
+            // the lockfile cannot unify.
             let compatible = vs.iter().all(|v| semver_compatible(v, &vs[0]));
             list.push(json!({
                 "name": name,
-                "state": if compatible { "potentially-reducible" } else { "necessary" },
+                "state": if compatible { "separate-sources" } else { "necessary" },
                 "explanation": if compatible {
-                    "the versions are SemVer-compatible; the lockfile could usually be unified (`cargo update -p`), subject to the requirements shown in the paths"
+                    "the versions are SemVer-compatible but come from different sources (registry, git or path), which Cargo never unifies; pointing every dependent at one source, or a `[patch]` entry, would build it once"
                 } else {
                     "the versions are SemVer-incompatible; each stays until the dependents on one path move to the other's major version"
                 },
