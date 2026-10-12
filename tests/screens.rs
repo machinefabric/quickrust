@@ -166,3 +166,28 @@ fn every_screen_matches_its_snapshot() {
     s.check("uninstall", &p, "uninstall hello");
     s.finish();
 }
+
+#[test]
+fn every_screen_of_commands_that_do_not_build_matches_its_snapshot() {
+    let sb = Sandbox::new("screens-manifest");
+    let reg = Registry::start();
+    reg.publish(&Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n"));
+    reg.publish(&Crate::lib("greet", "1.1.0", "pub fn greet() -> &'static str {\n    \"hello again\"\n}\n"));
+    reg.serve_crates_io_for(&sb.home);
+    sb.file("rust-toolchain.toml", &format!("[toolchain]\nchannel = \"{}\"\n", TOOLCHAIN));
+    let mut s = Screens::new(&sb);
+    s.check("new", &sb.dir, "new --vcs none tool");
+    let p = sb.dir.join("tool");
+    s.check("add", &p, "add greet@=1.0.0");
+    s.check("generate-lockfile", &p, "generate-lockfile");
+    s.check("fetch", &p, "fetch");
+    sb.file("tool/Cargo.toml", &fs::read_to_string(p.join("Cargo.toml")).unwrap().replace("\"=1.0.0\"", "\"1\""));
+    s.check("update", &p, "update");
+    s.check("update-nothing-to-do", &p, "update");
+    s.check("tree", &p, "tree");
+    s.check("remove", &p, "remove greet");
+    s.check("package", &p, "package --allow-dirty --no-verify");
+    fs::create_dir_all(sb.dir.join("lib-here")).unwrap();
+    s.check("init", &sb.dir.join("lib-here"), "init --lib --vcs none");
+    s.finish();
+}

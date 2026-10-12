@@ -180,7 +180,7 @@ get Cargo. A test drives a series of changes and checks that whenever Haul says 
 Cargo asked directly finds nothing to do.
 
 Downloads, lock waits and index updates show in the same status line, then as one line
-(`↓ Downloaded 38 crates · 5.6 MiB · 1.84s`). Commands that do not build speak the same
+(`↓ Downloaded 38 crates · 5.6 MiB · 1.84s`), for `cargo tree` and `cargo metadata` too. Commands that do not build speak the same
 language: `cargo update` lists what moved (`↑ serde  1.0.209 → 1.0.210`, `+ hashbrown
 0.15.0`, `− autocfg 1.3.0`) and sums it up, `cargo add` shows the dependency with its
 features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line, and
