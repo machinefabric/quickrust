@@ -256,6 +256,8 @@ struct Opts {
     record: bool,
     haul: Option<PathBuf>,
     max_cpu_pressure: f64,
+    /// Every option given, to reject those the chosen command does not use.
+    given: Vec<String>,
 }
 
 fn list(v: &str) -> Vec<String> {
@@ -279,6 +281,7 @@ fn parse_opts(args: &[String]) -> Opts {
         record: false,
         haul: None,
         max_cpu_pressure: 10.0,
+        given: Vec::new(),
     };
     if let Some(w) = std::env::var_os("HAUL_BENCH_DIR") {
         o.work = PathBuf::from(w);
@@ -289,6 +292,7 @@ fn parse_opts(args: &[String]) -> Opts {
         args.get(*i).cloned().unwrap_or_else(|| fail(&format!("{} needs a value", flag)))
     };
     while i < args.len() {
+        o.given.push(args[i].clone());
         match args[i].as_str() {
             "--work-dir" => o.work = PathBuf::from(val(&mut i, "--work-dir")),
             "--toolchain" => o.toolchain = val(&mut i, "--toolchain"),
@@ -315,16 +319,24 @@ fn parse_opts(args: &[String]) -> Opts {
     o
 }
 
-const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b]
+const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b] [--toolchain T]
        haul-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
                       [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
                       [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]
-       haul-bench verify [--workload a,b] [--define …] [--record] [--work-dir DIR] [--haul PATH]";
+       haul-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = argv.first() else { fail(USAGE) };
     let opts = parse_opts(&argv[1..]);
+    let accepted: &[&str] = match cmd.as_str() {
+        "fetch" => &["--work-dir", "--toolchain", "--workload"],
+        "verify" => &["--work-dir", "--toolchain", "--workload", "--define", "--record", "--haul"],
+        _ => &[],
+    };
+    if let Some(unused) = opts.given.iter().find(|g| !accepted.is_empty() && !accepted.contains(&g.as_str())) {
+        fail(&format!("`haul-bench {}` does not take {}\n{}", cmd, unused, USAGE));
+    }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(".")).to_path_buf();
     let all = workload::load(&repo.join("benchmarks/workloads.toml")).unwrap_or_else(|e| fail(&e));
     let chosen: Vec<Workload> = match &opts.workloads {

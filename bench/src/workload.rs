@@ -38,9 +38,18 @@ pub struct Workload {
     pub rev: String,
     /// Package selection and the like, appended to every Cargo command.
     pub args: Vec<String>,
+    /// What `haul-bench verify` passes to `cargo test` in place of `args`: the build may
+    /// select a package that has no tests of its own.
+    pub test_args: Vec<String>,
     pub quick: bool,
     pub leaf: Edit,
     pub core: Edit,
+}
+
+fn strings(t: &toml::Table, key: &str, name: &str) -> Result<Option<Vec<String>>, String> {
+    let Some(v) = t.get(key) else { return Ok(None) };
+    let bad = || format!("workload {}: `{}` must be a list of strings", name, key);
+    v.as_array().ok_or_else(bad)?.iter().map(|x| x.as_str().map(str::to_string).ok_or_else(bad)).collect::<Result<_, _>>().map(Some)
 }
 
 fn edit(t: &toml::Table, key: &str, name: &str) -> Result<Edit, String> {
@@ -69,7 +78,11 @@ pub fn load(path: &Path) -> Result<Vec<Workload>, String> {
         out.push(Workload {
             rev: s("rev").ok_or_else(|| format!("workload {}: `rev` is missing", name))?,
             description: s("description").unwrap_or_default(),
-            args: t.get("args").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default(),
+            args: strings(t, "args", &name)?.unwrap_or_default(),
+            test_args: match strings(t, "test-args", &name)? {
+                Some(a) => a,
+                None => strings(t, "args", &name)?.unwrap_or_default(),
+            },
             quick: t.get("quick").and_then(|v| v.as_bool()).unwrap_or(false),
             leaf: edit(t, "leaf", &name)?,
             core: edit(t, "core", &name)?,
