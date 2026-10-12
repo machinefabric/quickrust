@@ -27,6 +27,8 @@ What fast mode does, and the settings that control it:
 | `~/.haul/` (`HAUL_HOME`) | per-workspace sessions, raw rustc events, stored build output, reports, unit index, benchmarks, remediation records | yes; history is lost |
 | `~/.haul/cache/artifacts/` | the artifact cache (bounded by `cache.artifacts-max-size`) | yes; the next builds compile instead |
 | `~/.haul/toolchains.json`, `~/.haul/probe-bin/` | rustup's learned toolchain choices, and the link through which they are learned | yes; relearned on the next build |
+| `~/.haul/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
+| `~/.haul/workspaces/<id>/prebuilt/` | stamps of the build phase of `run` / `test` / `bench` in a terminal: the files it depended on, with sizes and times (at most 32 per workspace) | yes; the next such command builds before running |
 | `<target>/haul-bench/` | benchmark and experiment build directories | yes |
 | `<repo>/.haul/` | configuration, budgets, baselines — written only on request | it is yours |
 

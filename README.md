@@ -135,6 +135,8 @@ program, the tests or the benchmarks run with the terminal to themselves: Haul f
 exactly what the command needs (`test --no-run`; for `run`, Cargo's own selection of the
 binary, with a runner that does not run it), then runs the command, which finds everything
 fresh. Their output is never touched, and the warnings Cargo would replay are not repeated.
+When nothing the last such build depended on has changed, Haul says so (`✓ Up to date`)
+and goes straight to the command, which still checks freshness itself.
 
 Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
 are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and

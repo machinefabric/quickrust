@@ -1024,6 +1024,19 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     assert!(!screen.contains("let unused = 1") && !screen.contains(crate_noop()), "nothing replayed, nothing of the build's mechanics: {}", screen);
     compiled_once(&sb);
 
+    // Nothing changed: Haul knows the build is fresh and goes straight to the program; Cargo,
+    // running it, still checks.
+    let out = run(&mut sb.cargo_in_terminal(&p, "run -- again").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success() && screen.contains("✓ Up to date") && screen.contains("1 warning in p"), "{}", screen);
+    assert!(screen.contains(r#"terminal=true args=["again"] sum=3"#), "{}", screen);
+    // An edit is built again.
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    y + x\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n");
+    let out = run(&mut sb.cargo_in_terminal(&p, "run").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success() && screen.contains("✓ Built") && !screen.contains("Up to date") && screen.contains("sum=3"), "{}", screen);
+    compiled_once(&sb);
+
     let out = run(&mut sb.cargo_in_terminal(&p, "test").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("test adds ... ") && screen.contains("1 passed"), "{}", screen);
