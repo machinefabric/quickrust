@@ -147,6 +147,7 @@ fn is_haul(link: &Path, md: &fs::Metadata, haul: &Path) -> bool {
 }
 
 /// The shell code that puts `bin` first on `PATH` (sh and fish).
+#[cfg(not(windows))]
 fn env_scripts(bin: &Path) -> (String, String) {
     let p = shell_path(bin);
     let sh = format!("#!/bin/sh\n# Haul's bin first on PATH: Haul as cargo, rustc and the other toolchain programs.\ncase \"$PATH\" in\n    \"{p}\" | \"{p}\":*) ;;\n    *) export PATH=\"{p}:$PATH\" ;;\nesac\n");
@@ -328,17 +329,16 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(not(windows))]
     fn the_environment_script_puts_the_directory_first_once() {
         let (sh, fish) = env_scripts(Path::new("/opt/h/bin"));
         let run = |path: &str| -> String {
             let out = std::process::Command::new("/bin/sh").arg("-c").arg(format!("{}\nprintf %s \"$PATH\"", sh)).env("PATH", path).output().unwrap();
             String::from_utf8_lossy(&out.stdout).into_owned()
         };
-        if cfg!(unix) {
-            assert_eq!(run("/usr/bin:/bin"), "/opt/h/bin:/usr/bin:/bin");
-            assert_eq!(run("/opt/h/bin:/usr/bin"), "/opt/h/bin:/usr/bin", "already first: unchanged");
-            assert_eq!(run("/root/.cargo/bin:/opt/h/bin"), "/opt/h/bin:/root/.cargo/bin:/opt/h/bin", "later on PATH is not enough");
-        }
+        assert_eq!(run("/usr/bin:/bin"), "/opt/h/bin:/usr/bin:/bin");
+        assert_eq!(run("/opt/h/bin:/usr/bin"), "/opt/h/bin:/usr/bin", "already first: unchanged");
+        assert_eq!(run("/root/.cargo/bin:/opt/h/bin"), "/opt/h/bin:/root/.cargo/bin:/opt/h/bin", "later on PATH is not enough");
         assert!(fish.contains("set -gx PATH \"/opt/h/bin\" $PATH"));
     }
 
