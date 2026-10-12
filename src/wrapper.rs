@@ -441,6 +441,8 @@ fn run_teed(cmd: &mut Command, hold: Hold, ready: bool) -> std::io::Result<Teed>
     enum Event {
         Exited(std::io::Result<(ExitInfo, Option<proc::Usage>)>),
         Stderr(Vec<u8>, Vec<u8>, bool),
+        // Only Unix compilers get the pipe it comes on.
+        #[cfg_attr(not(unix), allow(dead_code))]
         Ready,
     }
     let (tx, rx) = std::sync::mpsc::channel::<Event>();
