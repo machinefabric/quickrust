@@ -131,6 +131,18 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     let events_bytes: u64 = fs::read_dir(&events).unwrap().filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum();
     let metadata = run_bytes + events_bytes;
     assert!(metadata * 100 <= artifact_bytes && metadata <= 500 << 20, "{} MiB of analysis data for {} MiB of artifacts", metadata >> 20, artifact_bytes >> 20);
+
+    // The next build of the workspace is analysed against the unit index the large one left.
+    let index = record.parent().unwrap().parent().unwrap().join("index/units.json");
+    let index_bytes = fs::metadata(&index).map(|m| m.len()).unwrap_or(0);
+    ok(sb.cargo(&p).arg("build"));
+    // Only its time: this process now holds the large report, which a forked child counts in its
+    // peak memory until it executes (see `common::measure`).
+    let (next_secs, _, success, _) = measure(sb.haul(&p).args(["report", "--format", "json"]));
+    assert!(success);
+    eprintln!("scale: unit index {} KiB; the next small build analysed in {:.2} s", index_bytes >> 10, next_secs);
+    // Measured: 0.4 s, of which reading and rewriting the index is about 0.3 s.
+    assert!(next_secs < 5.0, "{:.1} s", next_secs);
 }
 
 fn util_path(p: &Path) -> String {
