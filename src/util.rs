@@ -143,6 +143,17 @@ pub fn haul_home() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("haul"))
 }
 
+/// Haul's disposable cache (`$HAUL_HOME/cache`): everything in it can be rebuilt or
+/// downloaded again, and Haul removes what it must to stay within its space (see `space`).
+pub fn cache_dir() -> PathBuf {
+    haul_home().join("cache")
+}
+
+/// Remembered answers (what a compiler says about itself, which workspace a directory is in).
+pub fn memo_dir(kind: &str) -> PathBuf {
+    cache_dir().join("memo").join(kind)
+}
+
 pub fn lossy(s: &OsStr) -> String {
     s.to_string_lossy().into_owned()
 }

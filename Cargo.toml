@@ -1,6 +1,6 @@
 [package]
 name = "haul"
-version = "0.107.689"
+version = "0.108.714"
 edition = "2021"
 rust-version = "1.80"
 description = "Drop-in Cargo replacement: an orchestration, observability and policy layer around upstream Cargo"

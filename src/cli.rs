@@ -62,8 +62,11 @@ BUDGETS
     haul ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE] [--format text|json]
 
 STORAGE
-    haul inventory [--caches] [--format text|json]
-    haul gc --dry-run [--older-than DAYS] [--max-size SIZE] [--format text|json]
+    haul inventory [--caches] [--older-than DAYS] [--max-size SIZE] [--format text|json]
+                                     what this workspace's build directory holds, and what in it is stale
+    haul gc [--dry-run] [--to SIZE] [--format text|json]
+                                     collect Haul's cache now (it does so by itself when it must: see
+                                     cache.max-size and cache.min-free)
 
 POLICY AND REMEDIATION
     haul policy explain [--format text|json]
@@ -277,8 +280,8 @@ pub fn main() {
         "experiment" => cmd_experiment(rest),
         "baseline" => cmd_baseline(rest),
         "ci" => cmd_ci(rest),
-        "inventory" => cmd_inventory(rest, false),
-        "gc" => cmd_inventory(rest, true),
+        "inventory" => cmd_inventory(rest),
+        "gc" => cmd_gc(rest),
         "policy" => cmd_policy(rest),
         "cache" => cmd_cache(rest),
         "fix" => cmd_fix(rest),
@@ -1027,26 +1030,17 @@ fn build_roots(ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     Ok(roots)
 }
 
-fn cmd_inventory(raw: &[OsString], gc: bool) -> CmdResult {
+fn cmd_inventory(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
-    let caches = !gc && a.flag("--caches");
+    let caches = a.flag("--caches");
     let ctx = Ctx::load()?;
     let mut opts = inventory::Options { stale_days: ctx.cfg.int("artifacts.stale-days"), now_ns: util::now_wall_ns(), size_budget: None };
-    if gc {
-        if a.flag("--apply") {
-            return Err("this release plans garbage collection but does not delete: only `haul gc --dry-run` is available. Use `cargo clean` for Cargo's own removal semantics.".into());
-        }
-        // Destructive behaviour is never implicit: the plan must be asked for by name.
-        if !a.flag("--dry-run") {
-            return Err("`haul gc` requires --dry-run: it computes a plan and deletes nothing".into());
-        }
-        if let Some(d) = a.number::<u64>("--older-than")? {
-            opts.stale_days = d;
-        }
-        if let Some(s) = a.opt("--max-size")? {
-            opts.size_budget = Some(util::parse_bytes(&s).ok_or_else(|| format!("--max-size {:?} is not a size (examples: 20GiB, 500MB)", s))?);
-        }
+    if let Some(d) = a.number::<u64>("--older-than")? {
+        opts.stale_days = d;
+    }
+    if let Some(s) = a.opt("--max-size")? {
+        opts.size_budget = Some(util::parse_bytes(&s).ok_or_else(|| format!("--max-size {:?} is not a size (examples: 20GiB, 500MB)", s))?);
     }
     a.finish()?;
     ctx.finalize_pending()?;
@@ -1063,17 +1057,52 @@ fn cmd_inventory(raw: &[OsString], gc: bool) -> CmdResult {
     }
     let mut out = String::new();
     for s in &scans {
-        if gc {
-            render::gc_plan(s, &mut out);
-        } else {
-            out.push_str("Build directory\n");
-            render::inventory(s, &mut out);
-        }
+        out.push_str("Build directory\n");
+        render::inventory(s, &mut out);
+        render::gc_plan(s, &mut out);
     }
     print!("{}", out);
     for g in global {
         println!("Shared cache [{}]  {}  — {} allocated, {} files", vstr(&g, "category"), vstr(&g, "root"), g["allocated_bytes"].as_u64().map(human_bytes).unwrap_or_default(), g["files"]);
     }
+    Ok(0)
+}
+
+/// `haul gc`: Haul's cache collected now (see `space`).
+fn cmd_gc(raw: &[OsString]) -> CmdResult {
+    let mut a = Args::new(raw);
+    let format = a.format(&["text", "json"])?;
+    let dry_run = a.flag("--dry-run");
+    let background = a.flag("--background");
+    let to = a.opt("--to")?.map(|s| util::parse_bytes(&s).ok_or_else(|| format!("--to {:?} is not a size (examples: 20GiB, 500MB)", s))).transpose()?;
+    a.finish()?;
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let cache = util::cache_dir();
+    let lock_path = cache.join("gc.lock");
+    let _lock = match util::ExclusiveLock::try_acquire(&lock_path).map_err(|e| e.to_string())? {
+        Some(l) => l,
+        // Started by a build while another collection runs: that one does the work.
+        None if background => return Ok(0),
+        None => util::ExclusiveLock::acquire(&lock_path).map_err(|e| e.to_string())?,
+    };
+    let fs = crate::space::fs_space(util::haul_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::haul_home().display(), e))?;
+    let policy = crate::space::policy(&cfg, &fs);
+    let phase = crate::ui::Phase::start();
+    let done = crate::space::collect(&cache, &policy, to, dry_run, None)?;
+    if background {
+        return Ok(0);
+    }
+    if format == "json" {
+        let removed: Vec<Value> = done.removed.iter().map(|(k, p, b, why)| json!({ "kind": k.name(), "path": path_str(p), "bytes": b, "why": why })).collect();
+        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available })).unwrap_or_default());
+        return Ok(0);
+    }
+    for (kind, path, bytes, why) in &done.removed {
+        println!("  {} {:<10} {}  {} ({})", if dry_run { "would remove" } else { "removed" }, human_bytes(*bytes), kind.name(), path.display(), why);
+    }
+    let verb = if dry_run { "Would free" } else { "Freed" };
+    phase.finish(true, &format!("{} {} · Haul's cache {} → {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(" · {} in use left alone", done.skipped_in_use) } else { String::new() }));
     Ok(0)
 }
 
@@ -1130,15 +1159,39 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         None => ("disabled", None),
     };
     let last = ctx.store.resolve_run_ref("latest", true).ok().and_then(|id| ctx.store.load_run(&id)).map(|r| json!({ "run": r["run"]["id"], "cache": r["cache"] }));
+    let haul_cache = util::cache_dir();
+    let fs = crate::space::fs_space(util::haul_home().as_path()).ok();
+    let bounds = fs.map(|f| crate::space::policy(&ctx.cfg, &f));
     let v = json!({
         "provider_policy": provider, "policy_origin": ctx.cfg.origin("cache.provider"), "fail": ctx.cfg.str("cache.fail"),
         "existing_rustc_wrapper": existing.as_ref().map(|(w, s)| json!({ "wrapper": w, "source": s })),
         "sccache": sccache, "state": state, "server_statistics": stats, "last_analysed_run": last,
+        "haul_cache": {
+            "dir": path_str(&haul_cache), "usage": crate::space::usage(&haul_cache), "recent_collections": crate::space::recent(&haul_cache, 5),
+            "max_bytes": bounds.map(|b| b.max_bytes), "min_free": bounds.map(|b| b.min_free), "free": fs.map(|f| f.available),
+        },
     });
     if format == "json" {
         ctx.print_json(&v);
         return Ok(0);
     }
+    let hc = &v["haul_cache"];
+    match hc["usage"].as_object() {
+        Some(u) => {
+            println!("Haul's cache: {} ({}), counted {}", u["total_bytes"].as_u64().map(human_bytes).unwrap_or_default(), haul_cache.display(), u["scanned_ns"].as_u64().map(util::iso8601).unwrap_or_default());
+            for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {
+                println!("  {:<20} {:>10}  {}", kind, k["bytes"].as_u64().map(human_bytes).unwrap_or_default(), k["count"]);
+            }
+        }
+        None => println!("Haul's cache: not counted yet ({}); `haul gc --dry-run` counts it", haul_cache.display()),
+    }
+    if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
+        println!("  bounds              at most {} (cache.max-size = {}); keeps {} of the disk free (cache.min-free = {}); {} free now", human_bytes(m), ctx.cfg.str("cache.max-size"), human_bytes(f), ctx.cfg.str("cache.min-free"), human_bytes(free));
+    }
+    for c in hc["recent_collections"].as_array().into_iter().flatten() {
+        println!("  collected {}       {} → {}, {} removed", vstr(c, "at"), c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
+    }
+    println!();
     println!("Compiler cache: {}", state);
     println!("  policy            cache.provider = {} ({}), cache.fail = {}", provider, ctx.cfg.origin("cache.provider"), ctx.cfg.str("cache.fail"));
     match &existing {

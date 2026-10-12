@@ -37,7 +37,7 @@ pub struct Target {
 
 /// Where Haul's build directories live.
 pub fn builds_dir() -> PathBuf {
-    util::haul_home().join("cache").join("builds")
+    util::cache_dir().join("builds")
 }
 
 /// The managed build directory of the workspace rooted at `root`.
@@ -93,7 +93,7 @@ fn memo_path(start: &Path) -> PathBuf {
             Err(_) => format!("{}:-", util::path_str(&m)),
         });
     }
-    util::haul_home().join("cache").join("memo").join("roots").join(format!("{}.json", util::digest_parts(parts)))
+    util::memo_dir("roots").join(format!("{}.json", util::digest_parts(parts)))
 }
 
 /// The target directory for `inv`: one the user chose, or the workspace's managed one; `None`

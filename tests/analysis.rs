@@ -249,7 +249,7 @@ fn budgets_gate_ci_without_touching_cargo_output() {
 }
 
 #[test]
-fn inventory_and_gc_plan_are_read_only_and_conservative() {
+fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
     // AC-011, AC-012.
     let sb = Sandbox::new("gc");
     let ws = sb.workspace("ws");
@@ -273,7 +273,7 @@ fn inventory_and_gc_plan_are_read_only_and_conservative() {
         fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
     }
     let before = tree(&sb.target_dir(&ws));
-    let plan = json_out(sb.haul(&ws).args(["gc", "--dry-run", "--format", "json", "--max-size", "1KiB"]));
+    let plan = json_out(sb.haul(&ws).args(["inventory", "--format", "json", "--max-size", "1KiB"]));
     let p = &plan["build_directories"][0]["gc_plan"];
     let groups: Vec<&str> = p["candidates"].as_array().unwrap().iter().map(|c| c["group"].as_str().unwrap()).collect();
     assert_eq!(groups, vec!["unit:gone-0123456789abcdef"], "only the stale unit; live units and unknown files are never candidates");
@@ -281,18 +281,56 @@ fn inventory_and_gc_plan_are_read_only_and_conservative() {
     assert_eq!(p["size_budget"]["met_by_plan"], false, "the plan says so when stale output alone does not reach the budget");
     assert!(plan["build_directories"][0]["reclaimability"]["uncertain"]["logical_bytes"].as_u64().unwrap() >= 50_000);
     assert_eq!(tree(&sb.target_dir(&ws)), before, "dry-run deleted something");
-    let text = stdout(&ok(sb.haul(&ws).args(["gc", "--dry-run"])));
+    let text = stdout(&ok(sb.haul(&ws).arg("inventory")));
     assert!(text.contains("estimated reclaimable") && text.contains("Nothing was deleted"), "{}", text);
-    // P0 has no deleting mode, and never plans implicitly.
-    for args in [&["gc"][..], &["gc", "--apply"][..]] {
-        let out = run(sb.haul(&ws).args(args));
-        assert_eq!(out.status.code(), Some(2));
-    }
     assert_eq!(tree(&sb.target_dir(&ws)), before);
 }
 
 #[test]
-fn gc_plan_is_blocked_while_a_build_is_running() {
+fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
+    let sb = Sandbox::new("collect");
+    let (a, b, c) = (sb.package("a", "a"), sb.package("b", "b"), sb.package("c", "c"));
+    for p in [&a, &b, &c] {
+        ok(sb.cargo(p).arg("build"));
+    }
+    let (ta, tb, tc) = (sb.target_dir(&a), sb.target_dir(&b), sb.target_dir(&c));
+    // b was last used three hours ago, a two; c just now. The workspace of the third is deleted.
+    let backdate = |t: &std::path::Path, hours: u64| {
+        let meta = t.with_file_name(format!("{}.json", t.file_name().unwrap().to_string_lossy()));
+        let mut v: Value = serde_json::from_slice(&fs::read(&meta).unwrap()).unwrap();
+        let used = v["last_used_ns"].as_u64().unwrap() - hours * 3_600_000_000_000;
+        v["last_used_ns"] = json!(used);
+        fs::write(&meta, v.to_string()).unwrap();
+    };
+    backdate(&ta, 2);
+    backdate(&tb, 3);
+    let gone = sb.package("gone", "gone");
+    ok(sb.cargo(&gone).arg("build"));
+    let tg = sb.target_dir(&gone);
+    backdate(&tg, 1);
+    fs::remove_dir_all(&gone).unwrap();
+    // Within bounds: only the build directory of the workspace that is gone goes.
+    let plain = json_out(sb.haul(&a).args(["gc", "--format", "json"]));
+    assert!(!tg.exists() && ta.exists() && tb.exists() && tc.exists(), "{}", plain);
+    assert!(plain["removed"].as_array().unwrap().iter().any(|r| r["why"].as_str().unwrap().contains("is gone")));
+    // Down to almost nothing: the least recently used first; the one just used stays.
+    let dry = json_out(sb.haul(&a).args(["gc", "--dry-run", "--to", "1", "--format", "json"]));
+    assert!(ta.exists() && tb.exists(), "a dry run removes nothing");
+    let paths = |v: &Value| -> Vec<String> { v["removed"].as_array().unwrap().iter().filter(|r| r["kind"] == "build directories").map(|r| r["path"].as_str().unwrap().to_string()).collect() };
+    assert_eq!(paths(&dry), [tb.display().to_string(), ta.display().to_string()]);
+    let done = json_out(sb.haul(&a).args(["gc", "--to", "1", "--format", "json"]));
+    assert_eq!(paths(&done), paths(&dry));
+    assert!(!ta.exists() && !tb.exists() && tc.exists());
+    assert!(done["skipped_in_use"].as_u64().unwrap() >= 1);
+    // A removed directory is simply built again.
+    ok(sb.cargo(&a).arg("build"));
+    assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "3\n");
+    let status = stdout(&ok(sb.haul(&a).args(["cache", "status"])));
+    assert!(status.contains("Haul's cache:") && status.contains("build directories") && status.contains("collected"), "{}", status);
+}
+
+#[test]
+fn the_stale_plan_is_blocked_while_a_build_is_running() {
     // QA-028 / FR-110 acceptance: an active build owns its files.
     let sb = Sandbox::new("gcrace");
     let p = sb.package("p", "p");
@@ -306,13 +344,13 @@ fn gc_plan_is_blocked_while_a_build_is_running() {
     while !marker.exists() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let during = json_out(sb.haul(&p).args(["gc", "--dry-run", "--format", "json"]));
+    let during = json_out(sb.haul(&p).args(["inventory", "--format", "json"]));
     assert!(build.wait().unwrap().success());
     let plan = &during["build_directories"][0];
     assert!(plan["gc_plan"]["blocked_by"].is_string(), "{}", plan["gc_plan"]);
     assert_eq!(plan["gc_plan"]["reclaimable_now_bytes"], 0);
     assert!(plan["active"]["cargo_lock_held"] == true || !plan["active"]["haul_sessions"].as_array().unwrap().is_empty());
-    let after = json_out(sb.haul(&p).args(["gc", "--dry-run", "--format", "json"]));
+    let after = json_out(sb.haul(&p).args(["inventory", "--format", "json"]));
     assert!(after["build_directories"][0]["gc_plan"]["blocked_by"].is_null());
     assert!(after["build_directories"][0]["gc_plan"]["reclaimable_now_bytes"].as_u64().unwrap() >= 100_000);
 }

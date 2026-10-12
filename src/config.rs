@@ -30,8 +30,9 @@ enum Kind {
     Enum(&'static [&'static str]),
     Bool,
     Int,
-    /// A byte size such as `10GiB`; stored as bytes.
-    Size,
+    /// Disk space: `auto`, a size such as `12GiB`, or a share of the filesystem such as `15%`;
+    /// stored as given (`auto`, `15%`) or as bytes.
+    Space,
     /// `auto`, `off`, or a thread count of at least 2.
     Threads,
 }
@@ -65,7 +66,8 @@ const KEYS: &[Key] = &[
     Key { name: "fast.linker", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: None, help: "fast mode on Linux (glibc): link with wild when it is on PATH (cargo install wild-linker), unless a linker is configured" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-min-link-ms", kind: Kind::Int, default: "300", env: None, help: "linked workspace outputs (binaries, tests, proc-macros) that compiled faster than this are not stored: copying them on every edit costs about what it saves" },
-    Key { name: "cache.artifacts-max-size", kind: Kind::Size, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
+    Key { name: "cache.max-size", kind: Kind::Space, default: "auto", env: Some("HAUL_CACHE_MAX_SIZE"), help: "the most disk Haul's cache (build directories, the artifact cache, compiler drivers, downloads) uses before it drops what was used least recently: a size (40GiB), a share of the disk (10%), or auto (10% of the disk, between 10 and 100 GiB)" },
+    Key { name: "cache.min-free", kind: Kind::Space, default: "auto", env: Some("HAUL_CACHE_MIN_FREE"), help: "free disk below which Haul's cache drops what was used least recently, whatever its size: a size, a share of the disk, or auto (5% of the disk, between 2 and 20 GiB)" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
     Key { name: "artifacts.stale-days", kind: Kind::Int, default: "30", env: None, help: "age after which unused rebuildable artifacts become GC candidates" },
@@ -129,7 +131,11 @@ fn parse_scalar(key: &Key, raw: &str, origin: &str) -> Result<Val, String> {
             _ => Err(bad("a boolean")),
         },
         Kind::Int => raw.parse::<i64>().ok().filter(|v| *v >= 0).map(Val::Int).ok_or_else(|| bad("a non-negative integer")),
-        Kind::Size => crate::util::parse_bytes(raw).filter(|b| *b > 0).map(|b| Val::Int(b as i64)).ok_or_else(|| bad("a size such as 10GiB or 500MB")),
+        Kind::Space => match raw.strip_suffix('%') {
+            _ if raw == "auto" => Ok(Val::Str(raw.to_string())),
+            Some(p) => p.trim().parse::<f64>().ok().filter(|p| *p > 0.0 && *p <= 100.0).map(|_| Val::Str(raw.to_string())).ok_or_else(|| bad("auto, a size such as 40GiB, or a share of the disk such as 10%")),
+            None => crate::util::parse_bytes(raw).filter(|b| *b > 0).map(|b| Val::Str(b.to_string())).ok_or_else(|| bad("auto, a size such as 40GiB, or a share of the disk such as 10%")),
+        },
         Kind::Threads => match raw {
             "auto" | "off" => Ok(Val::Str(raw.to_string())),
             n => n.parse::<u32>().ok().filter(|n| *n >= 2).map(|_| Val::Str(raw.to_string())).ok_or_else(|| bad("auto, off, or a thread count of at least 2")),
@@ -141,7 +147,7 @@ fn from_toml(key: &Key, v: &toml::Value, origin: &str) -> Result<Val, String> {
     match (v, &key.kind) {
         (toml::Value::String(s), _) => parse_scalar(key, s, origin),
         (toml::Value::Boolean(b), Kind::Bool) => Ok(Val::Bool(*b)),
-        (toml::Value::Integer(i), Kind::Int | Kind::Size | Kind::Threads) if *i >= 0 => parse_scalar(key, &i.to_string(), origin),
+        (toml::Value::Integer(i), Kind::Int | Kind::Space | Kind::Threads) if *i >= 0 => parse_scalar(key, &i.to_string(), origin),
         _ => Err(format!("invalid type for `{}` from {}", key.name, origin)),
     }
 }
@@ -316,17 +322,21 @@ mod tests {
         assert!(err.contains("cache.providr") && err.contains("config.toml"), "{}", err);
         fs::write(&p, "[cache]\nfail = \"maybe\"\n").unwrap();
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("one of open, closed"));
-        fs::write(&p, "[cache]\nartifacts-max-size = \"lots\"\n").unwrap();
-        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("a size such as 10GiB"));
+        fs::write(&p, "[cache]\nmax-size = \"lots\"\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("a share of the disk such as 10%"));
+        fs::write(&p, "[cache]\nmin-free = \"150%\"\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("a share of the disk"));
+        fs::write(&p, "[cache]\nartifacts-max-size = \"2GiB\"\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("cache.artifacts-max-size"), "the old key is unknown");
         fs::write(&p, "[fast]\nfrontend-threads = 1\n").unwrap();
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("at least 2"));
-        fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\nartifacts-max-size = \"2GiB\"\n[fast]\nfrontend-threads = 4\n[measurement]\nkeep-runs = 7\n").unwrap();
+        fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\nmax-size = \"2GiB\"\nmin-free = \"7%\"\n[fast]\nfrontend-threads = 4\n[measurement]\nkeep-runs = 7\n").unwrap();
         let mut c = Config::defaults();
         c.apply_file(&p).unwrap();
         assert_eq!(c.str("cache.provider"), "sccache");
         assert_eq!(c.int("measurement.keep-runs"), 7);
         assert_eq!(c.str("mode"), "compat");
-        assert_eq!(c.int("cache.artifacts-max-size"), 2 << 30);
+        assert_eq!((c.str("cache.max-size"), c.str("cache.min-free")), ((2u64 << 30).to_string().as_str(), "7%"));
         assert_eq!(frontend_threads(c.str("fast.frontend-threads")), Some(4));
         assert!(c.origin("cache.provider").ends_with("config.toml"));
         c.set_flag("cache.provider=none").unwrap();

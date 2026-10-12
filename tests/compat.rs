@@ -416,9 +416,9 @@ fn qa016_cargo_clean_keeps_exact_upstream_semantics() {
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
     let before = tree(&sb.target_dir(&ws));
-    // Smart lifecycle management never deletes through any path in this release.
-    ok(sb.haul(&ws).args(["gc", "--dry-run"]));
-    assert_eq!(tree(&sb.target_dir(&ws)), before, "gc --dry-run must not remove anything");
+    // A collection never removes a build directory in use (used within the last minutes).
+    ok(sb.haul(&ws).arg("gc").env("HAUL_CACHE_MAX_SIZE", "1"));
+    assert_eq!(tree(&sb.target_dir(&ws)), before, "gc removed a build directory just used");
     // Selective clean removes the package's artifacts and nothing else.
     let a = ok(sb.cargo(&ws).args(["clean", "-p", "util"]));
     assert!(stderr(&a).contains("Removed"), "{}", stderr(&a));

@@ -119,7 +119,7 @@ impl Ctx {
         let _ = fs::remove_dir_all(&home);
         self.sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
         if let (Base::Haul, Ok(drivers)) = (&v.base, &self.drivers) {
-            copy_tree(drivers, &home.join("drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver into {}: {}", home.display(), e)));
+            copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver into {}: {}", home.display(), e)));
         }
     }
 
@@ -415,7 +415,7 @@ fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> 
     let _ = fs::create_dir_all(&probe);
     let built = sealed.command(&haul, &probe, &probe.join("target"), true).env("HAUL_HOME", &home).args(["driver", "build"]).output();
     let drivers = match built {
-        Ok(o) if o.status.success() => Ok(home.join("drivers")),
+        Ok(o) if o.status.success() => Ok(home.join("cache/drivers")),
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
         Err(e) => Err(format!("cannot run {}: {}", haul.display(), e)),
     };

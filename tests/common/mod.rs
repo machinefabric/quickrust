@@ -74,6 +74,9 @@ impl Sandbox {
         c.env("HAUL_EARLY_CUTOFF", "off");
         // The suites' toolchains change only when a test changes them.
         c.env("HAUL_TOOLCHAIN_AUTO_UPDATE", "off");
+        // Haul's cache within its bounds whatever this machine's free space: it removes only
+        // what nothing can use, unless a test asks for more.
+        c.env("HAUL_CACHE_MIN_FREE", "1").env("HAUL_CACHE_MAX_SIZE", "1TiB");
         c
     }
 

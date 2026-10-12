@@ -431,7 +431,7 @@ fn target_triple(inv: &Invocation, engine: &crate::engine::Engine) -> Option<Str
         return Some(t.clone());
     }
     let rustc = engine.env.iter().find(|(k, _)| k == "RUSTC").map(|(_, v)| v.clone()).or_else(|| std::env::var("RUSTC").ok().filter(|r| !r.is_empty())).unwrap_or_else(|| path_str(&engine.rustc()));
-    let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &rustc).ok()?;
+    let vv = crate::rustc_info::version_verbose(&util::memo_dir("rustc"), &rustc).ok()?;
     vv.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
 }
 
@@ -446,6 +446,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         return Err(format!("refusing to run Cargo: the toolchain's `cargo` is Haul itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
     }
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    // The disk nearly full: Haul's cache gives back what it can first (for ten seconds at most).
+    if let Some(freed) = crate::space::before_command(&cfg) {
+        match freed {
+            Ok(c) => crate::ui::note(&format!("the disk is nearly full: Haul's cache gave back {} ({} → {}){}", util::human_bytes(c.before.saturating_sub(c.after)), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
+            Err(e) => crate::ui::note(&format!("the disk is nearly full, and Haul's cache could not give back space: {}", e)),
+        }
+    }
     let engine = crate::engine::for_command(&inv, &cwd, &cfg)?;
     let parent = std::env::var(crate::ENV_SESSION).ok().filter(|v| !v.is_empty());
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
@@ -756,12 +763,15 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             outcome.policy_exit = Some(crate::EXIT_HAUL_ERROR);
         }
     }
-    // Amortised retention: roughly one invocation in 32 pays for pruning, one in 16 for the cache's size cap.
+    // Amortised retention: roughly one invocation in 32 pays for pruning.
     if id.as_bytes()[25] % 32 == 0 {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
-    if plan.policy["cache"]["artifacts"] == json!("on") && id.as_bytes()[24] % 16 == 0 {
-        crate::artifact_cache::evict(&artifact_cache, cfg.int("cache.artifacts-max-size"));
+    // Haul's cache keeps within its space: a collection in the background when one is due.
+    if let Err(e) = crate::space::after_command(&cfg, &resolve::self_identity().0) {
+        if render {
+            crate::ui::note(&format!("Haul could not check the space its cache uses: {}", e));
+        }
     }
     outcome.store = Some(store);
     Ok(outcome)

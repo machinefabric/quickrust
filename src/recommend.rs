@@ -375,8 +375,8 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                     "low",
                     "low",
                     json!({ "kind": "measured", "reclaimable_bytes": bytes, "basis": "allocated bytes of the candidate groups in the dry-run plan" }),
-                    "haul gc --dry-run",
-                    "this release plans only; `cargo clean` keeps its exact upstream meaning and removes reusable artifacts as well",
+                    "haul inventory",
+                    "the plan names stale groups only; Haul's cache removes whole build directories when it needs the space, and `cargo clean` keeps its exact upstream meaning (it removes reusable artifacts as well)",
                     "none",
                 )
                 .scenarios(&["storage"]),
