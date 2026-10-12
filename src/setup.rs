@@ -33,8 +33,8 @@ fn home() -> Result<PathBuf, String> {
     util::home_dir().ok_or_else(|| "HOME is not set".to_string())
 }
 
-/// `~/.haul/bin` as shell startup files name it: through `$HOME` when it is under it.
-fn shell_path(p: &Path) -> String {
+/// A path as shell startup files and pasted commands name it: through `$HOME` when it is under it.
+pub fn shell_path(p: &Path) -> String {
     match home().ok().and_then(|h| p.strip_prefix(&h).ok().map(Path::to_path_buf)) {
         Some(rel) => format!("$HOME/{}", util::path_str(&rel)),
         None => util::path_str(p),

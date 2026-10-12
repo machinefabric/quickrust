@@ -38,6 +38,13 @@ pub fn classify(text: &str) -> Line<'_> {
             };
         }
     }
+    // The sparse index's lookups: `Fetch 26 complete; 4 pending` (no bar: its total grows as
+    // the resolver finds more packages).
+    if verb == "Fetch" {
+        if let Some((done, pending)) = rest.split_once(" complete; ").and_then(|(d, p)| Some((d.parse::<u64>().ok()?, p.strip_suffix(" pending")?.parse::<u64>().ok()?))) {
+            return Line::Progress { verb, done: Some(done), total: Some(done + pending), detail: "" };
+        }
+    }
     // `Downloading 3 crates, remaining bytes: 281.0KiB` / `Downloading 1 crate` / `Downloading crates ...`
     if verb == "Downloading" {
         let remaining = rest.split(' ').next().and_then(|n| n.parse::<u64>().ok());
@@ -75,7 +82,7 @@ mod tests {
 
     #[test]
     fn reads_cargos_status_lines() {
-        // Captured from Cargo 1.99.
+        // Captured from Cargo 1.98 and 1.99.
         for (line, want) in [
             ("    Updating crates.io index", st("Updating", "crates.io index")),
             ("     Locking 7 packages to highest Rust 1.99.0 compatible versions", st("Locking", "7 packages to highest Rust 1.99.0 compatible versions")),
@@ -90,6 +97,9 @@ mod tests {
             (" Downloading 5 crates, remaining bytes: 30.9KiB", Line::Progress { verb: "Downloading", done: None, total: Some(5), detail: "30.9KiB" }),
             (" Downloading 1 crate", Line::Progress { verb: "Downloading", done: None, total: Some(1), detail: "" }),
             (" Downloading crates ...", Line::Progress { verb: "Downloading", done: None, total: None, detail: "" }),
+            (" Downloading 6 crates, extracting regex-automata ...", Line::Progress { verb: "Downloading", done: None, total: Some(6), detail: "" }),
+            ("       Fetch 26 complete; 4 pending", Line::Progress { verb: "Fetch", done: Some(26), total: Some(30), detail: "" }),
+            ("  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)", st("Downloaded", "25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)")),
             ("    Cleaning [=====>                   ]  21.43%", Line::Progress { verb: "Cleaning", done: None, total: None, detail: "21.43%" }),
         ] {
             assert_eq!(classify(line), want, "{:?}", line);

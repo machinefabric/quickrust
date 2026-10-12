@@ -497,6 +497,8 @@ struct Activity {
     waiting: Option<String>,
     /// `Updating crates.io index`: which.
     updating: Option<String>,
+    /// `Fetch n complete; m pending`: index entries looked up so far.
+    looked_up: Option<u64>,
     /// `Generated …/index.html` (documentation).
     generated: Vec<String>,
     /// Cargo or rustc reported a full disk.
@@ -515,22 +517,29 @@ impl Activity {
             Line::Progress { verb: "Building", done: Some(d), total: Some(t), .. } => {
                 self.progress = Some((d, t));
                 self.updating = None;
+                self.looked_up = None;
             }
             Line::Progress { verb: "Downloading", total, detail, .. } => {
                 let remaining = total.unwrap_or(0);
                 let most = self.downloading.as_ref().map(|d| d.0).unwrap_or(0).max(remaining);
                 self.downloading = Some((most, remaining, detail.to_string()));
                 self.updating = None;
+                self.looked_up = None;
             }
+            Line::Progress { verb: "Fetch", done, .. } => self.looked_up = done,
             Line::Status { verb: "Blocking", rest } => self.waiting = Some(rest.trim_start_matches("waiting for file lock on ").to_string()),
-            Line::Status { verb: "Updating", rest } if rest.ends_with(" index") => self.updating = Some(rest.to_string()),
+            Line::Status { verb: "Updating", rest } if rest.ends_with(" index") => {
+                self.updating = Some(rest.to_string());
+                self.looked_up = None;
+            }
             Line::Status { verb: "Downloaded", rest } => {
                 // `Downloaded 7 crates (645.0KiB) in 0.16s`: all done.
                 if let Some((n, more)) = rest.split_once(' ') {
                     if n.parse::<u64>().is_ok() && (more.starts_with("crates") || more.starts_with("crate ")) {
                         self.downloading = None;
                         let size = more.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(b, _)| b).unwrap_or("");
-                        let took = more.rsplit_once(" in ").map(|(_, t)| t).unwrap_or("");
+                        // Cargo 1.99 adds `(largest was `encoding_rs` at 1.3MiB)` after the duration.
+                        let took = more.split_once(" in ").map(|(_, t)| t.split(' ').next().unwrap_or("")).unwrap_or("");
                         return Some(format!("{} {}{}{}", n, if n == "1" { "crate" } else { "crates" }, if size.is_empty() { String::new() } else { format!(" · {}", size) }, if took.is_empty() { String::new() } else { format!(" · {}", took) }));
                     }
                 }
@@ -553,7 +562,10 @@ impl Activity {
             let done = most.saturating_sub(*remaining);
             return Some(format!("Downloading {}  {}/{} crates{}", bar(done, *most), done, most, if bytes.is_empty() { String::new() } else { format!(" · {} left", bytes) }));
         }
-        self.updating.as_ref().map(|u| format!("Updating {}", u))
+        self.updating.as_ref().map(|u| match self.looked_up {
+            Some(n) => format!("Updating {} · {} {} looked up", u, n, if n == 1 { "package" } else { "packages" }),
+            None => format!("Updating {}", u),
+        })
     }
 }
 
@@ -734,7 +746,7 @@ impl Renderer {
         }
         let paint_mark = |s: &Self, code: &str, m: &str| s.paint(code, m);
         let out: Option<String> = match classified {
-            Line::Progress { verb: v @ ("Building" | "Downloading"), .. } => {
+            Line::Progress { verb: v @ ("Building" | "Downloading" | "Fetch"), .. } => {
                 let _ = v;
                 None
             }
@@ -1087,6 +1099,24 @@ mod tests {
         assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files, 75.8MiB total\n");
         let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
         assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\n✗ cargo update failed after 920ms\n");
+    }
+
+    #[test]
+    fn index_lookups_count_in_the_status_line_and_are_never_printed() {
+        let mut ren = r();
+        let mut sink: Vec<u8> = Vec::new();
+        ren.on_stderr(&mut sink, "    Updating crates.io index");
+        ren.on_stderr(&mut sink, "       Fetch 26 complete; 4 pending");
+        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 26 packages looked up"));
+        ren.on_stderr(&mut sink, "       Fetch 50 complete; 1 pending");
+        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 50 packages looked up"));
+        // Cargo 1.99's summary names the largest crate; Haul's line ends at the duration.
+        ren.on_stderr(&mut sink, "  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)");
+        ren.on_stderr(&mut sink, "    Building [>         ] 0/54: memchr");
+        assert_eq!(ren.activity.status(), None);
+        assert_eq!(String::from_utf8(sink).unwrap(), "↓ Downloaded 25 crates · 4.4MiB · 0.32s\n");
+        // Nor by a command that does not build.
+        assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "✓ Lockfile up to date · 920ms\n");
     }
 
     #[test]

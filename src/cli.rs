@@ -1412,7 +1412,9 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
         }
     }
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {
-        println!("\nOpen a new shell, or run:  . \"{}\"", tilde(&util::haul_home().join("env")));
+        // As a shell takes it: `~` is not expanded inside quotes, `$HOME` is.
+        let home = util::haul_home();
+        println!("\nOpen a new shell, or run:  . \"{}\"  (fish: source \"{}\")", crate::setup::shell_path(&home.join("env")), crate::setup::shell_path(&home.join("env.fish")));
     }
     Ok(0)
 }

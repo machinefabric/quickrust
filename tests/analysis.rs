@@ -790,6 +790,12 @@ fn doctor_setup_and_uninstall() {
     assert!(toolchain_store().join("channels.json").exists(), "the linked toolchain store is untouched");
     assert_eq!(fs::read_to_string(home.join(".bashrc")).unwrap(), "export EDITOR=vi\n");
     assert!(!fs::read_to_string(home.join(".profile")).unwrap().contains("haul"));
+    // What setup says to run, pasted into a shell, puts Haul's bin first (`~/.haul` as usual).
+    let haul_home = home.join(".haul");
+    let said = stdout(&ok(sb.haul(&p).args(["setup", "--toolchain", "none"]).env("HOME", &home).env("HAUL_HOME", &haul_home)));
+    let pasted = said.lines().find_map(|l| l.strip_prefix("Open a new shell, or run:  ")).and_then(|l| l.split("  (fish").next()).unwrap_or_else(|| panic!("{}", said));
+    let path = stdout(&ok(std::process::Command::new("sh").arg("-c").arg(format!("{}\nprintf %s \"$PATH\"", pasted)).env("HOME", &home).env("PATH", "/usr/bin:/bin")));
+    assert_eq!(path, format!("{}:/usr/bin:/bin", haul_home.join("bin").display()), "{}", pasted);
 }
 
 #[test]
@@ -886,6 +892,7 @@ fn the_install_script_checks_the_release_and_sets_haul_up() {
     assert!(stdout(&cargo).starts_with("cargo 1."), "{}", stderr(&cargo));
 }
 
+#[cfg(target_os = "linux")]
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest;
     sha2::Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
