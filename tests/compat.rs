@@ -11,7 +11,7 @@ use std::fs;
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 /// Artifact names with Cargo's own hashes: equal sets mean Cargo selected and built the same units.
 fn artifacts(target: &Path) -> Vec<String> {
@@ -793,4 +793,72 @@ fn comp007_cargo_has_the_terminal_through_the_shim() {
     let (ours, took) = interrupted(sb.cargo_in_terminal(&p, "run").unwrap());
     assert_eq!(ours, theirs, "the same exit status as upstream Cargo after Ctrl-C");
     assert!(took < std::time::Duration::from_secs(10), "Ctrl-C ended the run after {:?}", took);
+}
+
+#[test]
+fn comp042_the_jobserver_reaches_rustc_through_the_wrapper_and_cargo_from_make() {
+    // COMP-042 / FR-120.4: Cargo's jobserver reaches the compiler through Haul's rustc wrapper,
+    // and an outer `make -jN` jobserver reaches Cargo through the shim.
+    let sb = Sandbox::new("jobserver");
+    let p = sb.package("p", "p");
+    // A build script that takes a token from the jobserver it is given and gives it back.
+    sb.file(
+        "p/build.rs",
+        r#"use std::io::{Read, Write};
+use std::os::unix::io::FromRawFd;
+
+fn main() {
+    let flags = std::env::var("CARGO_MAKEFLAGS").unwrap();
+    // `--jobserver-auth` since GNU Make 4.2, `--jobserver-fds` before (macOS ships 3.81).
+    let auth = flags.split_whitespace().find_map(|f| f.strip_prefix("--jobserver-auth=").or_else(|| f.strip_prefix("--jobserver-fds="))).unwrap().to_string();
+    let mut token = [0u8; 1];
+    if let Some(path) = auth.strip_prefix("fifo:") {
+        let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+        f.read_exact(&mut token).unwrap();
+        f.write_all(&token).unwrap();
+    } else {
+        let (r, w) = auth.split_once(',').unwrap();
+        let mut read = unsafe { std::fs::File::from_raw_fd(r.parse().unwrap()) };
+        let mut write = unsafe { std::fs::File::from_raw_fd(w.parse().unwrap()) };
+        read.read_exact(&mut token).unwrap();
+        write.write_all(&token).unwrap();
+        std::mem::forget(read);
+        std::mem::forget(write);
+    }
+    std::fs::write(std::path::Path::new(&std::env::var("OUT_DIR").unwrap()).join("jobserver-auth"), &auth).unwrap();
+    println!("cargo::warning=jobserver token acquired and released");
+}
+"#,
+    );
+    let refused = "failed to connect to jobserver";
+
+    // Fast mode: every compilation passes through Haul's wrapper.
+    let built = ok(sb.cargo(&p).arg("build"));
+    assert!(stderr(&built).contains("jobserver token acquired and released"), "{}", stderr(&built));
+    assert!(!stderr(&built).contains(refused), "the compiler lost the jobserver: {}", stderr(&built));
+    // The check can fail: a wrapper of the user's that closes the jobserver's descriptors, which
+    // Haul runs inside its own, makes the compiler say so.
+    let closing = sb.file("close-jobserver.sh", "#!/bin/sh\nexec 3>&- 4>&- 5>&-\nexec \"$@\"\n");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&closing, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
+    let broken = ok(sb.cargo(&p).arg("build").env("RUSTC_WRAPPER", &closing));
+    assert!(stderr(&broken).contains(refused), "the negative control did not trip: {}", stderr(&broken));
+
+    // `make -j3` driving Cargo through the shim: Cargo uses make's jobserver.
+    if Command::new("make").arg("--version").output().is_err() {
+        eprintln!("skipped the make part: no make");
+        return;
+    }
+    sb.file("p/Makefile", "all:\n\t@echo \"$$MAKEFLAGS\" > make-flags.txt\n\t+cargo build\n");
+    ok(sb.cargo(&p).arg("clean"));
+    // The suite itself may run under a jobserver: make starts its own.
+    let out = run(sb.with_shim("make", &p).arg("-j3").env_remove("CARGO_MAKEFLAGS").env_remove("MAKEFLAGS").env_remove("MFLAGS"));
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let outer = fs::read_to_string(p.join("make-flags.txt")).unwrap();
+    let outer_auth = outer.split_whitespace().find_map(|f| f.strip_prefix("--jobserver-auth=").or_else(|| f.strip_prefix("--jobserver-fds="))).unwrap_or_else(|| panic!("make set no jobserver: {}", outer)).to_string();
+    let seen = fs::read_dir(p.join("target/debug/build")).unwrap().filter_map(|e| fs::read_to_string(e.ok()?.path().join("out/jobserver-auth")).ok()).next().expect("the build script recorded its jobserver");
+    assert_eq!(seen, outer_auth, "Cargo used its own jobserver instead of make's");
 }
