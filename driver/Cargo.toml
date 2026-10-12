@@ -1,0 +1,18 @@
+# Haul's compiler driver. Not a workspace member: Haul builds it per toolchain, against that
+# toolchain's own compiler libraries (the `rustc-dev` component), with RUSTC_BOOTSTRAP.
+[package]
+name = "haul-rustc-driver"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "haul-rustc-driver"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+strip = true
+
+# Its own workspace: never part of the one it is built from.
+[workspace]

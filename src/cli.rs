@@ -45,6 +45,7 @@ ANALYSIS
     haul report [--run REF] [--format text|json|html] [-o FILE]
     haul runs [--limit N] [--format text|json]
     haul inspect [--format text|json]        workspace, toolchain and environment fingerprint
+    haul driver [status|build] [--rustc PATH] Haul's compiler driver for this toolchain
     haul compare <BASE> <CANDIDATE> [--format text|json]
 
 MEASUREMENT
@@ -248,6 +249,7 @@ pub fn main() {
         "report" => cmd_report(rest),
         "runs" => cmd_runs(rest),
         "inspect" => cmd_inspect(rest),
+        "driver" => cmd_driver(rest),
         "compare" => cmd_compare(rest),
         "benchmark" => cmd_benchmark(rest),
         "experiment" => cmd_experiment(rest),
@@ -416,6 +418,44 @@ fn live_snapshot(ctx: &Ctx) -> Result<Value, String> {
         "environment": { "machine": discover::environment_fingerprint(target.as_deref()), "variables": session::env_fingerprint(&tok, ctx.cfg.str("security.persist-environment")) },
         "unavailable": meta.deps_unavailable.map(|d| json!({ "dependency_graph": d })).unwrap_or(json!({})),
     }))
+}
+
+/// The compiler of the toolchain a build here would use, as Haul resolves it.
+fn toolchain_rustc() -> Result<PathBuf, String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cfg = crate::config::Config::load(&cwd)?;
+    let up = crate::resolve::resolve_upstream(&crate::resolve::classify(&[OsString::from("build")]), &cfg)?;
+    if !up.toolchain_cargo {
+        return Err(format!("Haul resolved {} ({}), not a toolchain's own Cargo; pass --rustc PATH", up.program.display(), up.rule));
+    }
+    Ok(up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX)))
+}
+
+fn cmd_driver(raw: &[OsString]) -> CmdResult {
+    let mut a = Args::new(raw);
+    let rustc = a.opt("--rustc")?;
+    let action = a.positional();
+    a.finish()?;
+    let rustc = match rustc {
+        Some(r) => PathBuf::from(r),
+        None => toolchain_rustc()?,
+    };
+    match action.as_deref() {
+        Some("build") => {
+            let exe = crate::driver::build(&rustc)?;
+            println!("{}", exe.display());
+            Ok(0)
+        }
+        None | Some("status") => {
+            let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &util::path_str(&rustc))?;
+            match crate::driver::find(&vv) {
+                Some(exe) => println!("built: {}", exe.display()),
+                None => println!("not built for {} (expected in {}); `haul driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&vv)?.display()),
+            }
+            Ok(0)
+        }
+        Some(other) => Err(format!("unknown `haul driver` action `{}` (status, build)", other)),
+    }
 }
 
 fn cmd_inspect(raw: &[OsString]) -> CmdResult {
