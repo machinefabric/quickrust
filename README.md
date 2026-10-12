@@ -140,6 +140,15 @@ fresh. Their output is never touched, and the warnings Cargo would replay are no
 When nothing the last such build depended on has changed, Haul says so (`✓ Up to date`)
 and goes straight to the command, which still checks freshness itself.
 
+The same holds for a plain `haul build` / `check` / `clippy` in a terminal, where Haul's
+verdict is the answer and Cargo is not started at all (axum: 21 ms instead of 123 ms). Haul
+records what a build's freshness depends on: every source the compiler read, build scripts'
+declared inputs (every file of the package for a script that declares none), manifests,
+`Cargo.lock`, Cargo configuration, toolchain files and the compiler, the outputs, the
+environment. It judges only when it runs a toolchain's own Cargo; pipes, IDEs and CI always
+get Cargo. A test drives a series of changes and checks that whenever Haul says up to date,
+Cargo asked directly finds nothing to do.
+
 Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
 are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and
 `cargo test --doc` get Cargo's output untouched.

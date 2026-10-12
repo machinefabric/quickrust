@@ -587,9 +587,16 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let lock = store::register_active(&id, ws_root.as_deref(), &cwd);
     let overhead_pre = preflight.elapsed().as_nanos() as u64;
 
-    // The build phase of a `BuildFirst` command is skipped when its stamp shows nothing it
-    // depends on changed (see prebuilt.rs); the command itself still checks freshness.
-    let prebuilt_key = (matches!(rendering, Rendering::BuildFirst(_)) && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &up.program, &up.env));
+    // A build Haul renders is skipped when its stamp shows nothing it depends on changed (see
+    // prebuilt.rs). For `run` / `test` the command itself still checks freshness; for a build
+    // alone Haul's verdict is the answer, so it is only given when Haul runs a toolchain's own
+    // Cargo (not rustup's proxy, whose choice could change without a file Haul stamps).
+    let judged = match rendering {
+        Rendering::BuildFirst(_) => true,
+        Rendering::Build => up.toolchain_cargo,
+        Rendering::Off => false,
+    };
+    let prebuilt_key = (judged && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &up.program, &up.env));
     let known_fresh = prebuilt_key.as_deref().and_then(|k| crate::prebuilt::fresh(&store.dir, k));
 
     let started_wall = util::now_wall_ns();
@@ -636,7 +643,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
         }
         if let (Some(key), true) = (&prebuilt_key, exit.success()) {
-            crate::prebuilt::record(&store.dir, key, &fin.messages, &cwd, ws_root.as_deref(), fin.units, fin.warnings_line.as_deref());
+            let built = crate::prebuilt::Built { messages: &fin.messages, cwd: &cwd, ws_root: ws_root.as_deref(), cargo: &up.program, units: fin.units, warnings_line: fin.warnings_line.as_deref() };
+            crate::prebuilt::record(&store.dir, key, &built);
         }
         messages = Some(fin.messages);
     }
