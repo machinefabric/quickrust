@@ -113,7 +113,9 @@ when its build selection has no tests) under upstream Cargo and under
 `haul` (plus any `--define` variants), from fresh checkouts, in two rounds: the first from
 empty Haul state, the second keeping the artifact cache, so tests also run against binaries
 built from restored units. A test whose outcome differs between the rounds of one variant
-is reported as flaky; any other difference from upstream Cargo fails the gate (exit status
+is reported as flaky, and so is one that differs from upstream Cargo but changes outcome
+when run alone four more times on either side; any other difference from upstream Cargo
+fails the gate (exit status
 1), and so does a suite under which upstream Cargo runs no test at all. `--record` appends the result to [`verify.jsonl`](verify.jsonl). No lever becomes a
 default without a clean verify.
 
