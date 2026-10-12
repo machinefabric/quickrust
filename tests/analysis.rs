@@ -365,6 +365,37 @@ fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_s
 }
 
 #[test]
+fn every_command_speaks_hauls_language_in_a_terminal() {
+    use common::registry::{Crate, Registry};
+    let sb = Sandbox::new("screens");
+    let reg = Registry::start();
+    reg.publish(&Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n"));
+    reg.publish(&Crate::lib("greet", "1.1.0", "pub fn greet() -> &'static str {\n    \"hello again\"\n}\n"));
+    reg.serve_crates_io_for(&sb.home);
+    let p = sb.package("p", "p");
+    let Some(mut add) = sb.cargo_in_terminal(&p, "add greet@=1.0.0") else { return };
+    let shown = screen(&run(&mut add).stdout);
+    let durations = |s: &str| s.split(" · ").map(|part| if part.ends_with("ms") || part.ends_with('s') && part.chars().next().is_some_and(|c| c.is_ascii_digit()) { "<time>" } else { part }).collect::<Vec<_>>().join(" · ");
+    assert_eq!(durations(&shown), "+ greet                    =1.0.0 → dependencies\n    locked +greet 1.0.0\n✓ Manifest updated · <time>", "{}", shown);
+    // A build that downloads: one line for the downloads, the summary.
+    sb.file("p/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
+    let mut build = sb.cargo_in_terminal(&p, "build").unwrap();
+    let shown = screen(&run(&mut build).stdout);
+    let lines: Vec<&str> = shown.lines().collect();
+    assert!(lines.iter().any(|l| l.starts_with("↓ Downloaded 1 crate")), "{}", shown);
+    assert!(lines.last().is_some_and(|l| l.starts_with("✓ Built ")), "{}", shown);
+    assert!(!shown.contains("Downloading") && !shown.contains("Compiling") && !shown.contains("Updating crates.io index"), "nothing of Cargo's own progress stays on screen:\n{}", shown);
+    // The lockfile moved on: listed, then summed up.
+    sb.file("p/Cargo.toml", &fs::read_to_string(p.join("Cargo.toml")).unwrap().replace("\"=1.0.0\"", "\"1\""));
+    let mut update = sb.cargo_in_terminal(&p, "update").unwrap();
+    let shown = screen(&run(&mut update).stdout);
+    assert_eq!(durations(&shown), "↑ greet                    1.0.0 → 1.1.0\n✓ Lockfile updated · 1 updated · <time>", "{}", shown);
+    let mut clean = sb.cargo_in_terminal(&p, "clean").unwrap();
+    let shown = screen(&run(&mut clean).stdout);
+    assert!(shown.starts_with("✓ Removed ") && shown.lines().count() == 1, "{}", shown);
+}
+
+#[test]
 fn the_stale_plan_is_blocked_while_a_build_is_running() {
     // QA-028 / FR-110 acceptance: an active build owns its files.
     let sb = Sandbox::new("gcrace");

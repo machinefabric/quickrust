@@ -10,6 +10,7 @@ pub mod artifact_cache;
 pub mod bench;
 pub mod builddir;
 pub mod cache;
+pub mod cargo_lines;
 pub mod cli;
 pub mod compare;
 pub mod config;

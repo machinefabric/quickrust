@@ -259,6 +259,42 @@ impl Drop for Sandbox {
     }
 }
 
+/// What a terminal shows after `bytes`: a carriage return starts the line over, `ESC[2K` clears
+/// it, colours are dropped. Lines end with `\n`; the line the cursor is on is the last.
+pub fn screen(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines: Vec<String> = vec![String::new()];
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => lines.push(String::new()),
+            // A terminal's line end is `\r\n`: only a carriage return before other text redraws.
+            '\r' if chars.peek() == Some(&'\n') => {}
+            '\r' => lines.last_mut().unwrap().clear(),
+            '\x1b' => {
+                // A CSI sequence: ESC [ params final.
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    let mut seq = String::new();
+                    while let Some(&n) = chars.peek() {
+                        chars.next();
+                        if n.is_ascii_alphabetic() {
+                            seq.push(n);
+                            break;
+                        }
+                        seq.push(n);
+                    }
+                    if seq == "2K" {
+                        lines.last_mut().unwrap().clear();
+                    }
+                }
+            }
+            c => lines.last_mut().unwrap().push(c),
+        }
+    }
+    lines.iter().map(|l| l.trim_end()).filter(|l| !l.is_empty()).collect::<Vec<_>>().join("\n")
+}
+
 pub fn run(cmd: &mut Command) -> Output {
     cmd.output().unwrap_or_else(|e| panic!("could not run {:?}: {}", cmd, e))
 }
