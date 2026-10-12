@@ -75,3 +75,32 @@ jobs:
       # the benchmark harness (it measures child processes with wait4).
       - name: Check
         run: cargo clippy --all-targets -p haul -- -D warnings
+
+  # What a Windows user gets from install.ps1, run end to end: Haul sets itself up (installing
+  # stable Rust from the dist server into its own home), then creates, builds, runs and tests a
+  # project, with nothing of rustup's on PATH.
+  windows-smoke:
+    name: smoke (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Build
+        run: cargo build --release -p haul
+      - name: Set up, then a project through Haul
+        shell: bash
+        run: |
+          set -eux
+          export HAUL_HOME="$RUNNER_TEMP/haul-home"
+          target/release/haul.exe setup --no-modify-path
+          export PATH="$HAUL_HOME/bin:/usr/bin:/c/Windows/system32:/c/Windows"
+          test "$(command -v cargo)" = "$(cygpath -u "$HAUL_HOME")/bin/cargo"
+          cd "$RUNNER_TEMP"
+          cargo new --vcs none hello
+          cd hello
+          cargo build
+          test ! -e target
+          test "$(cargo run)" = "Hello, world!"
+          cargo test
+          haul doctor
