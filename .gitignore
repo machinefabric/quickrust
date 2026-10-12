@@ -1,2 +1,4 @@
 /target
 .DS_Store
+# Crash reports rustc writes into the directory it ran in.
+rustc-ice-*.txt
