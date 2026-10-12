@@ -105,6 +105,17 @@ CPU time (user + system of the whole process tree), which is much less sensitive
 load on the machine. Every sample also records peak RSS of the largest process, units run
 and the target directory's allocated bytes.
 
+## The correctness gate
+
+Speed counts only if program behaviour stays identical. `haul-bench verify` runs each
+workload's own test suite (`cargo test --no-fail-fast`) under upstream Cargo and under
+`haul` (plus any `--define` variants), from fresh checkouts, in two rounds: the first from
+empty Haul state, the second keeping the artifact cache, so tests also run against binaries
+built from restored units. A test whose outcome differs between the rounds of one variant
+is reported as flaky; any other difference from upstream Cargo fails the gate (exit status
+1). `--record` appends the result to [`verify.jsonl`](verify.jsonl). No lever becomes a
+default without a clean verify.
+
 ## Reading it honestly
 
 - A ratio on three workloads on one machine. Each record names the machine and the
