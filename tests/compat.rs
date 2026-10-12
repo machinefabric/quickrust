@@ -862,3 +862,33 @@ fn main() {
     let seen = fs::read_dir(p.join("target/debug/build")).unwrap().filter_map(|e| fs::read_to_string(e.ok()?.path().join("out/jobserver-auth")).ok()).next().expect("the build script recorded its jobserver");
     assert_eq!(seen, outer_auth, "Cargo used its own jobserver instead of make's");
 }
+
+#[test]
+fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
+    // The driver is the toolchain's own compiler run through Haul's callbacks: with nothing
+    // changed by them, every output must be rustc's, byte for byte.
+    let sb = Sandbox::new("driver");
+    let ws = sb.workspace("ws");
+    let built = run(sb.haul(&ws).args(["driver", "build"]));
+    assert!(built.status.success(), "{}", stderr(&built));
+    let driver = stdout(&built).trim().to_string();
+    let rustc = String::from_utf8(Command::new("rustup").args(["which", "rustc"]).output().unwrap().stdout).unwrap().trim().to_string();
+    let outputs = |compiler: &str| -> std::collections::BTreeMap<String, Vec<u8>> {
+        let target = ws.join("target");
+        let _ = fs::remove_dir_all(&target);
+        ok(sb.upstream(&ws).arg("build").env("RUSTC", compiler).env("CARGO_INCREMENTAL", "0"));
+        let mut out = std::collections::BTreeMap::new();
+        for e in fs::read_dir(target.join("debug/deps")).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".d") {
+                out.insert(name, fs::read(e.path()).unwrap());
+            }
+        }
+        out
+    };
+    let (stock, ours) = (outputs(&rustc), outputs(&driver));
+    assert!(stock.len() >= 4, "{:?}", stock.keys());
+    assert_eq!(stock.keys().collect::<Vec<_>>(), ours.keys().collect::<Vec<_>>());
+    let differ: Vec<&String> = stock.iter().filter(|(k, v)| ours[*k] != **v).map(|(k, _)| k).collect();
+    assert!(differ.is_empty(), "outputs that differ from rustc's: {:?}", differ);
+}
