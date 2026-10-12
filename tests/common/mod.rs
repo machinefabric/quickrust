@@ -72,6 +72,8 @@ impl Sandbox {
         // Early cut-off builds Haul's compiler driver in the background when it is missing: the
         // tests that need the driver turn it on and build it themselves.
         c.env("HAUL_EARLY_CUTOFF", "off");
+        // The suites' toolchains change only when a test changes them.
+        c.env("HAUL_TOOLCHAIN_AUTO_UPDATE", "off");
         c
     }
 

@@ -102,8 +102,6 @@ fn release_minor(version_verbose: &str) -> Option<u32> {
 /// background, with `haul` (Haul's own binary) running `haul driver
 /// build`, unless it is built, being built, or could not be built before (`haul driver build`
 /// tries again). Returns whether a build started.
-// The build outlives this process on purpose; init reaps it.
-#[allow(clippy::zombie_processes)]
 pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<bool, String> {
     if find(compiler).is_some() {
         return Ok(false);
@@ -128,21 +126,11 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
     }
     let log = fs::File::create(target.join("build.log")).map_err(|e| e.to_string())?;
     let mut c = Command::new(haul);
-    c.args(["driver", "build", "--rustc", &util::path_str(rustc)]).stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
-    // A session of its own: it outlives the build that started it, and that build's terminal
-    // signals (Ctrl-C) do not reach it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            c.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    match c.spawn() {
-        Ok(_) => Ok(true),
+    c.args(["driver", "build", "--rustc", &util::path_str(rustc)]);
+    // It outlives the build that started it, and that build's terminal signals (Ctrl-C) do not
+    // reach it.
+    match crate::proc::spawn_detached(&mut c, log) {
+        Ok(()) => Ok(true),
         Err(e) => {
             let _ = fs::remove_file(&marker);
             Err(format!("cannot start {}: {}", haul.display(), e))

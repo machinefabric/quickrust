@@ -42,6 +42,10 @@ pub struct Record {
     /// `(package, target)` of each installed archive, with the components it held.
     pub components: Vec<(String, String, Vec<String>)>,
     pub installed_ns: u64,
+    /// The channel (`stable-<host>`) it was installed to be the release of: it is retired once
+    /// the channel names a newer one and it has gone unused (`retire`). `None` for a release
+    /// asked for by its own name, which nothing replaces.
+    pub origin: Option<String>,
 }
 
 impl Record {
@@ -51,7 +55,7 @@ impl Record {
 
     fn to_json(&self) -> Value {
         let comps: Vec<Value> = self.components.iter().map(|(p, t, n)| json!({"pkg": p, "target": t, "names": n})).collect();
-        json!({"format": 1, "id": self.id, "version": self.version, "date": self.date, "host": self.host, "profile": self.profile, "components": comps, "installed_ns": self.installed_ns})
+        json!({"format": 1, "id": self.id, "version": self.version, "date": self.date, "host": self.host, "profile": self.profile, "components": comps, "installed_ns": self.installed_ns, "origin": self.origin})
     }
 
     fn save(&self, dir: &Path) -> Result<(), String> {
@@ -69,7 +73,12 @@ pub fn read_record(dir: &Path) -> Result<Record, String> {
         let names = c.get("names").and_then(Value::as_array).map(|a| a.iter().filter_map(|n| n.as_str().map(str::to_string)).collect()).unwrap_or_default();
         components.push((f("pkg")?, f("target")?, names));
     }
-    Ok(Record { id: s("id")?, version: s("version")?, date: s("date")?, host: s("host")?, profile: s("profile")?, components, installed_ns: v.get("installed_ns").and_then(Value::as_u64).unwrap_or(0) })
+    let origin = match v.get("origin") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(o)) => Some(o.clone()),
+        Some(_) => return Err(format!("{}: `origin` is not a channel name", p.display())),
+    };
+    Ok(Record { id: s("id")?, version: s("version")?, date: s("date")?, host: s("host")?, profile: s("profile")?, components, installed_ns: v.get("installed_ns").and_then(Value::as_u64).unwrap_or(0), origin })
 }
 
 /// Progress of an install, reported on the calling thread.
@@ -106,10 +115,20 @@ pub fn lock(layout: &Layout, id: &str, report: &mut dyn Report) -> Result<Locked
     Ok(Locked { _lock: lock })
 }
 
-/// Installs toolchain `id` from `manifest`: the given components, assembled apart and renamed
-/// into place. The caller holds the toolchain's lock and has checked it is not installed.
-#[allow(clippy::too_many_arguments)]
-pub fn install(layout: &Layout, _locked: &Locked, id: &str, host: &str, profile: Profile, manifest: &Manifest, components: &[Component], server: &str, client: &net::Client, report: &mut dyn Report) -> Result<PathBuf, String> {
+/// A toolchain about to be installed: which release, for which host, how it was asked for.
+pub struct Release<'a> {
+    pub id: &'a str,
+    pub host: &'a str,
+    pub profile: Profile,
+    pub manifest: &'a Manifest,
+    /// See `Record::origin`.
+    pub origin: Option<&'a str>,
+}
+
+/// Installs a release: the given components, assembled apart and renamed into place. The caller
+/// holds the toolchain's lock and has checked it is not installed.
+pub fn install(layout: &Layout, _locked: &Locked, release: &Release, components: &[Component], server: &str, client: &net::Client, report: &mut dyn Report) -> Result<PathBuf, String> {
+    let Release { id, host, profile, manifest, origin } = *release;
     let dest = layout.toolchains().join(id);
     if dest.exists() {
         return Err(format!("{} exists but is not a complete toolchain; `haul toolchain remove {}` deletes it", dest.display(), id));
@@ -120,7 +139,7 @@ pub fn install(layout: &Layout, _locked: &Locked, id: &str, host: &str, profile:
     let out = (|| {
         fs::create_dir_all(staging.join("lib/rustlib")).map_err(|e| format!("cannot create {}: {}", staging.display(), e))?;
         let unpacked = fetch_and_unpack(layout, &staging_root, &format!("{}.{}.unpack", id, std::process::id()), components, server, client, host, report)?;
-        let mut record = Record { id: id.to_string(), version: manifest.version().to_string(), date: manifest.date().to_string(), host: host.to_string(), profile: profile.name().to_string(), components: vec![], installed_ns: util::now_wall_ns() };
+        let mut record = Record { id: id.to_string(), version: manifest.version().to_string(), date: manifest.date().to_string(), host: host.to_string(), profile: profile.name().to_string(), components: vec![], installed_ns: util::now_wall_ns(), origin: origin.map(str::to_string) };
         for (c, dir) in components.iter().zip(&unpacked) {
             let names = place(dir, &staging, None)?;
             record.components.push((c.pkg.clone(), c.target.clone(), names));
