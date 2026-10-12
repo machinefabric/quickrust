@@ -100,6 +100,14 @@ impl Sandbox {
         Some(c)
     }
 
+    /// Any program in the sandbox's environment, with the shim first on PATH (a build tool that
+    /// runs `cargo`, for instance).
+    pub fn with_shim(&self, program: &str, cwd: &Path) -> Command {
+        let mut c = self.base(Path::new(program), cwd);
+        c.env("PATH", self.path_with_shim());
+        c
+    }
+
     pub fn haul(&self, cwd: &Path) -> Command {
         let mut c = self.base(Path::new(env!("CARGO_BIN_EXE_haul")), cwd);
         c.env("PATH", self.path_with_shim());
