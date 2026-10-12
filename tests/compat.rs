@@ -871,7 +871,9 @@ fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     let ws = sb.workspace("ws");
     let Some(driver) = build_driver(&sb, &ws) else { return };
     let driver = driver.to_string_lossy().into_owned();
-    let rustc = String::from_utf8(Command::new("rustup").args(["which", "rustc"]).output().unwrap().stdout).unwrap().trim().to_string();
+    // The compiler the driver was built for: the sandbox's (a `cargo +toolchain test` running
+    // this suite sets RUSTUP_TOOLCHAIN for itself, not for the builds it observes).
+    let rustc = stdout(&ok(sb.with_shim("rustup", &ws).args(["which", "rustc"]))).trim().to_string();
     let outputs = |compiler: &str| -> std::collections::BTreeMap<String, Vec<u8>> {
         let target = ws.join("target");
         let _ = fs::remove_dir_all(&target);
