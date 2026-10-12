@@ -38,7 +38,7 @@ pub struct Workload {
     pub rev: String,
     /// Package selection and the like, appended to every Cargo command.
     pub args: Vec<String>,
-    /// What `haul-bench verify` passes to `cargo test` in place of `args`: the build may
+    /// What `qrust-bench verify` passes to `cargo test` in place of `args`: the build may
     /// select a package that has no tests of its own.
     pub test_args: Vec<String>,
     pub quick: bool,
@@ -114,7 +114,7 @@ pub fn checkout(work: &Path, w: &Workload, into: &Path) -> Result<(), String> {
     let untar = Command::new("tar").arg("-x").arg("-C").arg(into).stdin(stream).status().map_err(|e| format!("tar: {}", e))?;
     let archived = archive.wait().map_err(|e| format!("git archive: {}", e))?;
     if !archived.success() || !untar.success() {
-        return Err(format!("could not extract {}@{} (run `haul-bench fetch` first)", w.name, w.rev));
+        return Err(format!("could not extract {}@{} (run `qrust-bench fetch` first)", w.name, w.rev));
     }
     Ok(())
 }
@@ -143,7 +143,7 @@ pub fn fetch(work: &Path, repo: &Path, w: &Workload, sealed: &Sealed) -> Result<
             Source::Git(url) => {
                 fs::create_dir_all(&src).map_err(|e| e.to_string())?;
                 git(&src, &["init", "--quiet"])?;
-                eprintln!("haul-bench: fetching {} {}", url, w.rev);
+                eprintln!("qrust-bench: fetching {} {}", url, w.rev);
                 git(&src, &["fetch", "--quiet", "--depth", "1", url, &w.rev])?;
             }
         }
@@ -159,7 +159,7 @@ pub fn fetch(work: &Path, repo: &Path, w: &Workload, sealed: &Sealed) -> Result<
             return Err(format!("{}: the edit anchor occurs {} times in {} (must be exactly once): {:?}", w.name, n, e.file, e.find));
         }
     }
-    eprintln!("haul-bench: downloading dependencies of {}", w.name);
+    eprintln!("qrust-bench: downloading dependencies of {}", w.name);
     let mut cmd = sealed.command(&sealed.cargo, &tree, &tree.join("target"), true);
     cmd.args(["fetch", "--locked"]).stdout(Stdio::null());
     let status = cmd.status().map_err(|e| format!("cargo fetch: {}", e))?;

@@ -1,17 +1,17 @@
-//! Builds Haul renders in a terminal, skipped when they are known fresh.
+//! Builds QuickRust renders in a terminal, skipped when they are known fresh.
 //!
-//! After a successful build Haul records a stamp: every file the build's freshness depends on
-//! that Haul can name, with its size and modification time — the sources the compiler read,
+//! After a successful build QuickRust records a stamp: every file the build's freshness depends on
+//! that QuickRust can name, with its size and modification time — the sources the compiler read,
 //! build scripts' declared inputs (every file of the package for a script that declares none),
 //! manifests, `Cargo.lock`, Cargo configuration, toolchain files and the compiler, the outputs.
-//! The key holds the rest: arguments, directory, environment, Haul's and Cargo's identity. The
+//! The key holds the rest: arguments, directory, environment, QuickRust's and Cargo's identity. The
 //! next identical command whose stamped files are all unchanged is known fresh.
 //!
 //! - `cargo run` / `cargo test` (built first, then run; see `ui::Rendering`): the build phase is
 //!   skipped and the command runs at once. Cargo still checks freshness in it, so a stamp that
 //!   missed an input only means that build is shown in Cargo's words.
-//! - A build alone: Haul's verdict is the answer and Cargo is not started. The toolchain's Cargo
-//!   is in the key, and the files that choose the toolchain are stamped. A test checks Haul's
+//! - A build alone: QuickRust's verdict is the answer and Cargo is not started. The toolchain's Cargo
+//!   is in the key, and the files that choose the toolchain are stamped. A test checks QuickRust's
 //!   verdict against Cargo's after every kind of change.
 
 use crate::util;
@@ -21,7 +21,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "haul-prebuilt-1";
+const FORMAT: &str = "qrust-prebuilt-1";
 /// Stamps kept per workspace: one per distinct command line, the least recently written go.
 const KEEP: usize = 32;
 
@@ -53,7 +53,7 @@ fn file_state(p: &Path) -> Value {
 }
 
 /// The stamp of the build phase with this key, when every file it names is as it was recorded.
-/// Returns the stamp's summary: units and the warnings line Haul printed for that build.
+/// Returns the stamp's summary: units and the warnings line QuickRust printed for that build.
 pub fn fresh(store_dir: &Path, key: &str) -> Option<(u64, Option<String>)> {
     let stamp = util::read_json(&stamp_path(store_dir, key))?;
     if stamp["format"] != FORMAT {
@@ -137,7 +137,7 @@ pub struct Built<'a> {
     pub ws_root: Option<&'a Path>,
     /// The toolchain Cargo that ran it.
     pub cargo: &'a Path,
-    /// What Haul summarised: units, and the warnings line.
+    /// What QuickRust summarised: units, and the warnings line.
     pub units: u64,
     pub warnings_line: Option<&'a str>,
 }
@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn a_stamp_holds_until_any_file_it_names_changes_appears_or_goes() {
-        let base = std::env::temp_dir().join(format!("haul-prebuilt-{}", util::new_id()));
+        let base = std::env::temp_dir().join(format!("qrust-prebuilt-{}", util::new_id()));
         let (ws, store) = (base.join("ws"), base.join("store"));
         fs::create_dir_all(ws.join("src")).unwrap();
         fs::create_dir_all(ws.join("target/debug/deps")).unwrap();

@@ -1,4 +1,4 @@
-# Workloads of the speed index (`haul-bench`). Each is pinned to a commit and its
+# Workloads of the speed index (`qrust-bench`). Each is pinned to a commit and its
 # committed lockfile, fetched once into the bench work directory, and built offline.
 #
 # Edits are real code changes inside a function body: `find` must occur exactly once
@@ -7,11 +7,12 @@
 # crate others build on, so editing it rebuilds its dependents too.
 #
 # `args` are appended to every Cargo command; `test-args` replace them for the
-# correctness gate (`haul-bench verify`), which needs a selection that has tests.
+# correctness gate (`qrust-bench verify`), which needs a selection that has tests.
 
 [[workload]]
-name = "haul"
-description = "Haul's own first commit: one package (lib + 2 bins), ~40 units, serde/toml/sha2"
+name = "qrust"
+description = "QuickRust's own first commit: one package (lib + 2 bins), ~40 units, serde/toml/sha2"
+# The project was named Haul then: the commit's crate and its files keep that name.
 source = "self"
 rev = "b2af135"
 quick = true

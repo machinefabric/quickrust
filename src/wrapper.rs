@@ -1,6 +1,6 @@
-//! The Haul rustc wrapper (`RUSTC_WRAPPER`).
+//! The QuickRust rustc wrapper (`RUSTC_WRAPPER`).
 //!
-//! Cargo runs `haul-rustc-wrapper <rustc> <args…>`. The wrapper is the
+//! Cargo runs `qrust-rustc-wrapper <rustc> <args…>`. The wrapper is the
 //! outermost link of the chain (FR-100.5): it runs the user's own wrapper if
 //! one was configured, otherwise rustc, with untouched arguments, environment
 //! and stdio, and afterwards drops one small event file. Each invocation writes
@@ -29,7 +29,7 @@ const HASH_LIMIT: u64 = 8 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
-    /// Haul's artifact cache, when it is on for this build.
+    /// QuickRust's artifact cache, when it is on for this build.
     pub artifact_cache: Option<PathBuf>,
     /// Threads for rustc's parallel frontend in Cargo's units, when it is on.
     pub frontend_threads: Option<u32>,
@@ -37,7 +37,7 @@ pub struct Settings {
     pub min_link_store_ns: u64,
     /// Directory whose `ld` is the fast linker, when one is used for this build.
     pub linker_dir: Option<PathBuf>,
-    /// Compile Cargo's units with Haul's compiler driver, when it is built for the compiler, and
+    /// Compile Cargo's units with QuickRust's compiler driver, when it is built for the compiler, and
     /// key dependents by the interfaces of the crates they compile against (early cut-off).
     pub early_cutoff: bool,
     /// The build's target directory, which holds generated inputs (build scripts' `OUT_DIR`).
@@ -51,12 +51,12 @@ impl Settings {
         util::write_atomic_fast(&events_dir.join(SETTINGS_FILE), &serde_json::to_vec(self).map_err(std::io::Error::other)?)
     }
 
-    /// `Ok(None)` outside a Haul session. A settings file that exists but cannot be read is an
+    /// `Ok(None)` outside a QuickRust session. A settings file that exists but cannot be read is an
     /// error: the session that wrote it and this wrapper disagree, which must not go unnoticed.
     pub fn read(events_dir: &Path) -> Result<Option<Settings>, String> {
         let path = events_dir.join(SETTINGS_FILE);
         match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{} is not valid wrapper settings ({}); the haul and haul-rustc-wrapper binaries may be from different versions", path.display(), e)),
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{} is not valid wrapper settings ({}); the qrust and qrust-rustc-wrapper binaries may be from different versions", path.display(), e)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(format!("cannot read {}: {}", path.display(), e)),
         }
@@ -66,8 +66,8 @@ impl Settings {
 pub fn main() {
     let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
     if argv.is_empty() {
-        eprintln!("haul-rustc-wrapper: expected `<rustc> [args…]`; this binary is run by Cargo through RUSTC_WRAPPER");
-        std::process::exit(crate::EXIT_HAUL_ERROR);
+        eprintln!("qrust-rustc-wrapper: expected `<rustc> [args…]`; this binary is run by Cargo through RUSTC_WRAPPER");
+        std::process::exit(crate::EXIT_QRUST_ERROR);
     }
     let rustc = argv.remove(0);
     let inner = std::env::var_os(crate::ENV_INNER_WRAPPER).filter(|v| !v.is_empty());
@@ -77,13 +77,13 @@ pub fn main() {
     let settings = match event_dir.as_deref().map(Settings::read).transpose() {
         Ok(s) => s.flatten(),
         Err(e) => {
-            eprintln!("haul: error: {}", e);
-            std::process::exit(crate::EXIT_HAUL_ERROR);
+            eprintln!("qrust: error: {}", e);
+            std::process::exit(crate::EXIT_QRUST_ERROR);
         }
     };
     let cache_root = settings.as_ref().and_then(|s| s.artifact_cache.clone());
     // The compiler's account of itself, for the cache key and the levers' channel check; only
-    // asked in a Haul session without a user wrapper, where either applies.
+    // asked in a QuickRust session without a user wrapper, where either applies.
     let compiler: Result<String, String> = match (&settings, &inner, rustc.to_str()) {
         (Some(_), None, Some(r)) => rustc_info::version_verbose(&util::memo_dir("rustc"), r),
         (Some(_), None, None) => Err("the compiler's path is not UTF-8".into()),
@@ -116,7 +116,7 @@ pub fn main() {
         }
     }
 
-    // Early cut-off (fast mode): Haul's compiler driver compiles the units Cargo schedules,
+    // Early cut-off (fast mode): QuickRust's compiler driver compiles the units Cargo schedules,
     // recording each library's interface hash; never compiler probes, which must see rustc as
     // it is. Without a driver built for this compiler, rustc compiles them as usual.
     // A unit the driver failed on before is compiled by rustc until the driver changes. Only
@@ -163,12 +163,12 @@ pub fn main() {
     }
     // Fast mode: rustc's parallel frontend for the units Cargo schedules that are compiled from
     // scratch: dependencies, release and CI builds, and the first compilation of a workspace
-    // unit in a target directory, which has no incremental session yet (measured: Haul's own
+    // unit in a target directory, which has no incremental session yet (measured: QuickRust's own
     // lib 2.7 s → 1.5 s). An incremental rebuild is not: the parallel frontend makes those 2-3x
     // slower on small crates, and turning it on for a session made without it discards the
     // session. Turning it off after the first compilation is free: the session it leaves serves
     // the next edit as well as one made without it. A unit the cache saw compile quickly does
-    // not get it either: on a small crate its start-up costs more than it saves (Haul's own
+    // not get it either: on a small crate its start-up costs more than it saves (QuickRust's own
     // binaries: 50-66 ms → 79-122 ms). Build scripts also run rustc through this wrapper to
     // probe the compiler; those must see it exactly as it is. Decided after the cache lookup,
     // which is keyed without it.
@@ -186,7 +186,7 @@ pub fn main() {
             bootstrap = true;
         }
     }
-    // Relinking (fast mode, with Haul's driver): a binary or test executable is compiled apart
+    // Relinking (fast mode, with QuickRust's driver): a binary or test executable is compiled apart
     // from linking (rustc's `-Zno-link`, then `-Zlink-only`), its objects kept. When a later
     // build finds it compiled from the same sources against the same dependency interfaces (an
     // edit below it was cut off, and only what it links changed), it is only linked again: for
@@ -255,13 +255,13 @@ pub fn main() {
                 // The cache layer could not even be started: compile locally (FR-100.6).
                 Err(e) if fail_open => {
                     fallback = true;
-                    eprintln!("haul: warning: could not run rustc wrapper {:?} ({}); compiling without it", w, e);
+                    eprintln!("qrust: warning: could not run rustc wrapper {:?} ({}); compiling without it", w, e);
                     proc::run(&mut direct(&rustc, &argv, &None), true)
                 }
                 Err(e) => Err(e),
             }
         }
-        // A cacheable miss, or a compilation by Haul's driver: the compiler's stderr streams
+        // A cacheable miss, or a compilation by QuickRust's driver: the compiler's stderr streams
         // through and is kept for replay; under the driver, text that is not one of the JSON
         // messages Cargo reads (a crash report) waits until the driver has succeeded.
         // The driver says when its outputs are written (see `run_teed`).
@@ -275,7 +275,7 @@ pub fn main() {
                 match run_teed(&mut direct(&rustc, &argv, &driver), hold, driver.is_some()) {
                     // A driver that cannot even be started (its toolchain gone) fails like one
                     // that crashed: rustc compiles the unit.
-                    Err(e) if driver.is_some() => Ok(Teed { exit: ExitInfo { code: Some(127), signal: None }, usage: None, forwarded: Vec::new(), held: format!("cannot run Haul's compiler driver: {}\n", e).into_bytes(), artifact_notice: false, early: false }),
+                    Err(e) if driver.is_some() => Ok(Teed { exit: ExitInfo { code: Some(127), signal: None }, usage: None, forwarded: Vec::new(), held: format!("cannot run QuickRust's compiler driver: {}\n", e).into_bytes(), artifact_notice: false, early: false }),
                     r => r,
                 }
             };
@@ -307,11 +307,11 @@ pub fn main() {
     let (mut exit, mut usage) = match result {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("haul: error: could not execute {:?}: {}", inner.as_ref().unwrap_or(&rustc), e);
+            eprintln!("qrust: error: could not execute {:?}: {}", inner.as_ref().unwrap_or(&rustc), e);
             std::process::exit(101);
         }
     };
-    // Haul's driver must never fail a build rustc would pass. When it crashes before any of its
+    // QuickRust's driver must never fail a build rustc would pass. When it crashes before any of its
     // metadata reached Cargo (no dependent compiles against it yet), its report is kept aside,
     // the unit is marked to be compiled by rustc from now on, and rustc compiles it now; what
     // rustc builds is not stored under the driver's key. A crash after that is rustc's own
@@ -321,7 +321,7 @@ pub fn main() {
         if crashed(&exit) && !artifact_notice {
             let report = crate::driver::record_failure(&d, &unit_identity(&lossy), &text);
             let name = arg_value(&lossy, "--crate-name").unwrap_or("?");
-            eprintln!("haul: warning: Haul's compiler driver failed on crate `{}`; compiled with rustc instead ({})", name, report.as_ref().map(|p| format!("report: {}", p.display())).unwrap_or_else(|e| format!("its report could not be kept: {}", e)));
+            eprintln!("qrust: warning: QuickRust's compiler driver failed on crate `{}`; compiled with rustc instead ({})", name, report.as_ref().map(|p| format!("report: {}", p.display())).unwrap_or_else(|e| format!("its report could not be kept: {}", e)));
             driver_failure = Some(report.unwrap_or_default());
             driver = None;
             let rerun = match &job {
@@ -334,7 +334,7 @@ pub fn main() {
             (exit, usage) = match rerun {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("haul: error: could not execute {:?}: {}", rustc, e);
+                    eprintln!("qrust: error: could not execute {:?}: {}", rustc, e);
                     std::process::exit(101);
                 }
             };
@@ -347,7 +347,7 @@ pub fn main() {
         }
     }
     let dur_ns = started.elapsed().as_nanos() as u64;
-    // What the driver kept of a compilation Haul relinks, recorded for the next relink.
+    // What the driver kept of a compilation QuickRust relinks, recorded for the next relink.
     let not_kept: Option<String> = match (&job, &keep_objects, relinked, &driver_failure) {
         (Ok(j), Some(_), Some(false), None) if exit.success() => j.record_kept_objects(start_wall).err(),
         _ => None,
@@ -363,7 +363,7 @@ pub fn main() {
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
         // Keyed for the driver's output, which this is not.
-        (Ok(_), _) if driver_failure.is_some() => json!({ "result": "miss", "not_stored": "compiled by rustc after Haul's compiler driver failed" }),
+        (Ok(_), _) if driver_failure.is_some() => json!({ "result": "miss", "not_stored": "compiled by rustc after QuickRust's compiler driver failed" }),
         // A freshly linked workspace binary that builds in a moment is not worth a copy on every
         // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
         // critical path a clean rebuild waits on.
@@ -447,7 +447,7 @@ enum Hold {
 }
 
 /// Runs `cmd` with its stderr copied through to ours as it arrives (except what `hold` holds
-/// back), returning a copy. With `ready` (Haul's driver, Unix), the compiler gets a pipe on which
+/// back), returning a copy. With `ready` (QuickRust's driver, Unix), the compiler gets a pipe on which
 /// it says its outputs are written; once it has, and its stderr has ended, this returns without
 /// waiting for it to finish saving its incremental state (`exit` is then success, `usage`
 /// unknown, and `early` set).
@@ -785,7 +785,7 @@ fn expand_argfiles(args: Vec<String>) -> Vec<String> {
 /// Registry, git-checkout and toolchain sources are immutable for our purposes.
 pub fn is_external_source(p: &Path) -> bool {
     let home = util::cargo_home();
-    p.starts_with(home.join("registry")) || p.starts_with(home.join("git")) || p.starts_with(util::haul_home().join("toolchains")) || util::path_str(p).contains("/lib/rustlib/")
+    p.starts_with(home.join("registry")) || p.starts_with(home.join("git")) || p.starts_with(util::qrust_home().join("toolchains")) || util::path_str(p).contains("/lib/rustlib/")
 }
 
 /// Splits one Makefile-style dep-info rule body into paths (`\ ` escapes a space).
@@ -879,9 +879,9 @@ mod tests {
 
     #[test]
     fn settings_round_trip_and_reject_what_this_version_does_not_know() {
-        let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
+        assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a QuickRust session");
         let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, target_dir: Some(dir.join("t")) };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));

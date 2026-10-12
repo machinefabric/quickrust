@@ -1,13 +1,13 @@
-# Haul's compiler driver. Not a workspace member: Haul builds it per toolchain, against that
+# QuickRust's compiler driver. Not a workspace member: QuickRust builds it per toolchain, against that
 # toolchain's own compiler libraries (the `rustc-dev` component), with RUSTC_BOOTSTRAP.
 [package]
-name = "haul-rustc-driver"
+name = "qrust-rustc-driver"
 version = "0.1.0"
 edition = "2021"
 publish = false
 
 [[bin]]
-name = "haul-rustc-driver"
+name = "qrust-rustc-driver"
 path = "src/main.rs"
 
 [profile.release]

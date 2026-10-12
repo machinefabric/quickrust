@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "haul-rustc-driver"
+name = "qrust-rustc-driver"
 version = "0.1.0"

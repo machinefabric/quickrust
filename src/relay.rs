@@ -1,11 +1,11 @@
-//! A test run's terminal, relayed. After Haul has built what `cargo test` or `cargo bench` runs
+//! A test run's terminal, relayed. After QuickRust has built what `cargo test` or `cargo bench` runs
 //! (see `session`), Cargo runs the test programs with a terminal of their own: a pseudo-terminal
 //! the size of the real one, as their stderr (and stdout, when that is the terminal too), so they
-//! behave exactly as in the terminal (colour, `isatty`, the order of their output). Haul passes
+//! behave exactly as in the terminal (colour, `isatty`, the order of their output). QuickRust passes
 //! everything through as it comes, byte for byte (a test's `test x ... ` shows before its `ok`),
-//! except Cargo's own lines: `Finished` goes (Haul's summary said it), `Running` and `Doc-tests`
+//! except Cargo's own lines: `Finished` goes (QuickRust's summary said it), `Running` and `Doc-tests`
 //! show dimly without the program's path. The counts of libtest's `test result:` lines are added
-//! up for Haul's closing line.
+//! up for QuickRust's closing line.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -83,7 +83,7 @@ impl Relay {
         Ok(())
     }
 
-    /// Starts relaying to the real terminal; `color` when Haul's own lines may be coloured.
+    /// Starts relaying to the real terminal; `color` when QuickRust's own lines may be coloured.
     pub fn start(self, color: bool) -> Relaying {
         let Relay { master, slave, stdout_too } = self;
         drop(slave);
@@ -200,7 +200,7 @@ impl Filter {
         self.holding = true;
     }
 
-    /// The held line, complete, as Haul shows it if it is one of Cargo's.
+    /// The held line, complete, as QuickRust shows it if it is one of Cargo's.
     fn cargo_line(&self) -> Option<String> {
         let text = crate::ui::strip_ansi(&String::from_utf8_lossy(&self.line));
         let text = text.trim_end();

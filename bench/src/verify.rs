@@ -1,7 +1,7 @@
 //! The correctness gate: each workload's own test suite, built and run by upstream Cargo and by
-//! every Haul variant, from fresh checkouts. A lever is acceptable only when the outcomes agree.
+//! every QuickRust variant, from fresh checkouts. A lever is acceptable only when the outcomes agree.
 //!
-//! Two rounds per variant. The first starts from empty Haul state; the second keeps the
+//! Two rounds per variant. The first starts from empty QuickRust state; the second keeps the
 //! variant's artifact cache, so its tests also run against binaries built from restored units.
 //! A test whose outcome differs between the rounds of one variant is flaky and reported as
 //! such; a test whose outcome differs between upstream Cargo and a variant, consistently, fails
@@ -73,10 +73,10 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
                 let co = base.join(format!("round-{}", round + 1));
                 workload::checkout(&ctx.work, w, &co).unwrap_or_else(|e| fail(&e));
                 if round == 0 {
-                    // Empty Haul state for the first round; the second keeps the artifact cache.
-                    ctx.fresh_haul_home(v, w);
+                    // Empty QuickRust state for the first round; the second keeps the artifact cache.
+                    ctx.fresh_qrust_home(v, w);
                 }
-                eprintln!("haul-bench: verify {} · {} · round {}/{}", w.name, v.name, round + 1, ROUNDS);
+                eprintln!("qrust-bench: verify {} · {} · round {}/{}", w.name, v.name, round + 1, ROUNDS);
                 let (_, outcomes) = run_suite(ctx, v, w, &co, None);
                 per_variant.entry(v.name.clone()).or_default().push(outcomes);
             }
@@ -104,7 +104,7 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
             for n in &candidates {
                 let (theirs, ours) = (reference[0].get(n), runs[0].get(n));
                 if candidates.len() <= MAX_CONFIRMED && !n.starts_with('<') {
-                    eprintln!("haul-bench: verify {} · {} differs; running it alone on both sides", w.name, n);
+                    eprintln!("qrust-bench: verify {} · {} differs; running it alone on both sides", w.name, n);
                     let (a, b) = (confirm(ctx, cargo, w, &last("cargo"), n, theirs), confirm(ctx, v, w, &last(&v.name), n, ours));
                     if a.len() > 1 || b.len() > 1 {
                         unstable.insert(n.clone());

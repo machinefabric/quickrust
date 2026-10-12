@@ -1,10 +1,10 @@
-//! Haul's compiler driver: rustc itself — the toolchain's own `librustc_driver`, its LLVM, its
-//! release — run through Haul's callbacks. Haul builds it for each toolchain against that
+//! QuickRust's compiler driver: rustc itself — the toolchain's own `librustc_driver`, its LLVM, its
+//! release — run through QuickRust's callbacks. QuickRust builds it for each toolchain against that
 //! toolchain's `rustc-dev` component; with no overrides its outputs are byte for byte rustc's.
 //!
-//! With `HAUL_DRIVER_INTERFACE_HASH` set, the crate hash (SVH) a library records and its
+//! With `QRUST_DRIVER_INTERFACE_HASH` set, the crate hash (SVH) a library records and its
 //! dependents check is computed from what dependents can observe — not from function bodies they
-//! cannot see into — so an edit inside such a body leaves it unchanged, and Haul can reuse what
+//! cannot see into — so an edit inside such a body leaves it unchanged, and QuickRust can reuse what
 //! the dependents built (early cut-off). The hash covers:
 //! - every item's HIR, with bodies left out only for functions whose code stays in this crate:
 //!   not generic, not inlinable across crates, not `const`, not `async`, no `impl Trait` in the
@@ -21,9 +21,9 @@
 //!
 //! Procedural macros, whose bodies run inside their dependents' compilations, keep rustc's hash.
 //!
-//! With `HAUL_DRIVER_READY_FD` set (Unix), the outputs are linked before rustc saves its
+//! With `QRUST_DRIVER_READY_FD` set (Unix), the outputs are linked before rustc saves its
 //! incremental state, and the wrapper is told when they are written (see `early_link`).
-//! The crate hash goes to `<out-dir>/lib<crate name><extra filename>.haul-svh` for Haul's wrapper.
+//! The crate hash goes to `<out-dir>/lib<crate name><extra filename>.qrust-svh` for QuickRust's wrapper.
 
 #![feature(rustc_private)]
 
@@ -58,7 +58,7 @@ use std::sync::OnceLock;
 #[cfg(unix)]
 mod early_link;
 
-const INTERFACE_HASH: &str = "HAUL_DRIVER_INTERFACE_HASH";
+const INTERFACE_HASH: &str = "QRUST_DRIVER_INTERFACE_HASH";
 
 /// rustc's own `crate_hash` query, for the crates whose bodies their dependents observe.
 static STOCK_CRATE_HASH: OnceLock<for<'tcx> fn(TyCtxt<'tcx>, LocalCrate) -> Svh> = OnceLock::new();
@@ -322,7 +322,7 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
     // a dependent that expands it records them as this crate's expansion number so-and-so. What
     // each one is counts, not where it was called (which moves with every line added above it).
     // Every other expansion (a `println!` in a body) reaches dependents only through spans hashed
-    // by what they are (see `Positions`), or through MIR inlined across crates, for which Haul's
+    // by what they are (see `Positions`), or through MIR inlined across crates, for which QuickRust's
     // wrapper keys dependents by content instead.
     let mut numbered = BTreeSet::new();
     for owner in items.owners() {
@@ -515,20 +515,20 @@ fn foreign_child_spans(tcx: TyCtxt<'_>) -> Vec<(rustc_hir::def_id::CrateNum, rus
     out
 }
 
-/// Writes the crate hash next to the metadata, `lib<crate name><extra filename>.haul-svh`, for
-/// Haul's wrapper. Here rather than after analysis: the query runs (always, being `eval_always`)
+/// Writes the crate hash next to the metadata, `lib<crate name><extra filename>.qrust-svh`, for
+/// QuickRust's wrapper. Here rather than after analysis: the query runs (always, being `eval_always`)
 /// when rustc needs the hash, which it must not be asked for earlier; forcing it sooner would
 /// also force the work it depends on (the exported symbols) out of rustc's own order.
 ///
-/// Also writes `lib<…>.haul-span-deps`: the artifacts of the crates whose spans this crate's
+/// Also writes `lib<…>.qrust-span-deps`: the artifacts of the crates whose spans this crate's
 /// metadata carries as byte offsets into their files (the names it re-exports from them), one
 /// per line. Those offsets move with any edit above them, which the interface hash of those
-/// crates leaves out (it hashes lines and columns), so Haul keys this crate by their content.
+/// crates leaves out (it hashes lines and columns), so QuickRust keys this crate by their content.
 fn record(tcx: TyCtxt<'_>, svh: Svh) {
     if let OutFileName::Real(metadata) = tcx.output_filenames(()).path(OutputType::Metadata) {
-        let path = metadata.with_extension("haul-svh");
+        let path = metadata.with_extension("qrust-svh");
         if let Err(e) = std::fs::write(&path, format!("{}\n", svh)) {
-            tcx.dcx().fatal(format!("haul: cannot write {}: {}", path.display(), e));
+            tcx.dcx().fatal(format!("qrust: cannot write {}: {}", path.display(), e));
         }
         let crates: BTreeSet<_> = foreign_child_spans(tcx).into_iter().map(|(cnum, ..)| cnum).collect();
         let mut artifacts = BTreeSet::new();
@@ -539,9 +539,9 @@ fn record(tcx: TyCtxt<'_>, svh: Svh) {
             }
         }
         let list: String = artifacts.into_iter().map(|a| a + "\n").collect();
-        let path = metadata.with_extension("haul-span-deps");
+        let path = metadata.with_extension("qrust-span-deps");
         if let Err(e) = std::fs::write(&path, list) {
-            tcx.dcx().fatal(format!("haul: cannot write {}: {}", path.display(), e));
+            tcx.dcx().fatal(format!("qrust: cannot write {}: {}", path.display(), e));
         }
     }
 }
@@ -549,7 +549,7 @@ fn record(tcx: TyCtxt<'_>, svh: Svh) {
 fn main() -> std::process::ExitCode {
     let early = rustc_session::EarlyDiagCtxt::new(rustc_session::config::ErrorOutputType::default());
     rustc_driver::init_rustc_env_logger(&early);
-    rustc_driver::install_ice_hook("https://github.com/jowharshamshiri/haul/issues", |_| ());
+    rustc_driver::install_ice_hook("https://github.com/jowharshamshiri/quickrust/issues", |_| ());
     rustc_driver::install_ctrlc_handler();
     #[cfg(unix)]
     let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok()).inspect(|fd| early_link::keep_to_self(*fd));

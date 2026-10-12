@@ -7,13 +7,13 @@ behaviour is asserted.
 
 | Item | Status | Where |
 |---|---|---|
-| `cargo` compatibility shim; `haul` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
-| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is Haul is refused | `src/engine.rs` · `recursion_is_refused…`, `an_unreachable_dist_server…` |
-| Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: Haul installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `toolchain_programs_run_through_hauls_proxies`, `builds_and_their_build_scripts_get_hauls_toolchain…`, `environment_reaches_build_scripts_unchanged` |
+| `cargo` compatibility shim; `qrust` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
+| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is QuickRust is refused | `src/engine.rs` · `recursion_is_refused…`, `an_unreachable_dist_server…` |
+| Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: QuickRust installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `toolchain_programs_run_through_quickrusts_proxies`, `builds_and_their_build_scripts_get_quickrusts_toolchain…`, `environment_reaches_build_scripts_unchanged` |
 | argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |
 | Cargo config / environment non-interference | done | `environment_reaches_build_scripts_unchanged`, `no_rebuild_when_alternating…` |
-| Nested invocations + opt-out | done, through `PATH` and `$CARGO`; see deviation 1 | `qa019`, `builds_and_their_build_scripts_get_hauls_toolchain…` |
+| Nested invocations + opt-out | done, through `PATH` and `$CARGO`; see deviation 1 | `qa019`, `builds_and_their_build_scripts_get_quickrusts_toolchain…` |
 | Workspace, toolchain, environment fingerprints (FR-010) | done | `src/discover.rs` · `qa002`, `report_follows…` |
 | Cargo JSON-event collector | done, when the user requests JSON on a pipe | `qa018` |
 | rustc wrapper collector; existing wrapper composition | done | `src/wrapper.rs` · `qa010_qa011_qa012`, `wrapper_configured_in_cargo_config…` |
@@ -21,10 +21,10 @@ behaviour is asserted.
 | Rebuild / invalidation classifier (FR-040) | done | `src/waste.rs` unit tests · `rebuild_causes…`, `toolchain_change…` |
 | Version duplication; feature/profile/target variants (FR-050) | done | `src/waste.rs` unit tests |
 | Build-script analysis (FR-060); proc-macro identification (FR-070) | done | `qa007_qa008_qa009`, `build_script_without_rerun…` |
-| Linker / codegen visibility (FR-080) | done | `haul analyze codegen` |
+| Linker / codegen visibility (FR-080) | done | `qrust analyze codegen` |
 | Incremental policy evaluator (FR-090) | done | `sccache_policy…` |
 | sccache integration and reporting (FR-100) | done | `src/cache.rs` · `sccache_policy…`, `qa026` |
-| Artifact inventory, reclaimability, GC (FR-110): `haul gc` keeps the cache within its bounds, `--dry-run` previews | done | `src/inventory.rs`, `src/space.rs` · `inventory_and_its_stale_plan_are_read_only…`, `the_stale_plan_is_blocked_while_a_build_is_running`, `hauls_cache_removes_what_is_gone_then_the_least_recently_used…` |
+| Artifact inventory, reclaimability, GC (FR-110): `qrust gc` keeps the cache within its bounds, `--dry-run` previews | done | `src/inventory.rs`, `src/space.rs` · `inventory_and_its_stale_plan_are_read_only…`, `the_stale_plan_is_blocked_while_a_build_is_running`, `quickrusts_cache_removes_what_is_gone_then_the_least_recently_used…` |
 | Exact upstream `cargo clean` | done | `qa016` |
 | Worktree identification (FR-120) | done | `worktrees_report…` |
 | Scenario runner (FR-020); comparison (FR-160); experiments | done | `src/bench.rs`, `src/compare.rs` · `benchmark_*`, `experiment_*` |
@@ -49,27 +49,27 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 
 ## Deviations and decisions
 
-1. **`CARGO` is Haul's `cargo` (COMP-030), by running Cargo under another name.**
+1. **`CARGO` is QuickRust's `cargo` (COMP-030), by running Cargo under another name.**
    Cargo hands everything it starts (external subcommands, build scripts,
    `env!("CARGO")`, test binaries) its own path, and takes an inherited `CARGO`
    instead only when its own executable is not named `cargo` (Cargo 1.86 and
    later), or, after that, the path in its `argv[0]` when that is named `cargo`.
-   Haul therefore runs a hard link of the toolchain's `cargo`, `bin/.haul-engine`,
-   with `argv[0]` and `CARGO` set to `~/.haul/bin/cargo` (Windows has no separate
-   `argv[0]`: there Cargo's help names the link, `.haul-engine.exe`): a nested build
-   through `$CARGO` (Clippy's, nextest's, `cargo llvm-cov`'s) is a Haul session
-   linked to its parent (COMP-031), with Haul's settings, like one through
-   `PATH`. Either can be opted out with `HAUL_NESTED=upstream` (COMP-032).
-   `haul upstream` runs the toolchain's `cargo` as itself, and a linked toolchain
+   QuickRust therefore runs a hard link of the toolchain's `cargo`, `bin/.qrust-engine`,
+   with `argv[0]` and `CARGO` set to `~/.qrust/bin/cargo` (Windows has no separate
+   `argv[0]`: there Cargo's help names the link, `.qrust-engine.exe`): a nested build
+   through `$CARGO` (Clippy's, nextest's, `cargo llvm-cov`'s) is a QuickRust session
+   linked to its parent (COMP-031), with QuickRust's settings, like one through
+   `PATH`. Either can be opted out with `QRUST_NESTED=upstream` (COMP-032).
+   `qrust upstream` runs the toolchain's `cargo` as itself, and a linked toolchain
    is never changed, so there nested builds through `$CARGO` reach that Cargo
    directly; their rustc invocations are still observed, because `RUSTC_WRAPPER`
    is inherited.
 
-2. **Run state lives in `~/.haul`, not in the repository.** The specification's
-   configuration example writes reports to `.haul/runs/`. Creating files in a
+2. **Run state lives in `~/.qrust`, not in the repository.** The specification's
+   configuration example writes reports to `.qrust/runs/`. Creating files in a
    repository on every `cargo build` is not something a drop-in replacement
-   should do, so recording goes to `HAUL_HOME` and a repository report path is
-   opt-in (`measurement.report`, `HAUL_REPORT`).
+   should do, so recording goes to `QRUST_HOME` and a repository report path is
+   opt-in (`measurement.report`, `QRUST_REPORT`).
 
 3. **Analysis is lazy by default.** To keep dispatch overhead inside
    NFR-PERF-001/003, the build path only records; reports are produced on
@@ -79,7 +79,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
    artifact footprint as unavailable rather than describing today's tree.
 
 4. **Fresh units need Cargo's JSON stream.** On a stable toolchain, nothing
-   else says which units Cargo considered fresh. Haul observes the stream only
+   else says which units Cargo considered fresh. QuickRust observes the stream only
    when the user already asked for it and stdout is not a terminal, so terminal
    behaviour is never altered; otherwise `units_fresh` is `null` with a reason.
 
@@ -87,18 +87,18 @@ and listed in `toolchain.capabilities`; nothing depends on them.
    (`invoked.timestamp`, then `stderr` / `root-output`). Cargo back-dates
    `output` to the invocation time, so it cannot be used.
 
-6. **Haul manages the toolchains (decision of 2026-10-12), not rustup (COMP-020).** The
-   specification resolves an upstream Cargo through `PATH` and rustup. Haul instead
-   installs toolchains from the Rust dist server into `~/.haul/toolchains` and selects
+6. **QuickRust manages the toolchains (decision of 2026-10-12), not rustup (COMP-020).** The
+   specification resolves an upstream Cargo through `PATH` and rustup. QuickRust instead
+   installs toolchains from the Rust dist server into `~/.qrust/toolchains` and selects
    them in rustup's documented order (`+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain file,
    default; rustup's per-directory overrides have no equivalent). Every command runs that
-   toolchain's own Cargo with Haul's Cargo home (`~/.haul/cargo`). `HAUL_REAL_CARGO` and
+   toolchain's own Cargo with QuickRust's Cargo home (`~/.qrust/cargo`). `QRUST_REAL_CARGO` and
    `compatibility.real-cargo` no longer exist: a toolchain built elsewhere is used with
-   `haul toolchain link`.
+   `qrust toolchain link`.
 
 7. **Configuration errors apply to every command.** An invalid
-   `.haul/config.toml` stops `cargo --version` as well as `cargo build`, with the
-   field and file named; `haul upstream` is unaffected.
+   `.qrust/config.toml` stops `cargo --version` as well as `cargo build`, with the
+   field and file named; `qrust upstream` is unaffected.
 
 8. **No `cache.mode` or `artifacts.gc` settings.** The specification's example
    configuration lists them, but with remote-cache administration and GC
@@ -118,7 +118,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     sequence.
 
 11. **Fast by default (spec revision of 2026-10-11).** In the default `mode =
-    "fast"`, Haul changes what upstream Cargo would build in ways that keep program
+    "fast"`, QuickRust changes what upstream Cargo would build in ways that keep program
     behaviour identical: debug-information settings, rustc's parallel frontend for
     units compiled from scratch, a global artifact cache, and its own terminal output. `mode = "compat"` builds exactly upstream's builds; the
     compatibility corpus's byte-for-byte oracle tests run in compat mode, and fast
@@ -130,7 +130,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     against the benchmark workloads' own test suites before it becomes a default.
 
 12. **`RUSTC_BOOTSTRAP` for `-Z` levers.** The stable compiler contains the parallel
-    frontend and the linker selection Haul uses behind `-Z`. Haul's wrapper sets
+    frontend and the linker selection QuickRust uses behind `-Z`. QuickRust's wrapper sets
     `RUSTC_BOOTSTRAP=1` for the compiler processes of the units Cargo schedules, with
     `-Zallow-features=` so that `#![feature]` is rejected as on stable (with rustc's
     "not in the list of allowed features" error instead of the stable-channel one).
@@ -138,11 +138,11 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     nightly code paths; not on a nightly compiler; and no such lever applies when the
     user sets `RUSTC_BOOTSTRAP` themselves.
 
-13. **Haul's compiler driver compiles the units Cargo schedules (fast mode, `fast.early-cutoff`).**
+13. **QuickRust's compiler driver compiles the units Cargo schedules (fast mode, `fast.early-cutoff`).**
     The driver is the toolchain's own rustc (`librustc_driver`, its LLVM, its release) run
-    through Haul's callbacks, built once per toolchain against its `rustc-dev`
+    through QuickRust's callbacks, built once per toolchain against its `rustc-dev`
     component. With no callbacks active its outputs are rustc's byte for byte (test
-    `hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
+    `quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
     things differ from upstream's builds, none of them in program behaviour:
     a library's crate hash (SVH) is computed from what its dependents can observe, so
     libraries' metadata and rlibs differ from rustc's (the hash is an identifier; nothing
@@ -150,30 +150,30 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     state, which it finishes after Cargo has moved on; and binaries' object files are kept
     (hard links next to the output) so that a binary whose own code is unchanged is linked
     again instead of compiled. Restored and relinked units are checked against building the
-    same source from nothing by `haul-bench cutoff` (random edits on the benchmark
+    same source from nothing by `qrust-bench cutoff` (random edits on the benchmark
     workloads, byte for byte; recorded in `benchmarks/cutoff-gate.jsonl`). Programs Cargo
     runs in rustc's place (clippy-driver as a workspace wrapper, a user's wrapper) run as
     they are; a crate the driver fails on is compiled by rustc.
 
 14. **No `target/` in the project (decision of 2026-10-12).** Upstream Cargo builds into
-    `<workspace>/target` unless told otherwise; Haul tells it otherwise for every command:
+    `<workspace>/target` unless told otherwise; QuickRust tells it otherwise for every command:
     each workspace (as `cargo locate-project --workspace` names it) builds into
-    `~/.haul/cache/builds/<name>-<id>/`, given to Cargo and every tool under it through
+    `~/.qrust/cache/builds/<name>-<id>/`, given to Cargo and every tool under it through
     `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR`, so `cargo metadata` reports it too. A
     target directory the user chose (`--target-dir`, `--config build.target-dir`,
     `CARGO_TARGET_DIR`/`CARGO_BUILD_TARGET_DIR`) is used as it is; `build.target-dir` in a
     Cargo configuration file is overridden. Scripts that hard-code `./target/…` must ask
-    `haul path` instead. Tests: `builds_go_to_hauls_cache_and_never_into_the_project`,
+    `qrust path` instead. Tests: `builds_go_to_quickrusts_cache_and_never_into_the_project`,
     `a_target_directory_the_user_chose_is_used…`, `a_build_script_building_another_workspace…`.
 
 ## Open decisions of the specification, as resolved here
 
 | | Decision |
 |---|---|
-| OQ-001 minimum Rust/Cargo | Haul declares `rust-version = 1.80`, built and tested with exactly 1.80 in CI from the lockfile (`cargo install --locked`); it delegates to whatever Cargo is selected and needs only `cargo metadata` format 1 and `RUSTC_WRAPPER` |
+| OQ-001 minimum Rust/Cargo | QuickRust declares `rust-version = 1.80`, built and tested with exactly 1.80 in CI from the lockfile (`cargo install --locked`); it delegates to whatever Cargo is selected and needs only `cargo metadata` format 1 and `RUSTC_WRAPPER` |
 | OQ-002 platforms | macOS and Linux release-blocking; the suites pass on macOS and Linux x86_64 in CI; Windows has a CI smoke run, the suites are Unix-only |
 | OQ-003 central service | none; all contracts are local files |
 | OQ-004 cache provider | whatever sccache is configured with |
 | OQ-005 fail-open vs fail-closed | `cache.fail`, default `open` |
-| OQ-006 remediation trust | only Haul's own configuration is `safe` |
+| OQ-006 remediation trust | only QuickRust's own configuration is `safe` |
 | OQ-007, OQ-008 | measured and reported; no emulation of upstream features |

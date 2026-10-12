@@ -49,7 +49,7 @@ pub fn load(toolchains: &Path) -> Result<State, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(State::default()),
         Err(e) => return Err(format!("cannot read {}: {}", p.display(), e)),
     };
-    let bad = |why: &str| format!("{} is not Haul's toolchain state ({}); `haul toolchain list` shows what is installed, and removing the file resets the channels", p.display(), why);
+    let bad = |why: &str| format!("{} is not QuickRust's toolchain state ({}); `qrust toolchain list` shows what is installed, and removing the file resets the channels", p.display(), why);
     let v: Value = serde_json::from_slice(&bytes).map_err(|e| bad(&e.to_string()))?;
     if v.get("format").and_then(Value::as_u64) != Some(FORMAT) {
         return Err(bad("unknown format"));
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn round_trips_and_rejects_foreign_files() {
-        let d = std::env::temp_dir().join(format!("haul-tcstate-{}", util::new_id()));
+        let d = std::env::temp_dir().join(format!("qrust-tcstate-{}", util::new_id()));
         assert_eq!(load(&d).unwrap(), State::default());
         update(&d, |s| {
             s.default = "nightly".into();

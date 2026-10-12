@@ -1,18 +1,18 @@
 # Speed index
 
-The number Haul's progress is measured by: how long the same developer loop takes
-through Haul compared with upstream Cargo, on real projects.
+The number QuickRust's progress is measured by: how long the same developer loop takes
+through QuickRust compared with upstream Cargo, on real projects.
 
 ```bash
 cargo build --release --workspace
-target/release/haul-bench fetch                                  # once; the only step that touches the network
-target/release/haul-bench run --quick --record --note "what changed"   # every iteration, ~2 min
-target/release/haul-bench run --full --record                    # checkpoint, ~30 min
+target/release/qrust-bench fetch                                 # once; the only step that touches the network
+target/release/qrust-bench run --quick --record --note "what changed"  # every iteration, ~2 min
+target/release/qrust-bench run --full --record                   # checkpoint, ~30 min
 ```
 
 (`target/` is wherever your Cargo puts build output.) Two tiers:
 
-- **Quick**, every iteration: the `haul` workload; `cargo` vs `haul`; `cold-build no-op
+- **Quick**, every iteration: the `qrust` workload; `cargo` vs `qrust`; `cold-build no-op
   edit-leaf edit-core rebuild-after-clean second-checkout`; 3 repetitions, no warm-up;
   about two and a half minutes.
   `--record` appends to [`speed-index-quick.jsonl`](speed-index-quick.jsonl) with the `--note`,
@@ -31,7 +31,7 @@ lockfile:
 
 | Workload | Shape |
 |---|---|
-| `haul` | Haul's first commit `b2af135`: one package, lib + 2 bins, ~40 units. The quick workload. |
+| `qrust` | QuickRust's first commit `b2af135`: one package, lib + 2 bins, ~40 units. The quick workload. |
 | `ripgrep` | ripgrep 15.2.0: a 9-crate workspace, a real CLI |
 | `axum-todos` | axum 0.8.9's `todos` example: tokio, axum (built from source), tower-http, serde, tracing |
 
@@ -44,13 +44,13 @@ in a crate others build on.
 | Variant | What runs |
 |---|---|
 | `cargo` | upstream Cargo: the denominator |
-| `cargo-tuned` | upstream Cargo with the settings from Cargo's own build-performance guide (`debug = "line-tables-only"`, dependencies `debug = false`), passed as `--config`. What a user gets without Haul by editing configuration. Keeps Haul's index honest. |
-| `haul` | Haul, default configuration: **the headline number** |
-| `haul-compat` | Haul with `mode = compat` (once that setting exists): pure overhead, must stay ≥ 0.99 |
+| `cargo-tuned` | upstream Cargo with the settings from Cargo's own build-performance guide (`debug = "line-tables-only"`, dependencies `debug = false`), passed as `--config`. What a user gets without QuickRust by editing configuration. Keeps QuickRust's index honest. |
+| `qrust` | QuickRust, default configuration: **the headline number** |
+| `qrust-compat` | QuickRust with `mode = compat` (once that setting exists): pure overhead, must stay ≥ 0.99 |
 
-`--define 'NAME=BASE;env:K=V;config:K=V'` adds an ad-hoc variant (base `cargo` or `haul`)
+`--define 'NAME=BASE;env:K=V;config:K=V'` adds an ad-hoc variant (base `cargo` or `qrust`)
 for trying a lever before it becomes a default, or for measuring one lever on its own
-(for example Haul with one setting switched off). Defined variants may be recorded. `--aa` adds a second plain Cargo
+(for example QuickRust with one setting switched off). Defined variants may be recorded. `--aa` adds a second plain Cargo
 (`cargo-aa`): an A/A test whose index must be 1.00 within noise.
 
 ## Scenarios
@@ -59,7 +59,7 @@ One repetition runs, per variant, the whole loop from nothing built:
 
 | Scenario | Step |
 |---|---|
-| `cold-build` | `cargo build`: empty target directory and Haul state (the OS page cache stays warm) |
+| `cold-build` | `cargo build`: empty target directory and QuickRust state (the OS page cache stays warm) |
 | `no-op` | `cargo build` again, nothing changed; each sample is the mean of 10 runs |
 | `edit-leaf` | leaf edit, `cargo build` |
 | `edit-core` | core edit, `cargo build` (rebuilds everything above that crate) |
@@ -68,10 +68,10 @@ One repetition runs, per variant, the whole loop from nothing built:
 | `rebuild-after-clean` | `cargo clean`, then `cargo build` |
 | `second-checkout` | `cargo build` in a second, untouched checkout of the same commit |
 
-`second-checkout` is also what a new git worktree costs: Haul gives each checkout its own
+`second-checkout` is also what a new git worktree costs: QuickRust gives each checkout its own
 build directory, keyed by its path, and its dependencies come from the artifact cache.
 Seeding the new directory with a copy of a sibling's was measured instead (2026-10-12,
-workload `haul`, rustc 1.98.1, ext4 without reflinks) and not adopted:
+workload `qrust`, rustc 1.98.1, ext4 without reflinks) and not adopted:
 
 | Second checkout | Wall |
 |---|---|
@@ -86,30 +86,30 @@ would wrongly pass as up to date. Seeding could only win the dependencies' share
 0.28s. What would shorten a second checkout is reusing workspace units whose outputs do not
 depend on their path, proven byte-identical across checkouts first.
 
-`--quick` runs the `haul` workload, variants `cargo` and `haul`, scenarios
+`--quick` runs the `qrust` workload, variants `cargo` and `qrust`, scenarios
 `cold-build no-op edit-leaf edit-core rebuild-after-clean second-checkout`, 3 repetitions. `--full` runs
 everything, 5 repetitions after one untimed warm-up repetition.
 
 ## Sealed environment
 
 Each command starts from an empty environment: a pinned toolchain (`--toolchain`, default
-`stable`) that Haul installs into the work directory (`<work-dir>/toolchain-home`), whose `bin`
+`stable`) that QuickRust installs into the work directory (`<work-dir>/toolchain-home`), whose `bin`
 and the system tools are all of `PATH`; plain Cargo is that toolchain's own `cargo`. Cargo
 gets a Cargo home of the benchmark's own (`<work-dir>/cargo-home`, no `config.toml`, populated
-by `fetch`, used offline), which every Haul home of the run links as its own. Every variant
-and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`. Haul's cache bounds are fixed
-(`HAUL_CACHE_MIN_FREE=1`, `HAUL_CACHE_MAX_SIZE=1TiB`): on a nearly full disk Haul would
+by `fetch`, used offline), which every QuickRust home of the run links as its own. Every variant
+and checkout has its own `CARGO_TARGET_DIR` and `QRUST_HOME`. QuickRust's cache bounds are fixed
+(`QRUST_CACHE_MIN_FREE=1`, `QRUST_CACHE_MAX_SIZE=1TiB`): on a nearly full disk QuickRust would
 otherwise collect its cache in the background between measurements.
 Nothing from the machine's Cargo configuration, such as a global `build.target-dir` or
 a rustc wrapper, can reach a measurement. The work directory (default
-`/mnt/shared/nvme2p3/haul-bench`, `--work-dir` or `HAUL_BENCH_DIR`) is refused if any parent
+`/mnt/shared/nvme2p3/qrust-bench`, `--work-dir` or `QRUST_BENCH_DIR`) is refused if any parent
 has a `.cargo/config.toml`.
 
 Checks that invalidate a run, which is then reported and never recorded:
 
 - before measuring, `cargo metadata` under each variant's environment must report that
   variant's own target directory;
-- `haul-compat` and `cargo-aa` must run exactly the units Cargo runs (counted from the
+- `qrust-compat` and `cargo-aa` must run exactly the units Cargo runs (counted from the
   `Compiling`/`Checking` lines); an edit that compiled nothing is an error;
 - more than half of a scenario's samples taken while CPU pressure (`/proc/pressure/cpu`,
   `some avg10`) exceeded 10%;
@@ -129,11 +129,11 @@ and the target directory's allocated bytes.
 
 ## The correctness gate
 
-Speed counts only if program behaviour stays identical. `haul-bench verify` runs each
+Speed counts only if program behaviour stays identical. `qrust-bench verify` runs each
 workload's own test suite (`cargo test --no-fail-fast`, with the workload's `test-args`
 when its build selection has no tests) under upstream Cargo and under
-`haul` (plus any `--define` variants), from fresh checkouts, in two rounds: the first from
-empty Haul state, the second keeping the artifact cache, so tests also run against binaries
+`qrust` (plus any `--define` variants), from fresh checkouts, in two rounds: the first from
+empty QuickRust state, the second keeping the artifact cache, so tests also run against binaries
 built from restored units. A test whose outcome differs between the rounds of one variant
 is reported as flaky, and so is one that differs from upstream Cargo but changes outcome
 when run alone four more times on either side; any other difference from upstream Cargo
@@ -146,7 +146,7 @@ default without a clean verify.
 - A ratio on three workloads on one machine. Each record names the machine and the
   toolchains; compare like with like.
 - `no-op` is tens of milliseconds; a few percent there is process start-up noise.
-- `cargo-tuned` shows how much of a win plain configuration would give. Haul's value is
+- `cargo-tuned` shows how much of a win plain configuration would give. QuickRust's value is
   what it adds beyond that, and doing it without anyone editing configuration.
 - A change that "improves" the index by making Cargo's side slower is not an
   improvement; Cargo's times are in every record.

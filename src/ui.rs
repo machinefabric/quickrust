@@ -1,10 +1,10 @@
-//! Haul's build output: calm, structured, nothing lost.
+//! QuickRust's build output: calm, structured, nothing lost.
 //!
-//! When a build runs in a terminal, Haul asks Cargo for its machine-readable messages and
+//! When a build runs in a terminal, QuickRust asks Cargo for its machine-readable messages and
 //! renders them itself: one live status line instead of a `Compiling` line per crate, errors
 //! in full as they arrive (rustc's own rendering), warnings counted by lint and crate instead
 //! of dumped, and a one-line summary. Every line Cargo and rustc produced is stored with the
-//! run; `haul warnings`, `haul errors` and `haul log` show it again. Lines Haul does not
+//! run; `qrust warnings`, `qrust errors` and `qrust log` show it again. Lines QuickRust does not
 //! recognise (build script failures, `cargo:warning`, resolution errors) pass through as they
 //! are. Anywhere else — pipes, IDEs, CI logs, `-v`, `-q`, `--message-format`, `output =
 //! "cargo"` — Cargo's output is untouched.
@@ -26,20 +26,20 @@ use std::time::{Duration, Instant};
 pub const OUTPUT_FILE: &str = "cargo-output.jsonl";
 const MAX_STORED_LINES: usize = 200_000;
 
-/// Whether Haul renders this invocation's output.
-/// How Haul presents a command's output.
+/// Whether QuickRust renders this invocation's output.
+/// How QuickRust presents a command's output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rendering {
     /// Cargo's output reaches the terminal unchanged.
     Off,
-    /// The command only builds: Haul renders all of it.
+    /// The command only builds: QuickRust renders all of it.
     Build,
     /// The command builds, then runs programs whose own output is the point (`cargo run`,
-    /// `cargo test`): Haul first builds exactly what the command needs and renders that, then
+    /// `cargo test`): QuickRust first builds exactly what the command needs and renders that, then
     /// runs the command itself, which finds everything fresh, with the real terminal.
     BuildFirst(Prebuild),
     /// A command that does not build (`update`, `add`, `fetch`, `new`, `clean`, `package`, …):
-    /// Haul renders Cargo's status lines from its stderr; stdout and stdin stay the terminal's.
+    /// QuickRust renders Cargo's status lines from its stderr; stdout and stdin stay the terminal's.
     Lines,
 }
 
@@ -53,9 +53,9 @@ pub enum Prebuild {
 }
 
 pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering {
-    // compat mode leaves the terminal to Cargo unless the user asked for Haul's output explicitly.
+    // compat mode leaves the terminal to Cargo unless the user asked for QuickRust's output explicitly.
     let setting = if cfg.str("mode") == "compat" && cfg.origin("output") == "default" { "cargo" } else { cfg.str("output") };
-    if setting != "haul" || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
+    if setting != "qrust" || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
         return Rendering::Off;
     }
     let own: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).take_while(|a| a != "--").collect();
@@ -81,25 +81,25 @@ pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering
     }
 }
 
-/// The internal argument under which the Haul binary is the do-nothing runner.
-pub const NOOP_RUNNER: &str = "__haul-noop-runner";
+/// The internal argument under which the QuickRust binary is the do-nothing runner.
+pub const NOOP_RUNNER: &str = "__qrust-noop-runner";
 
 /// What turns a `BuildFirst` command into the build it needs: arguments for the command, and
 /// `--config` settings (as `--config`, `KEY=VALUE` pairs). `target` is the triple the program
 /// is built for.
-pub fn prebuild(how: Prebuild, haul: &Path, target: &str) -> (Vec<String>, Vec<String>) {
+pub fn prebuild(how: Prebuild, qrust: &Path, target: &str) -> (Vec<String>, Vec<String>) {
     match how {
         Prebuild::NoRun => (vec!["--no-run".into()], Vec::new()),
         Prebuild::Runner => {
             // For the triple itself: a runner set for the triple takes precedence over any
             // `cfg(...)` one the user configured, which must not run the program here.
-            let runner = serde_json::to_string(&[util::path_str(haul), crate::resolve::AS_HAUL.to_string(), NOOP_RUNNER.to_string()]).unwrap_or_default();
+            let runner = serde_json::to_string(&[util::path_str(qrust), crate::resolve::AS_QRUST.to_string(), NOOP_RUNNER.to_string()]).unwrap_or_default();
             (Vec::new(), vec!["--config".into(), format!("target.{}.runner={}", target, runner)])
         }
     }
 }
 
-/// The closing line of a test run whose terminal Haul relayed (see `relay`): libtest's counts,
+/// The closing line of a test run whose terminal QuickRust relayed (see `relay`): libtest's counts,
 /// added up over every test program.
 #[cfg(unix)]
 pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
@@ -125,7 +125,7 @@ pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
     let _ = err.flush();
 }
 
-/// A size as Cargo prints it (`645.0KiB`, `242B`) as Haul prints sizes (`645.0 KiB`, `242 B`).
+/// A size as Cargo prints it (`645.0KiB`, `242B`) as QuickRust prints sizes (`645.0 KiB`, `242 B`).
 fn cargo_size(s: &str) -> String {
     match s.find(|c: char| c.is_ascii_alphabetic()) {
         Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') && ["B", "KiB", "MiB", "GiB", "TiB"].contains(&&s[i..]) => format!("{} {}", &s[..i], &s[i..]),
@@ -133,7 +133,7 @@ fn cargo_size(s: &str) -> String {
     }
 }
 
-/// `text` with every size in it as Haul prints sizes (`cargo_size`): `943B (694B compressed)`.
+/// `text` with every size in it as QuickRust prints sizes (`cargo_size`): `943B (694B compressed)`.
 fn cargo_sizes(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 8);
     let mut word = String::new();
@@ -228,7 +228,7 @@ fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHa
     })
 }
 
-/// Something Haul does itself (installing a toolchain or a crate): a live status line while it
+/// Something QuickRust does itself (installing a toolchain or a crate): a live status line while it
 /// runs, when stderr is a terminal, and one result line at the end, everywhere.
 pub struct Phase {
     color: bool,
@@ -351,12 +351,12 @@ fn truncate(text: &str, width: usize) -> String {
     }
 }
 
-/// Why a build failed on a full disk, and what Haul's cache holds there.
+/// Why a build failed on a full disk, and what QuickRust's cache holds there.
 fn disk_full_note() -> String {
-    let home = util::haul_home();
+    let home = util::qrust_home();
     let free = crate::space::fs_space(&home).map(|f| util::human_bytes(f.available)).unwrap_or_else(|_| "?".into());
     let cache = crate::space::usage(&util::cache_dir()).and_then(|u| u["total_bytes"].as_u64()).map(util::human_bytes).unwrap_or_else(|| "an uncounted amount".into());
-    format!("  the disk is full: {} free where Haul keeps its cache, which holds {} · `haul gc` frees what is not in use, `haul cache status` shows it", free, cache)
+    format!("  the disk is full: {} free where QuickRust keeps its cache, which holds {} · `qrust gc` frees what is not in use, `qrust cache status` shows it", free, cache)
 }
 
 /// A 20-cell progress bar: `━━━━━━━━╺───────────`.
@@ -426,7 +426,7 @@ impl ToolchainProgress {
 
 impl crate::toolchain::install::Report for ToolchainProgress {
     fn waiting(&mut self, id: &str) {
-        let what = format!("Waiting for another Haul installing {}", id);
+        let what = format!("Waiting for another QuickRust installing {}", id);
         self.phase().status(&what, true);
     }
 
@@ -444,17 +444,17 @@ impl crate::toolchain::install::Report for ToolchainProgress {
     }
 }
 
-/// Once per Haul home: restored crates whose build-script code was compiled under another
+/// Once per QuickRust home: restored crates whose build-script code was compiled under another
 /// target directory name that directory in panic locations and debug information.
 pub fn notice_foreign_out_dir(units: u64) {
-    let marker = util::haul_home().join("notices").join("foreign-out-dir");
+    let marker = util::qrust_home().join("notices").join("foreign-out-dir");
     if marker.exists() {
         return;
     }
     let r = Renderer::new();
     let _ = writeln!(
         std::io::stderr(),
-        "{} {} crate{} restored from Haul's cache include code their build script generated in another target directory: panic messages and debug information for that code name that directory. Program behaviour is the same. (Shown once; `mode = \"compat\"` builds everything here.)",
+        "{} {} crate{} restored from QuickRust's cache include code their build script generated in another target directory: panic messages and debug information for that code name that directory. Program behaviour is the same. (Shown once; `mode = \"compat\"` builds everything here.)",
         r.paint("2", "note:"),
         units,
         if units == 1 { "" } else { "s" }
@@ -462,20 +462,20 @@ pub fn notice_foreign_out_dir(units: u64) {
     let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
 }
 
-/// Haul started building its compiler driver for this toolchain (see `driver.rs`).
+/// QuickRust started building its compiler driver for this toolchain (see `driver.rs`).
 pub fn notice_driver_build(release: &str) {
     let r = Renderer::new();
     let _ = writeln!(
         std::io::stderr(),
-        "{} building Haul's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)",
+        "{} building QuickRust's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)",
         r.paint("2", "note:"),
         release
     );
 }
 
-/// A note shown at most once an hour (per Haul home and `key`).
+/// A note shown at most once an hour (per QuickRust home and `key`).
 pub fn notice_hourly(key: &str, text: &str) {
-    let marker = util::haul_home().join("notices").join(key);
+    let marker = util::qrust_home().join("notices").join(key);
     let recent = std::fs::metadata(&marker).map(|m| util::mtime_ns(&m) + 3_600 * 1_000_000_000 > util::now_wall_ns()).unwrap_or(false);
     if recent {
         return;
@@ -484,19 +484,19 @@ pub fn notice_hourly(key: &str, text: &str) {
     let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
 }
 
-/// A note of Haul's own on stderr.
+/// A note of QuickRust's own on stderr.
 pub fn note(text: &str) {
     let r = Renderer::new();
     let _ = writeln!(std::io::stderr(), "{} {}", r.paint("2", "note:"), text);
 }
 
-/// Haul could not start building its compiler driver.
+/// QuickRust could not start building its compiler driver.
 pub fn notice_driver_unavailable(why: &str) {
     let r = Renderer::new();
-    let _ = writeln!(std::io::stderr(), "{} Haul's compiler driver cannot be built: {}", r.paint("2", "note:"), why);
+    let _ = writeln!(std::io::stderr(), "{} QuickRust's compiler driver cannot be built: {}", r.paint("2", "note:"), why);
 }
 
-/// The summary of a build Haul knows to be fresh without asking Cargo: the build phase of a
+/// The summary of a build QuickRust knows to be fresh without asking Cargo: the build phase of a
 /// `BuildFirst` command whose inputs have not changed since it last succeeded.
 pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
     let r = Renderer::new();
@@ -571,7 +571,7 @@ impl Live {
             Ok(f) => f,
             Err(_) => {
                 // Cargo's result stands; what was lost is said, not hidden.
-                eprintln!("haul: internal error: the output renderer failed; Cargo's result stands, but this run's output was not stored");
+                eprintln!("qrust: internal error: the output renderer failed; Cargo's result stands, but this run's output was not stored");
                 Finished { messages: Vec::new(), log: Vec::new(), units: 0, warnings_line: None }
             }
         }
@@ -613,7 +613,7 @@ struct Activity {
     progress: Option<(u64, u64)>,
     /// Downloading: the most crates seen remaining (the total), those remaining now, the bytes left.
     downloading: Option<(u64, u64, String)>,
-    /// `Blocking waiting for file lock on …`: on what, and whether Haul's cache collection is
+    /// `Blocking waiting for file lock on …`: on what, and whether QuickRust's cache collection is
     /// what holds it (otherwise another Cargo).
     waiting: Option<(String, bool)>,
     /// `Updating crates.io index`: which.
@@ -673,8 +673,8 @@ impl Activity {
 
     /// The status line for what Cargo is doing before (or apart from) compiling.
     fn status(&self) -> Option<String> {
-        if let Some((w, by_haul)) = &self.waiting {
-            return Some(format!("Waiting for the lock on the {} ({} holds it)", w, if *by_haul { "Haul's cache collection" } else { "another Cargo" }));
+        if let Some((w, by_qrust)) = &self.waiting {
+            return Some(format!("Waiting for the lock on the {} ({} holds it)", w, if *by_qrust { "QuickRust's cache collection" } else { "another Cargo" }));
         }
         if let Some((most, remaining, bytes)) = &self.downloading {
             if *most == 0 {
@@ -785,7 +785,7 @@ impl Renderer {
                 let m = &msg["message"];
                 let level = m["level"].as_str().unwrap_or("");
                 let text = m["message"].as_str().unwrap_or("");
-                // rustc's own tallies ("3 warnings emitted") are recomputed by Haul.
+                // rustc's own tallies ("3 warnings emitted") are recomputed by QuickRust.
                 let tally = m["code"].is_null() && (text.ends_with("warnings emitted") || text.ends_with("warning emitted") || text.starts_with("aborting due to"));
                 if tally {
                 } else if level == "error" || level == "error: internal compiler error" {
@@ -968,7 +968,7 @@ impl Renderer {
         }
         match classified {
             crate::cargo_lines::Line::Progress { .. } => return,
-            // The lockfile changed: said once, dimly (each package is in `haul log`).
+            // The lockfile changed: said once, dimly (each package is in `qrust log`).
             crate::cargo_lines::Line::Status { verb: "Locking", rest } if !rest.starts_with("0 ") => {
                 let text = self.paint("2", &format!("  Locked {}", rest));
                 self.print_above(err, &text);
@@ -1037,7 +1037,7 @@ impl Renderer {
             // Part of a command that reports the result.
         } else if exit.success() {
             let mut s = format!("{} {}", self.paint("1;32", &format!("✓ {}", self.done.word())), human_dur(wall_ns));
-            for (n, what) in [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from Haul's cache")] {
+            for (n, what) in [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")] {
                 if n > 0 {
                     s.push_str(&format!("{}{} {}", dot, n, what));
                 }
@@ -1075,7 +1075,7 @@ impl Renderer {
             let shown: Vec<String> = lints.iter().take(3).map(|(k, n)| format!("{} ×{}", k, n)).collect();
             let more = if lints.len() > 3 { format!(", +{} more", lints.len() - 3) } else { String::new() };
             return Some(format!(
-                "{} {} warning{} in {}: {}{}{}`haul warnings` to show them",
+                "{} {} warning{} in {}: {}{}{}`qrust warnings` to show them",
                 self.paint("1;33", "⚠"),
                 self.warning_total,
                 if self.warning_total == 1 { "" } else { "s" },
@@ -1121,9 +1121,9 @@ impl Renderer {
     }
 }
 
-/// Diagnostics of one stored run, for `haul warnings` / `haul errors` / `haul log`.
+/// Diagnostics of one stored run, for `qrust warnings` / `qrust errors` / `qrust log`.
 pub fn stored_output(events_dir: &std::path::Path) -> Result<Vec<Value>, String> {
-    let text = std::fs::read_to_string(events_dir.join(OUTPUT_FILE)).map_err(|_| "this run's output was not stored: it was not rendered by Haul (not a terminal, or output = \"cargo\"), or its raw events were pruned".to_string())?;
+    let text = std::fs::read_to_string(events_dir.join(OUTPUT_FILE)).map_err(|_| "this run's output was not stored: it was not rendered by QuickRust (not a terminal, or output = \"cargo\"), or its raw events were pruned".to_string())?;
     Ok(text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect())
 }
 
@@ -1250,7 +1250,7 @@ mod tests {
         assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 26 packages looked up"));
         ren.on_stderr(&mut sink, "       Fetch 50 complete; 1 pending");
         assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 50 packages looked up"));
-        // Cargo 1.99's summary names the largest crate; Haul's line ends at the duration.
+        // Cargo 1.99's summary names the largest crate; QuickRust's line ends at the duration.
         ren.on_stderr(&mut sink, "  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)");
         ren.on_stderr(&mut sink, "    Building [>         ] 0/54: memchr");
         assert_eq!(ren.activity.status(), None);
@@ -1312,7 +1312,7 @@ mod tests {
         ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": true, "target": { "name": "dep", "kind": ["lib"] } }).to_string());
         ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 3);
         let text = String::from_utf8(sink).unwrap();
-        assert!(text.contains("✓ Built 4.21s · 1 compiled · 1 fresh · 3 restored from Haul's cache"), "{}", text);
+        assert!(text.contains("✓ Built 4.21s · 1 compiled · 1 fresh · 3 restored from QuickRust's cache"), "{}", text);
         // What the command did: `cargo check` and Clippy build nothing to run.
         for (command, says) in [("check", "✓ Checked "), ("clippy", "✓ Checked "), ("doc", "✓ Documented "), ("test", "✓ Built "), ("run", "✓ Built ")] {
             let mut ren = Renderer { done: Done::of(command), ..r() };

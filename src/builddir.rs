@@ -1,16 +1,16 @@
-//! Build directories: Haul's, not the project's.
+//! Build directories: QuickRust's, not the project's.
 //!
-//! A workspace builds into `~/.haul/cache/builds/<name>-<id>/` (`<id>`: the workspace's id, as
-//! its records use), never into `target/` beside its sources. Haul tells Cargo, and every tool
+//! A workspace builds into `~/.qrust/cache/builds/<name>-<id>/` (`<id>`: the workspace's id, as
+//! its records use), never into `target/` beside its sources. QuickRust tells Cargo, and every tool
 //! that runs under it — external subcommands, build tools that ask `cargo metadata`, an
 //! `xtask` run by `cargo run` that calls `$CARGO` — through `CARGO_TARGET_DIR` and
-//! `CARGO_BUILD_BUILD_DIR`, marked as Haul's by `HAUL_MANAGED_TARGET_DIR`. The directory is
-//! disposable: Haul's cache may delete it when it has not been used for a while, and the next
+//! `CARGO_BUILD_BUILD_DIR`, marked as QuickRust's by `QRUST_MANAGED_TARGET_DIR`. The directory is
+//! disposable: QuickRust's cache may delete it when it has not been used for a while, and the next
 //! build recreates it.
 //!
 //! A target directory the user chose is used as it is and never managed: `--target-dir`,
 //! `--config build.target-dir=…`, or `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` in the
-//! environment (unless set by Haul for another command, which a nested command for another
+//! environment (unless set by QuickRust for another command, which a nested command for another
 //! workspace replaces). `build.target-dir` in Cargo configuration files is overridden.
 //!
 //! The workspace is Cargo's answer (`cargo locate-project --workspace`), remembered for the
@@ -23,19 +23,19 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Marks the target directory variables as set by Haul (their value: the managed directory).
-pub const ENV_MANAGED: &str = "HAUL_MANAGED_TARGET_DIR";
-const META_FORMAT: &str = "haul-build-dir-1";
+/// Marks the target directory variables as set by QuickRust (their value: the managed directory).
+pub const ENV_MANAGED: &str = "QRUST_MANAGED_TARGET_DIR";
+const META_FORMAT: &str = "qrust-build-dir-1";
 
 /// The target directory of a command.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Target {
     pub dir: PathBuf,
-    /// Haul's (in its cache) rather than one the user chose.
+    /// QuickRust's (in its cache) rather than one the user chose.
     pub managed: bool,
 }
 
-/// Where Haul's build directories live.
+/// Where QuickRust's build directories live.
 pub fn builds_dir() -> PathBuf {
     util::cache_dir().join("builds")
 }
@@ -137,12 +137,12 @@ fn meta_path(dir: &Path) -> PathBuf {
 }
 
 /// Notes that the managed directory `dir` of the workspace `root` is in use (written at most
-/// once a minute): its age is what Haul's cache goes by.
+/// once a minute): its age is what QuickRust's cache goes by.
 pub fn mark_used(dir: &Path, root: &Path) {
     mark_used_in(&builds_dir(), dir, root)
 }
 
-/// `mark_used`, with Haul's build directories in `builds`.
+/// `mark_used`, with QuickRust's build directories in `builds`.
 pub fn mark_used_in(builds: &Path, dir: &Path, root: &Path) {
     let meta = meta_path(dir);
     let now = util::now_wall_ns();
@@ -160,7 +160,7 @@ pub fn meta(dir: &Path) -> Option<(PathBuf, u64, u64)> {
     Some((PathBuf::from(v["workspace_root"].as_str()?), v["created_ns"].as_u64()?, v["last_used_ns"].as_u64()?))
 }
 
-/// Held while a command uses a managed directory: Haul's cache never removes one in use.
+/// Held while a command uses a managed directory: QuickRust's cache never removes one in use.
 pub struct InUse {
     _lock: Option<util::SharedLock>,
 }
@@ -197,7 +197,7 @@ mod tests {
         assert!(environment(&Target { dir: cwd.join("out"), managed: false }).is_empty());
         let env = environment(&managed);
         assert_eq!(env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", ENV_MANAGED]);
-        // The user's variable is theirs; Haul's own, set for an enclosing command (perhaps of
+        // The user's variable is theirs; QuickRust's own, set for an enclosing command (perhaps of
         // another workspace), is replaced.
         let theirs = |k: &str| (k == "CARGO_TARGET_DIR").then(|| std::ffi::OsString::from("/mine"));
         assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), &theirs), Some(Target { dir: PathBuf::from("/mine"), managed: false }));

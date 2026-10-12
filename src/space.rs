@@ -1,16 +1,16 @@
-//! Haul's cache keeps itself within its space.
+//! QuickRust's cache keeps itself within its space.
 //!
-//! Everything under `~/.haul/cache` can be rebuilt or downloaded again: workspaces' build
+//! Everything under `~/.qrust/cache` can be rebuilt or downloaded again: workspaces' build
 //! directories, the artifact cache, compiler drivers, sources of installed programs, toolchain
 //! downloads, remembered answers.
-//! Haul bounds it two ways (`cache.max-size`, `cache.min-free`): it uses at most so much, and
+//! QuickRust bounds it two ways (`cache.max-size`, `cache.min-free`): it uses at most so much, and
 //! leaves at least so much of the disk free. A collection removes, in order:
 //!
 //! 1. what nothing can use any more, whatever the space: build directories of workspaces that are
 //!    gone, drivers of toolchains that are gone, stale downloads and memos, leftovers;
 //! 2. while the cache is above its size or the disk below its free space, build directories,
 //!    artifact entries and sources of installed programs, least recently used first;
-//! 3. crates and git checkouts downloaded into Haul's Cargo home: Cargo removes them itself
+//! 3. crates and git checkouts downloaded into QuickRust's Cargo home: Cargo removes them itself
 //!    (`cargo -Zgc clean gc`, which knows when each was last used and waits for builds reading
 //!    them), unused for its usual ages at every collection, and, while the bounds are still
 //!    exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn. They come
@@ -25,13 +25,13 @@
 //! Sizes are blocks allocated, and a file with several links (the artifact cache links what it
 //! restores into build directories) counts once, and is freed only with its last link.
 //!
-//! After a build Haul checks whether a collection is due (one `statvfs` and a small file read):
+//! After a build QuickRust checks whether a collection is due (one `statvfs` and a small file read):
 //! below the free space, above the size by the free space it has lost since the last count, or a
 //! day after that count; but not within 15 minutes of one that could not get within the bounds
-//! (a disk others fill), when nothing more has become removable. It then runs `haul gc
+//! (a disk others fill), when nothing more has become removable. It then runs `qrust gc
 //! --background` detached, at the lowest priority.
-//! When the disk is nearly full (a quarter of the free space Haul keeps) a command collects
-//! first, for at most ten seconds. `haul gc` collects now.
+//! When the disk is nearly full (a quarter of the free space QuickRust keeps) a command collects
+//! first, for at most ten seconds. `qrust gc` collects now.
 
 use crate::config::Config;
 use crate::util;
@@ -112,9 +112,9 @@ pub enum Kind {
     Download,
     Memo,
     Leftover,
-    /// Haul's Cargo home's registry and git downloads (removed by Cargo, see `cargo_gc`).
+    /// QuickRust's Cargo home's registry and git downloads (removed by Cargo, see `cargo_gc`).
     Registry,
-    /// A copy of an installed program's source (`haul install`).
+    /// A copy of an installed program's source (`qrust install`).
     Source,
 }
 
@@ -272,14 +272,14 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// Haul's Cargo home and a Cargo to collect its downloads with.
+/// QuickRust's Cargo home and a Cargo to collect its downloads with.
 #[derive(Clone, Debug)]
 pub struct Downloads {
     pub cargo_home: PathBuf,
     pub cargo: PathBuf,
 }
 
-/// Haul's Cargo home with the newest installed toolchain's Cargo; `None` without a toolchain.
+/// QuickRust's Cargo home with the newest installed toolchain's Cargo; `None` without a toolchain.
 pub fn downloads() -> Option<Downloads> {
     let layout = crate::toolchain::Layout::current();
     let newest = crate::toolchain::installed(&layout).into_iter().filter_map(|tc| Some((semver::Version::parse(&tc.record()?.version).ok()?, tc))).max_by(|a, b| a.0.cmp(&b.0))?;
@@ -337,7 +337,7 @@ fn cargo_gc(d: &Downloads, max_age: Option<&str>, dry_run: bool) -> Result<(Stri
     Ok((line, bytes))
 }
 
-/// The bytes Haul's Cargo home's downloads take: registry, git.
+/// The bytes QuickRust's Cargo home's downloads take: registry, git.
 fn download_bytes(d: &Downloads) -> (u64, u64) {
     let mut all = HashMap::new();
     let mut size = |sub: &str| {
@@ -527,7 +527,7 @@ fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
 
 /// Collects the cache at `cache`, and the downloads of `downloads` (see the module notes).
 /// `dry_run`: says what would go. `max_total`: removes down to this size whatever the policy
-/// says (`haul gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
+/// says (`qrust gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
 /// builds reading them).
 pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
     let now = util::now_wall_ns();
@@ -711,7 +711,7 @@ pub fn due(cache: &Path, policy: &Policy, fs: &FsSpace, now: u64) -> bool {
     }
 }
 
-/// Whether a collection of Haul's cache is running (it holds `gc.lock`; Cargo's package lock
+/// Whether a collection of QuickRust's cache is running (it holds `gc.lock`; Cargo's package lock
 /// too while Cargo collects its downloads). Creates nothing.
 pub fn collecting() -> bool {
     collecting_in(&util::cache_dir())
@@ -722,11 +722,11 @@ fn collecting_in(cache: &Path) -> bool {
     lock.is_file() && matches!(util::ExclusiveLock::try_acquire(&lock), Ok(None))
 }
 
-/// After a command: starts `haul gc --background` when a collection is due. Errors (no free
+/// After a command: starts `qrust gc --background` when a collection is due. Errors (no free
 /// space to count, no process to start) are the command's to report as a note, never to fail on.
-pub fn after_command(cfg: &Config, haul: &Path) -> Result<bool, String> {
+pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
     let cache = util::cache_dir();
-    let fs = fs_space(util::haul_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::haul_home().display(), e))?;
+    let fs = fs_space(util::qrust_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::qrust_home().display(), e))?;
     if !due(&cache, &policy(cfg, &fs), &fs, util::now_wall_ns()) {
         return Ok(false);
     }
@@ -736,9 +736,9 @@ pub fn after_command(cfg: &Config, haul: &Path) -> Result<bool, String> {
         return Ok(false);
     }
     let log = fs::File::create(cache.join("gc.log")).map_err(|e| e.to_string())?;
-    let mut c = crate::resolve::haul_command(haul);
+    let mut c = crate::resolve::qrust_command(qrust);
     c.args(["gc", "--background"]);
-    crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", haul.display(), e))?;
+    crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", qrust.display(), e))?;
     Ok(true)
 }
 
@@ -747,10 +747,10 @@ pub fn after_command(cfg: &Config, haul: &Path) -> Result<bool, String> {
 /// lost). When the disk is nearly full (a quarter of `cache.min-free`), collects for at most ten
 /// seconds. `None` when nothing needed doing.
 pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
-    before_command_in(cfg, &util::cache_dir(), &util::haul_home())
+    before_command_in(cfg, &util::cache_dir(), &util::qrust_home())
 }
 
-/// `before_command` for the cache at `cache` in Haul's home `home`.
+/// `before_command` for the cache at `cache` in QuickRust's home `home`.
 fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<Collected, String>> {
     let cache = cache.to_path_buf();
     let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
@@ -776,7 +776,7 @@ mod tests {
     use super::*;
 
     fn cache() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("haul-space-{}", util::new_id())).join("cache");
+        let d = std::env::temp_dir().join(format!("qrust-space-{}", util::new_id())).join("cache");
         fs::create_dir_all(&d).unwrap();
         d
     }
@@ -796,7 +796,7 @@ mod tests {
         let d = cache.join("builds").join(name);
         file(&d.join("debug/deps/libx.rlib"), bytes);
         let used = util::now_wall_ns() - ago_secs * 1_000_000_000;
-        util::write_json(&d.with_file_name(format!("{}.json", name)), &json!({ "format": "haul-build-dir-1", "workspace_root": util::path_str(root), "created_ns": used, "last_used_ns": used })).unwrap();
+        util::write_json(&d.with_file_name(format!("{}.json", name)), &json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(root), "created_ns": used, "last_used_ns": used })).unwrap();
         d
     }
 
@@ -934,10 +934,10 @@ mod tests {
 
     #[test]
     fn a_fresh_cache_is_counted_without_a_scan_and_then_checked_by_its_growth() {
-        let home = std::env::temp_dir().join(format!("haul-space-home-{}", util::new_id()));
+        let home = std::env::temp_dir().join(format!("qrust-space-home-{}", util::new_id()));
         fs::create_dir_all(&home).unwrap();
         let cache = home.join("cache");
-        // The first command of a fresh Haul home: no collection, a count of nothing.
+        // The first command of a fresh QuickRust home: no collection, a count of nothing.
         let first = before_command_in(&Config::defaults(), &cache, &home);
         assert!(first.is_none() || first.as_ref().is_some_and(|r| r.is_ok()));
         let u = usage(&cache).expect("counted");
@@ -995,7 +995,7 @@ mod tests {
         assert_eq!(usage(&c).unwrap()["unmet"], json!(true));
         // Once the build directory may go too, both go, the older first.
         let used = util::now_wall_ns() - 3 * 3600 * 1_000_000_000;
-        util::write_json(&d.with_file_name("w-1.json"), &json!({ "format": "haul-build-dir-1", "workspace_root": util::path_str(&ws), "created_ns": used, "last_used_ns": used })).unwrap();
+        util::write_json(&d.with_file_name("w-1.json"), &json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(&ws), "created_ns": used, "last_used_ns": used })).unwrap();
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
         assert_eq!(removed, [c.join("artifacts/e/k1").as_path(), d.as_path()]);

@@ -1,9 +1,9 @@
-//! Speed index: how long the same developer loop takes through Haul compared with upstream Cargo.
+//! Speed index: how long the same developer loop takes through QuickRust compared with upstream Cargo.
 //!
 //!     cargo build --release --workspace
-//!     target/release/haul-bench fetch                # once; the only step that uses the network
-//!     target/release/haul-bench run --quick          # ~minutes, while iterating
-//!     target/release/haul-bench run --full --record  # the recorded measurement
+//!     target/release/qrust-bench fetch               # once; the only step that uses the network
+//!     target/release/qrust-bench run --quick         # ~minutes, while iterating
+//!     target/release/qrust-bench run --full --record # the recorded measurement
 //!
 //! See benchmarks/README.md for the method.
 
@@ -23,7 +23,7 @@ use std::time::Instant;
 use workload::Workload;
 
 const SCENARIOS: &[(&str, &str)] = &[
-    ("cold-build", "first `cargo build`: empty target directory and Haul state"),
+    ("cold-build", "first `cargo build`: empty target directory and QuickRust state"),
     ("no-op", "`cargo build` with nothing changed (mean of 10 runs per sample)"),
     ("edit-leaf", "body change in a crate nothing depends on, then `cargo build`"),
     ("edit-core", "body change in a crate others build on, then `cargo build`"),
@@ -36,14 +36,14 @@ const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "edit-cor
 const NOOP_RUNS: u64 = 10;
 
 fn fail(msg: &str) -> ! {
-    eprintln!("haul-bench: error: {}", msg);
+    eprintln!("qrust-bench: error: {}", msg);
     std::process::exit(1)
 }
 
 #[derive(Debug, Clone, PartialEq)]
 enum Base {
     Cargo,
-    Haul,
+    QuickRust,
 }
 
 #[derive(Debug, Clone)]
@@ -55,7 +55,7 @@ struct Variant {
     config: Vec<String>,
 }
 
-fn builtin_variants(haul_has_mode: bool) -> Vec<Variant> {
+fn builtin_variants(qrust_has_mode: bool) -> Vec<Variant> {
     let v = |name: &str, base: Base, env: &[(&str, &str)], config: &[&str]| Variant {
         name: name.into(),
         base,
@@ -64,24 +64,24 @@ fn builtin_variants(haul_has_mode: bool) -> Vec<Variant> {
     };
     let mut out = vec![
         v("cargo", Base::Cargo, &[], &[]),
-        // Cargo's own build-performance guide, written by hand: what a user gets without Haul.
+        // Cargo's own build-performance guide, written by hand: what a user gets without QuickRust.
         v("cargo-tuned", Base::Cargo, &[], &["profile.dev.debug=\"line-tables-only\"", "profile.dev.package.\"*\".debug=false"]),
-        v("haul", Base::Haul, &[], &[]),
+        v("qrust", Base::QuickRust, &[], &[]),
     ];
-    if haul_has_mode {
-        out.push(v("haul-compat", Base::Haul, &[("HAUL_MODE", "compat")], &[]));
+    if qrust_has_mode {
+        out.push(v("qrust-compat", Base::QuickRust, &[("QRUST_MODE", "compat")], &[]));
     }
     out
 }
 
-/// `NAME=BASE[;env:K=V][;config:K=V]…`, e.g. `try-lld=haul;env:HAUL_X=1`.
+/// `NAME=BASE[;env:K=V][;config:K=V]…`, e.g. `try-lld=qrust;env:QRUST_X=1`.
 fn parse_define(spec: &str) -> Result<Variant, String> {
     let (name, rest) = spec.split_once('=').ok_or_else(|| format!("--define {:?}: expected NAME=BASE[;env:K=V][;config:K=V]", spec))?;
     let mut parts = rest.split(';');
     let base = match parts.next() {
         Some("cargo") => Base::Cargo,
-        Some("haul") => Base::Haul,
-        other => return Err(format!("--define {:?}: base must be `cargo` or `haul`, got {:?}", spec, other)),
+        Some("qrust") => Base::QuickRust,
+        other => return Err(format!("--define {:?}: base must be `cargo` or `qrust`, got {:?}", spec, other)),
     };
     let mut v = Variant { name: name.to_string(), base, env: Vec::new(), config: Vec::new() };
     for p in parts {
@@ -100,8 +100,8 @@ fn parse_define(spec: &str) -> Result<Variant, String> {
 struct Ctx {
     work: PathBuf,
     sealed: Sealed,
-    haul: PathBuf,
-    /// Haul's compiler driver for the pinned toolchain (the `drivers` directory of a Haul home),
+    qrust: PathBuf,
+    /// QuickRust's compiler driver for the pinned toolchain (the `drivers` directory of a QuickRust home),
     /// or why it could not be built.
     drivers: Result<PathBuf, String>,
 }
@@ -111,27 +111,27 @@ impl Ctx {
         self.work.join("runs").join(&v.name).join(&w.name)
     }
 
-    /// Empties a variant's Haul state, as on a machine where Haul has run once before: its
-    /// compiler driver is built (Haul builds it in the background after the first build that
+    /// Empties a variant's QuickRust state, as on a machine where QuickRust has run once before: its
+    /// compiler driver is built (QuickRust builds it in the background after the first build that
     /// finds it missing, which a measurement must not include), nothing else is kept.
-    fn fresh_haul_home(&self, v: &Variant, w: &Workload) {
-        let home = self.variant_dir(v, w).join("haul-home");
+    fn fresh_qrust_home(&self, v: &Variant, w: &Workload) {
+        let home = self.variant_dir(v, w).join("qrust-home");
         let _ = fs::remove_dir_all(&home);
-        self.sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
-        if let (Base::Haul, Ok(drivers)) = (&v.base, &self.drivers) {
-            copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver into {}: {}", home.display(), e)));
+        self.sealed.qrust_home(&home).unwrap_or_else(|e| fail(&e));
+        if let (Base::QuickRust, Ok(drivers)) = (&v.base, &self.drivers) {
+            copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy QuickRust's compiler driver into {}: {}", home.display(), e)));
         }
     }
 
-    /// A Cargo command for `v`, run in checkout `co` with its own target directory and Haul state.
+    /// A Cargo command for `v`, run in checkout `co` with its own target directory and QuickRust state.
     fn command(&self, v: &Variant, w: &Workload, co: &Path, args: &[&str], workload_args: bool) -> std::process::Command {
         let program = match v.base {
             Base::Cargo => self.sealed.cargo.clone(),
-            Base::Haul => self.haul.clone(),
+            Base::QuickRust => self.qrust.clone(),
         };
         let mut c = self.sealed.command(&program, co, &co.join("target"), false);
-        if v.base == Base::Haul {
-            c.env("HAUL_HOME", self.variant_dir(v, w).join("haul-home"));
+        if v.base == Base::QuickRust {
+            c.env("QRUST_HOME", self.variant_dir(v, w).join("qrust-home"));
         }
         for (k, val) in &v.env {
             c.env(k, val);
@@ -155,11 +155,11 @@ impl Ctx {
 fn repetition(ctx: &Ctx, v: &Variant, w: &Workload, selected: &[&str], originals: &[(String, String)], edit_n: &mut u64) -> BTreeMap<String, Sample> {
     let dir = ctx.variant_dir(v, w);
     let (a, b) = (dir.join("a"), dir.join("b"));
-    // Nothing may be cached at the start: build output, Haul's state, edited sources.
+    // Nothing may be cached at the start: build output, QuickRust's state, edited sources.
     for p in [a.join("target"), b.join("target")] {
         let _ = fs::remove_dir_all(p);
     }
-    ctx.fresh_haul_home(v, w);
+    ctx.fresh_qrust_home(v, w);
     for (file, text) in originals {
         fs::write(a.join(file), text).unwrap_or_else(|e| fail(&format!("cannot restore {}: {}", file, e)));
     }
@@ -271,7 +271,7 @@ struct Opts {
     defines: Vec<Variant>,
     aa: bool,
     record: bool,
-    haul: Option<PathBuf>,
+    qrust: Option<PathBuf>,
     max_cpu_pressure: f64,
     /// `cutoff`: edits per workload, and the seed that chooses them.
     edits: usize,
@@ -286,7 +286,7 @@ fn list(v: &str) -> Vec<String> {
 
 fn parse_opts(args: &[String]) -> Opts {
     let mut o = Opts {
-        work: PathBuf::from("/mnt/shared/nvme2p3/haul-bench"),
+        work: PathBuf::from("/mnt/shared/nvme2p3/qrust-bench"),
         toolchain: "stable".into(),
         quick: false,
         full: false,
@@ -299,13 +299,13 @@ fn parse_opts(args: &[String]) -> Opts {
         defines: Vec::new(),
         aa: false,
         record: false,
-        haul: None,
+        qrust: None,
         max_cpu_pressure: 10.0,
         edits: 8,
         seed: 1,
         given: Vec::new(),
     };
-    if let Some(w) = std::env::var_os("HAUL_BENCH_DIR") {
+    if let Some(w) = std::env::var_os("QRUST_BENCH_DIR") {
         o.work = PathBuf::from(w);
     }
     let mut i = 0;
@@ -329,7 +329,7 @@ fn parse_opts(args: &[String]) -> Opts {
             "--define" => o.defines.push(parse_define(&val(&mut i, "--define")).unwrap_or_else(|e| fail(&e))),
             "--aa" => o.aa = true,
             "--record" => o.record = true,
-            "--haul" => o.haul = Some(PathBuf::from(val(&mut i, "--haul"))),
+            "--qrust" => o.qrust = Some(PathBuf::from(val(&mut i, "--qrust"))),
             "--edits" => o.edits = val(&mut i, "--edits").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--edits needs a number ≥ 1")),
             "--seed" => o.seed = val(&mut i, "--seed").parse().unwrap_or_else(|_| fail("--seed needs a number")),
             "--max-cpu-pressure" => o.max_cpu_pressure = val(&mut i, "--max-cpu-pressure").parse().unwrap_or_else(|_| fail("--max-cpu-pressure needs a number")),
@@ -343,12 +343,12 @@ fn parse_opts(args: &[String]) -> Opts {
     o
 }
 
-const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b] [--toolchain T]
-       haul-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
+const USAGE: &str = "usage: qrust-bench fetch [--work-dir DIR] [--workload a,b] [--toolchain T]
+       qrust-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
                       [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
-                      [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]
-       haul-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]
-       haul-bench cutoff [--workload a,b] [--edits N] [--seed S] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
+                      [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--qrust PATH]
+       qrust-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--qrust PATH]
+       qrust-bench cutoff [--workload a,b] [--edits N] [--seed S] [--toolchain T] [--record] [--work-dir DIR] [--qrust PATH]";
 
 fn main() {
     measure::adopt_orphans();
@@ -357,12 +357,12 @@ fn main() {
     let opts = parse_opts(&argv[1..]);
     let accepted: &[&str] = match cmd.as_str() {
         "fetch" => &["--work-dir", "--toolchain", "--workload"],
-        "verify" => &["--work-dir", "--toolchain", "--workload", "--define", "--record", "--haul"],
-        "cutoff" => &["--work-dir", "--toolchain", "--workload", "--edits", "--seed", "--record", "--haul"],
+        "verify" => &["--work-dir", "--toolchain", "--workload", "--define", "--record", "--qrust"],
+        "cutoff" => &["--work-dir", "--toolchain", "--workload", "--edits", "--seed", "--record", "--qrust"],
         _ => &[],
     };
     if let Some(unused) = opts.given.iter().find(|g| !accepted.is_empty() && !accepted.contains(&g.as_str())) {
-        fail(&format!("`haul-bench {}` does not take {}\n{}", cmd, unused, USAGE));
+        fail(&format!("`qrust-bench {}` does not take {}\n{}", cmd, unused, USAGE));
     }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap_or(Path::new(".")).to_path_buf();
     let all = workload::load(&repo.join("benchmarks/workloads.toml")).unwrap_or_else(|e| fail(&e));
@@ -374,13 +374,13 @@ fn main() {
     fs::create_dir_all(&opts.work).unwrap_or_else(|e| fail(&format!("cannot create {}: {}", opts.work.display(), e)));
     let work = fs::canonicalize(&opts.work).unwrap_or(opts.work.clone());
     sealed::check_no_ancestor_config(&work).unwrap_or_else(|e| fail(&e));
-    let haul = haul_binary(opts.haul.as_deref());
-    let sealed = Sealed::new(&work, &opts.toolchain, &haul).unwrap_or_else(|e| fail(&e));
+    let qrust = qrust_binary(opts.qrust.as_deref());
+    let sealed = Sealed::new(&work, &opts.toolchain, &qrust).unwrap_or_else(|e| fail(&e));
     match cmd.as_str() {
         "fetch" => {
             for w in &chosen {
                 workload::fetch(&work, &repo, w, &sealed).unwrap_or_else(|e| fail(&e));
-                eprintln!("haul-bench: {} @ {} ready", w.name, w.rev);
+                eprintln!("qrust-bench: {} @ {} ready", w.name, w.rev);
             }
         }
         "run" => run(&opts, &repo, work, sealed, &chosen),
@@ -390,43 +390,43 @@ fn main() {
     }
 }
 
-/// Haul under test (`--haul`, or the one built beside this harness), or a hard error.
-fn haul_binary(given: Option<&Path>) -> PathBuf {
-    let haul = given.map(Path::to_path_buf).unwrap_or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("haul"))).unwrap_or_default());
-    if !haul.is_file() || !haul.with_file_name("haul-rustc-wrapper").is_file() {
-        fail(&format!("{} (and haul-rustc-wrapper next to it) not found: build with `cargo build --release --workspace`, or pass --haul", haul.display()));
+/// QuickRust under test (`--qrust`, or the one built beside this harness), or a hard error.
+fn qrust_binary(given: Option<&Path>) -> PathBuf {
+    let qrust = given.map(Path::to_path_buf).unwrap_or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("qrust"))).unwrap_or_default());
+    if !qrust.is_file() || !qrust.with_file_name("qrust-rustc-wrapper").is_file() {
+        fail(&format!("{} (and qrust-rustc-wrapper next to it) not found: build with `cargo build --release --workspace`, or pass --qrust", qrust.display()));
     }
-    haul
+    qrust
 }
 
 /// The binaries under test and fetched workloads, or a hard error saying what is missing.
 fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> Ctx {
-    let haul = haul_binary(opts.haul.as_deref());
+    let qrust = qrust_binary(opts.qrust.as_deref());
     for w in workloads {
         if !workload::is_fetched(work, w) {
-            fail(&format!("workload {} is not fetched; run `haul-bench fetch` first", w.name));
+            fail(&format!("workload {} is not fetched; run `qrust-bench fetch` first", w.name));
         }
     }
-    // Haul's compiler driver, built once for the pinned toolchain (online: it may install the
+    // QuickRust's compiler driver, built once for the pinned toolchain (online: it may install the
     // toolchain's rustc-dev component).
     let home = work.join("driver-home");
-    sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
+    sealed.qrust_home(&home).unwrap_or_else(|e| fail(&e));
     let probe = work.join("probe");
     let _ = fs::create_dir_all(&probe);
-    let built = sealed.command(&haul, &probe, &probe.join("target"), true).env("HAUL_HOME", &home).args(["driver", "build"]).output();
+    let built = sealed.command(&qrust, &probe, &probe.join("target"), true).env("QRUST_HOME", &home).args(["driver", "build"]).output();
     let drivers = match built {
         Ok(o) if o.status.success() => Ok(home.join("cache/drivers")),
         Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
-        Err(e) => Err(format!("cannot run {}: {}", haul.display(), e)),
+        Err(e) => Err(format!("cannot run {}: {}", qrust.display(), e)),
     };
     if let Err(e) = &drivers {
-        eprintln!("haul-bench: Haul's compiler driver could not be built, so early cut-off is not measured: {}", e);
+        eprintln!("qrust-bench: QuickRust's compiler driver could not be built, so early cut-off is not measured: {}", e);
     }
-    Ctx { work: work.to_path_buf(), sealed, haul, drivers }
+    Ctx { work: work.to_path_buf(), sealed, qrust, drivers }
 }
 
-/// What the record says about Haul's compiler driver: the driver directories present in every
-/// Haul home the runs started from (they name the compiler and the driver source), or why
+/// What the record says about QuickRust's compiler driver: the driver directories present in every
+/// QuickRust home the runs started from (they name the compiler and the driver source), or why
 /// there were none.
 fn driver_record(ctx: &Ctx) -> Value {
     match &ctx.drivers {
@@ -450,30 +450,30 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Git revision and dirtiness of the Haul checkout; a record without them is worthless.
+/// Git revision and dirtiness of the QuickRust checkout; a record without them is worthless.
 /// The benchmark's own records: appended by the runs themselves, they say nothing about the
 /// code under measurement.
 const RECORDS: [&str; 5] = ["benchmarks/speed-index.jsonl", "benchmarks/speed-index-quick.jsonl", "benchmarks/verify.jsonl", "benchmarks/cutoff-gate.jsonl", "benchmarks/PROGRESS.md"];
 
-/// The Haul revision, and whether the checkout differs from it anywhere but in the records.
+/// The QuickRust revision, and whether the checkout differs from it anywhere but in the records.
 fn provenance(repo: &Path) -> (String, bool) {
-    let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the Haul revision in {} (git rev-parse failed)", repo.display())));
+    let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the QuickRust revision in {} (git rev-parse failed)", repo.display())));
     let status = capture(repo, "git", &["status", "--porcelain"]).unwrap_or_else(|| fail(&format!("cannot read the state of {} (git status failed)", repo.display())));
     // Porcelain lines are `XY path`, where X may be a space (trimmed off the first line).
     let dirty = status.lines().any(|l| !l.trim_start().split_once(' ').is_some_and(|(_, path)| RECORDS.contains(&path.trim())));
     (rev, dirty)
 }
 
-/// `haul-bench verify`: the correctness gate (see verify.rs).
+/// `qrust-bench verify`: the correctness gate (see verify.rs).
 fn verify_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
-    let (haul_rev, haul_dirty) = provenance(repo);
+    let (qrust_rev, qrust_dirty) = provenance(repo);
     let ctx = context(opts, &work, sealed, workloads);
-    let mut variants: Vec<Variant> = builtin_variants(false).into_iter().filter(|v| v.name == "cargo" || v.name == "haul").collect();
+    let mut variants: Vec<Variant> = builtin_variants(false).into_iter().filter(|v| v.name == "cargo" || v.name == "qrust").collect();
     variants.extend(opts.defines.iter().cloned());
     let (report, agree) = verify::verify(&ctx, &variants, workloads);
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
+        "qrust_rev": qrust_rev, "qrust_dirty": qrust_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
         "variants": variants.iter().map(|v| json!({ "name": v.name, "env": v.env.iter().map(|(k, val)| format!("{}={}", k, val)).collect::<Vec<_>>(), "config": v.config })).collect::<Vec<_>>(),
         "agree": agree, "workloads": report,
     });
@@ -493,12 +493,12 @@ fn verify_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workl
 }
 
 fn cutoff_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
-    let (haul_rev, haul_dirty) = provenance(repo);
+    let (qrust_rev, qrust_dirty) = provenance(repo);
     let ctx = context(opts, &work, sealed, workloads);
     let (report, pass) = cutoff::gate(&ctx, workloads, opts.edits, opts.seed);
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
+        "qrust_rev": qrust_rev, "qrust_dirty": qrust_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
         "edits": opts.edits, "seed": opts.seed, "pass": pass, "workloads": report,
     });
     println!("\n{}", if pass { "PASSED: every edit's loop build is byte-identical to building it from nothing." } else { "FAILED: some loop builds differ from building the same source from nothing." });
@@ -517,13 +517,13 @@ fn cutoff_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workl
 
 fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
     let ctx = context(opts, &work, sealed, workloads);
-    // Haul's effective configuration is part of what is measured.
+    // QuickRust's effective configuration is part of what is measured.
     let probe = work.join("probe");
     let _ = fs::create_dir_all(&probe);
     let policy: Value = ctx
         .sealed
-        .command(&ctx.haul, &probe, &probe.join("target"), false)
-        .env("HAUL_HOME", work.join("probe/haul-home"))
+        .command(&ctx.qrust, &probe, &probe.join("target"), false)
+        .env("QRUST_HOME", work.join("probe/qrust-home"))
         .args(["policy", "explain", "--format", "json"])
         .output()
         .ok()
@@ -537,7 +537,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     if opts.aa {
         variants.push(Variant { name: "cargo-aa".into(), base: Base::Cargo, env: vec![], config: vec![] });
     }
-    let wanted: Option<Vec<String>> = opts.variants.clone().or_else(|| opts.quick.then(|| vec!["cargo".into(), "haul".into()]));
+    let wanted: Option<Vec<String>> = opts.variants.clone().or_else(|| opts.quick.then(|| vec!["cargo".into(), "qrust".into()]));
     if let Some(names) = &wanted {
         for n in names {
             if !variants.iter().any(|v| &v.name == n) {
@@ -547,7 +547,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         variants.retain(|v| names.contains(&v.name) || v.name == "cargo" || (opts.aa && v.name == "cargo-aa") || opts.defines.iter().any(|d| d.name == v.name));
     }
     if !has_mode {
-        eprintln!("haul-bench: this Haul has no `mode` setting yet; haul-compat is identical to haul and is skipped");
+        eprintln!("qrust-bench: this QuickRust has no `mode` setting yet; qrust-compat is identical to qrust and is skipped");
     }
     let selected: Vec<&str> = match &opts.only {
         Some(names) => names.iter().map(|n| SCENARIOS.iter().find(|(s, _)| s == n).map(|(s, _)| *s).unwrap_or_else(|| fail(&format!("unknown scenario {:?}", n)))).collect(),
@@ -565,11 +565,11 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     let warmups = opts.warmups.unwrap_or(if opts.full { 1 } else { 0 });
 
     let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe), "wild": ctx.sealed.wild.as_ref().map(|w| w.display().to_string()) });
-    eprintln!("haul-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
+    eprintln!("qrust-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
 
     // Provenance is taken before measuring: the binaries were built from this state, and later
     // edits to the checkout must not be attributed to them.
-    let (haul_rev, haul_dirty) = provenance(repo);
+    let (qrust_rev, qrust_dirty) = provenance(repo);
     let started = Instant::now();
     let mut edit_n = 0u64;
     let mut problems: Vec<String> = Vec::new();
@@ -605,7 +605,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
             let n = variants.len();
             for k in 0..n {
                 let v = &variants[(k + rep) % n];
-                eprintln!("haul-bench: {} · {} {}/{} · {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - warmups + 1 } else { rep + 1 }, if measured { reps } else { warmups }, v.name);
+                eprintln!("qrust-bench: {} · {} {}/{} · {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - warmups + 1 } else { rep + 1 }, if measured { reps } else { warmups }, v.name);
                 let r = repetition(&ctx, v, w, &selected, &originals, &mut edit_n);
                 if !measured {
                     continue;
@@ -617,7 +617,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
             }
             if rep == 0 {
                 let per = rep_started.elapsed().as_secs_f64();
-                eprintln!("haul-bench: {}: one repetition of all variants takes ~{:.0}s → ~{:.1} min for this workload", w.name, per, per * total as f64 / 60.0);
+                eprintln!("qrust-bench: {}: one repetition of all variants takes ~{:.0}s → ~{:.1} min for this workload", w.name, per, per * total as f64 / 60.0);
             }
         }
 
@@ -630,10 +630,10 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
                 }
                 if Some(*c) != reference && vn != "cargo" {
                     let msg = format!("{} / {} rep {}: {} ran {} units, cargo ran {}", w.name, scenario, rep, vn, c, reference.unwrap_or(0));
-                    if vn == "haul-compat" || vn == "cargo-aa" {
+                    if vn == "qrust-compat" || vn == "cargo-aa" {
                         problems.push(msg);
                     } else {
-                        eprintln!("haul-bench: note: {}", msg);
+                        eprintln!("qrust-bench: note: {}", msg);
                     }
                 }
             }
@@ -714,12 +714,12 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     }
     println!("  elapsed {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 
-    if provenance(repo) != (haul_rev.clone(), haul_dirty) {
-        eprintln!("haul-bench: note: the Haul checkout changed during the run; the record describes it as it was at the start");
+    if provenance(repo) != (qrust_rev.clone(), qrust_dirty) {
+        eprintln!("qrust-bench: note: the QuickRust checkout changed during the run; the record describes it as it was at the start");
     }
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "haul_settings": settings,
+        "qrust_rev": qrust_rev, "qrust_dirty": qrust_dirty, "qrust_settings": settings,
         "mode": if opts.full { "full" } else if opts.quick { "quick" } else { "custom" },
         "repetitions": reps, "warmups": warmups, "note": opts.note,
         "machine": machine(), "toolchain": toolchain, "compiler_driver": driver_record(&ctx),
@@ -748,6 +748,6 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         text.push_str(&entry.to_string());
         text.push('\n');
         fs::write(&path, text).unwrap_or_else(|e| fail(&format!("cannot write {}: {}", path.display(), e)));
-        println!("  recorded in {}{}", path.display(), if haul_dirty { " (WARNING: the Haul checkout has uncommitted changes)" } else { "" });
+        println!("  recorded in {}{}", path.display(), if qrust_dirty { " (WARNING: the QuickRust checkout has uncommitted changes)" } else { "" });
     }
 }

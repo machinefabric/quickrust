@@ -55,7 +55,7 @@ pub struct Unit {
     pub role: String,
     pub primary: bool,
     pub features: Vec<String>,
-    /// `compiled`, `restored` (from Haul's artifact cache), `failed`, `fresh` (referenced but not
+    /// `compiled`, `restored` (from QuickRust's artifact cache), `failed`, `fresh` (referenced but not
     /// rebuilt) or `ran` (a build script execution).
     pub freshness: String,
     pub start_wall_ns: Option<u64>,
@@ -74,8 +74,8 @@ pub struct Unit {
     pub linker: Option<String>,
     /// sccache disposition class, by sccache's documented rules; `n/a` without sccache.
     pub cacheability: String,
-    /// What Haul's artifact cache did with the unit: `hit`, `stored`, `miss` (compiled, not
-    /// stored) or `off` (not considered); none for a unit Haul did not compile (fresh).
+    /// What QuickRust's artifact cache did with the unit: `hit`, `stored`, `miss` (compiled, not
+    /// stored) or `off` (not considered); none for a unit QuickRust did not compile (fresh).
     pub artifact_cache: Option<String>,
     pub on_critical_path: bool,
     pub fingerprint: Fingerprint,
@@ -730,7 +730,7 @@ fn unavailable(map: &mut serde_json::Map<String, Value>, field: &str, reason: im
     map.insert(field.to_string(), json!(reason.into()));
 }
 
-/// Adds what Haul's own artifact cache did in this run to the report's `cache` section.
+/// Adds what QuickRust's own artifact cache did in this run to the report's `cache` section.
 fn artifact_cache_summary(mut cache: Value, session: &Value, events: &Events) -> Value {
     let count = |r: &str| events.cache_results.get(r).copied().unwrap_or(0);
     cache["artifacts"] = json!({
@@ -1204,7 +1204,7 @@ mod tests {
 
     #[test]
     fn export_tokenizes_paths() {
-        let ws = std::env::temp_dir().join("haul-export-ws");
+        let ws = std::env::temp_dir().join("qrust-export-ws");
         let cfg = Config::defaults();
         let v = json!({ "p": format!("{}/src/lib.rs", ws.display()), "n": 3 });
         let out = export(&v, Some(&ws), &cfg);

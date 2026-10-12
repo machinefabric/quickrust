@@ -1,6 +1,6 @@
 //! Scenario runner (FR-020) and A/B experiments (FR-080, FR-160).
 //!
-//! Benchmarks build in a target directory Haul owns, so "clean" never deletes
+//! Benchmarks build in a target directory QuickRust owns, so "clean" never deletes
 //! the user's artifacts. Synthetic source edits are journaled before they are
 //! made and restored on every exit path, including interruption.
 
@@ -27,8 +27,8 @@ pub const SCENARIOS: &[(&str, &str, &[&str], &str)] = &[
     ("release", "cold", &["build", "--release"], "optimized build from an empty build directory"),
 ];
 
-const MARKER: &str = ".haul-owned";
-const EDIT_TAG: &str = "// haul-benchmark-edit ";
+const MARKER: &str = ".qrust-owned";
+const EDIT_TAG: &str = "// qrust-benchmark-edit ";
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -102,13 +102,13 @@ impl Mutation {
 impl Drop for Mutation {
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
-            eprintln!("haul: ERROR: SOURCE FILE NOT RESTORED: {}\n  the original content is saved at {}", e, self.backup.display());
+            eprintln!("qrust: ERROR: SOURCE FILE NOT RESTORED: {}\n  the original content is saved at {}", e, self.backup.display());
         }
     }
 }
 
 /// Restores edits left behind by a benchmark that was killed before it could clean up.
-/// A file is only rewritten when it is exactly the original plus Haul's marker lines.
+/// A file is only rewritten when it is exactly the original plus QuickRust's marker lines.
 pub fn recover_interrupted(store: &WsStore) -> Result<Vec<String>, String> {
     let dir = store.dir.join("restore");
     let mut restored = Vec::new();
@@ -142,25 +142,25 @@ pub fn recover_interrupted(store: &WsStore) -> Result<Vec<String>, String> {
 }
 
 fn owned_dir(target_dir: &Path, scenario: &str, label: &str) -> PathBuf {
-    target_dir.join("haul-bench").join(format!("{}-{}", scenario, label))
+    target_dir.join("qrust-bench").join(format!("{}-{}", scenario, label))
 }
 
-/// Empties a benchmark build directory, refusing anything Haul did not create.
+/// Empties a benchmark build directory, refusing anything QuickRust did not create.
 fn reset_owned_dir(dir: &Path) -> Result<(), String> {
     match fs::symlink_metadata(dir) {
         Ok(md) => {
             if md.file_type().is_symlink() || !md.is_dir() {
-                return Err(format!("{} is not a directory Haul created; refusing to delete it", dir.display()));
+                return Err(format!("{} is not a directory QuickRust created; refusing to delete it", dir.display()));
             }
             if !dir.join(MARKER).is_file() {
-                return Err(format!("{} lacks the {} marker; refusing to delete a directory Haul does not own", dir.display(), MARKER));
+                return Err(format!("{} lacks the {} marker; refusing to delete a directory QuickRust does not own", dir.display(), MARKER));
             }
             fs::remove_dir_all(dir).map_err(|e| format!("cannot clear {}: {}", dir.display(), e))?;
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("cannot inspect {}: {}", dir.display(), e)),
     }
-    fs::create_dir_all(dir).and_then(|_| fs::write(dir.join(MARKER), "benchmark build directory created by haul; safe to delete\n")).map_err(|e| format!("cannot create {}: {}", dir.display(), e))
+    fs::create_dir_all(dir).and_then(|_| fs::write(dir.join(MARKER), "benchmark build directory created by qrust; safe to delete\n")).map_err(|e| format!("cannot create {}: {}", dir.display(), e))
 }
 
 fn confirm_mutation(file: &Path, opts: &Options, cfg: &Config) -> Result<(), String> {
@@ -170,7 +170,7 @@ fn confirm_mutation(file: &Path, opts: &Options, cfg: &Config) -> Result<(), Str
     if !std::io::stdin().is_terminal() {
         return Err(format!("the small-edit scenario temporarily edits {}; pass --allow-mutation or set benchmark.allow-mutation = true to permit it non-interactively", file.display()));
     }
-    eprint!("haul: the small-edit scenario will temporarily append a comment to {} and restore it afterwards. Proceed? [y/N] ", file.display());
+    eprint!("qrust: the small-edit scenario will temporarily append a comment to {} and restore it afterwards. Proceed? [y/N] ", file.display());
     let _ = std::io::stderr().flush();
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
@@ -215,7 +215,7 @@ struct RunResult {
 /// The artifact cache of a benchmark build directory: emptied with it before every cold
 /// repetition, so a "clean" build is cold, and never shared between baseline and candidate.
 fn private_cache(bench_dir: &Path) -> PathBuf {
-    bench_dir.join(".haul-artifacts")
+    bench_dir.join(".qrust-artifacts")
 }
 
 fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario: &Value, root: &Path, skip: &[PathBuf], bench_dir: &Path) -> Result<RunResult, String> {
@@ -287,7 +287,7 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
     let root = store.root.clone().ok_or("benchmarks need a Cargo workspace; run this inside one")?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     for r in recover_interrupted(store)? {
-        eprintln!("haul: warning: restored {} (left edited by an interrupted benchmark)", r);
+        eprintln!("qrust: warning: restored {} (left edited by an interrupted benchmark)", r);
     }
     let mut args: Vec<OsString> = if opts.cargo_args.is_empty() { default_args.iter().map(OsString::from).collect() } else { opts.cargo_args.clone() };
     let inv = crate::resolve::classify(&args);
@@ -343,7 +343,7 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
             break;
         }
         let total = if phase == "measured" { opts.reps } else { opts.warmups.max(1) };
-        eprintln!("haul: benchmark {} · {} {}/{} · elapsed {}", opts.scenario, phase, i, total, human_dur(overall.elapsed().as_nanos() as u64));
+        eprintln!("qrust: benchmark {} · {} {}/{} · elapsed {}", opts.scenario, phase, i, total, human_dur(overall.elapsed().as_nanos() as u64));
         if cold {
             reset_owned_dir(&bench_dir)?;
         }
@@ -372,11 +372,11 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
     let restore_error = mutation.as_mut().and_then(|m| m.restore().err());
     if let Some(e) = &restore_error {
         state = "invalid";
-        eprintln!("haul: ERROR: SOURCE FILE NOT RESTORED: {}", e);
+        eprintln!("qrust: ERROR: SOURCE FILE NOT RESTORED: {}", e);
     }
     let (group, excluded) = compare::homogeneous_group(measured);
     for s in &excluded {
-        eprintln!("haul: warning: run {} used a different toolchain or machine class and is excluded from the sample group", util::vstr(s, "id"));
+        eprintln!("qrust: warning: run {} used a different toolchain or machine class and is excluded from the sample group", util::vstr(s, "id"));
     }
     let invalid_measured = records.iter().filter(|r| r["phase"] == json!("measured") && r["valid"] != json!(true)).count();
     if state == "complete" && group.is_empty() {
@@ -430,7 +430,7 @@ fn runtime_risk(overlay: &str) -> &'static str {
     } else if key.contains("incremental") {
         "incremental compilation can inhibit optimizations; it is not recommended for release builds"
     } else {
-        "runtime effect of this setting is not characterised by Haul; verify with the project's own tests and benchmarks"
+        "runtime effect of this setting is not characterised by QuickRust; verify with the project's own tests and benchmarks"
     }
 }
 
@@ -446,7 +446,7 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
     }
     let mut base = base_opts.clone();
     base.label = "baseline".into();
-    eprintln!("haul: experiment `{}`: measuring baseline", exp.name);
+    eprintln!("qrust: experiment `{}`: measuring baseline", exp.name);
     let baseline = run(&base, store, cfg)?;
     if baseline["state"] != json!("complete") {
         return Err(format!("the baseline benchmark did not complete ({}); nothing to compare against", baseline["failure"].as_str().unwrap_or(baseline["state"].as_str().unwrap_or("unknown"))));
@@ -455,13 +455,13 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
     cand.label = format!("candidate-{}", exp.name);
     cand.overlays = exp.overlays.clone();
     cand.env.extend(exp.env.iter().cloned());
-    eprintln!("haul: experiment `{}`: measuring candidate", exp.name);
+    eprintln!("qrust: experiment `{}`: measuring candidate", exp.name);
     let candidate = run(&cand, store, cfg)?;
 
     // Functional verification with the candidate settings (FR-080.2).
     let verification = match (&exp.verify, candidate["state"] == json!("complete")) {
         (Some(verify_args), true) => {
-            eprintln!("haul: experiment `{}`: verifying candidate", exp.name);
+            eprintln!("qrust: experiment `{}`: verifying candidate", exp.name);
             let mut args: Vec<OsString> = Vec::new();
             for o in &exp.overlays {
                 args.push("--config".into());
@@ -545,7 +545,7 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("haul-bench-{}-{}", name, util::new_id()));
+        let d = std::env::temp_dir().join(format!("qrust-bench-{}-{}", name, util::new_id()));
         fs::create_dir_all(&d).unwrap();
         d
     }

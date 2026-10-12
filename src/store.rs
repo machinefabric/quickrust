@@ -1,8 +1,8 @@
-//! On-disk layout of Haul's local state. Nothing here is required for a build
+//! On-disk layout of QuickRust's local state. Nothing here is required for a build
 //! to succeed; every caller treats failures as loss of observation only.
 //!
 //! ```text
-//! $HAUL_HOME/
+//! $QRUST_HOME/
 //!   config.toml
 //!   setup.json
 //!   active/<session>.json                 live-session locks (GC safety)
@@ -35,7 +35,7 @@ impl WsStore {
     /// Store for the workspace rooted at `root`, or the shared bucket for commands run outside one.
     pub fn open(root: Option<&Path>) -> WsStore {
         let id = root.map(workspace_id).unwrap_or_else(|| "_none".to_string());
-        let dir = util::haul_home().join("workspaces").join(&id);
+        let dir = util::qrust_home().join("workspaces").join(&id);
         WsStore { id, dir, root: root.map(|r| r.to_path_buf()) }
     }
 
@@ -100,7 +100,7 @@ impl WsStore {
             let back: usize = if rest.is_empty() { 0 } else { rest.strip_prefix('~').and_then(|n| n.parse().ok()).ok_or_else(|| format!("invalid run reference {:?}", reference))? };
             return usable.iter().rev().nth(back).map(|s| s.to_string()).ok_or_else(|| {
                 if usable.is_empty() {
-                    "no recorded build runs for this workspace yet; run a build through `haul` or Haul's `cargo` first".to_string()
+                    "no recorded build runs for this workspace yet; run a build through `qrust` or QuickRust's `cargo` first".to_string()
                 } else {
                     format!("only {} recorded build run(s); {:?} does not exist", usable.len(), reference)
                 }
@@ -133,10 +133,10 @@ impl WsStore {
     }
 }
 
-/// Every workspace Haul has seen on this machine, with its recorded root.
+/// Every workspace QuickRust has seen on this machine, with its recorded root.
 pub fn known_workspaces() -> Vec<(String, PathBuf)> {
     let mut out = Vec::new();
-    if let Ok(rd) = fs::read_dir(util::haul_home().join("workspaces")) {
+    if let Ok(rd) = fs::read_dir(util::qrust_home().join("workspaces")) {
         for e in rd.filter_map(|e| e.ok()) {
             if let Some(v) = util::read_json(&e.path().join("workspace.json")) {
                 if let Some(root) = v["root"].as_str() {
@@ -150,7 +150,7 @@ pub fn known_workspaces() -> Vec<(String, PathBuf)> {
 }
 
 fn active_dir() -> PathBuf {
-    util::haul_home().join("active")
+    util::qrust_home().join("active")
 }
 
 /// Registers a live session so lifecycle tooling can see who owns a build directory.

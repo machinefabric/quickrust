@@ -1,7 +1,7 @@
 # Run report schema, version 1.0
 
-One JSON document per recorded run, produced by `HAUL_REPORT=<path> cargo …`,
-`measurement.report`, or `haul report --format json`.
+One JSON document per recorded run, produced by `QRUST_REPORT=<path> cargo …`,
+`measurement.report`, or `qrust report --format json`.
 
 Rules (API-001 … API-004):
 
@@ -13,7 +13,7 @@ Rules (API-001 … API-004):
 - Durations are nanoseconds (`*_ns`), sizes are bytes (`*_bytes`); wall-clock
   instants are RFC 3339 UTC strings (`*_at`) with the raw value in `*_wall_ns`.
 - Exported documents carry tokenized paths (`$WORKSPACE`, `$HOME`,
-  `$CARGO_HOME`, `$HAUL_HOME`).
+  `$CARGO_HOME`, `$QRUST_HOME`).
 - A stored report is immutable.
 
 ## Top level
@@ -27,7 +27,7 @@ Rules (API-001 … API-004):
 | `environment` | `machine` (OS, CPU, memory, filesystem, `class`) and `variables` (allowlisted, redacted) |
 | `policy` | mode, the fast settings applied and left alone, workload class, incremental decision, cache state |
 | `metrics` | scalar measurements |
-| `cache` | sccache statistics for the run, and what Haul's artifact cache did (`artifacts`) |
+| `cache` | sccache statistics for the run, and what QuickRust's artifact cache did (`artifacts`) |
 | `critical_path`, `critical_path_model` | the longest dependency chain and how trustworthy it is |
 | `units`, `edges` | the observed build DAG |
 | `rebuilds` | why each compiled unit ran |
@@ -42,11 +42,11 @@ Rules (API-001 … API-004):
 
 `id` (26-character, time-sortable), `parent_session_id`, `state`
 (`completed` \| `failed` \| `cancelled`), `started_at`, `started_wall_ns`,
-`duration_ns`, `command` { `family`, `entry` (`cargo-shim` \| `haul`),
+`duration_ns`, `command` { `family`, `entry` (`cargo-shim` \| `qrust`),
 `argv_redacted`, `cwd_token`, `profile`, `targets` }, `result`
 { `cargo_exit_code`, `signal`, `policy` (`not-evaluated` unless budgets were
 enforced on this build) }, `scenario` (benchmarks only),
-`upstream` { `path`, `canonical`, `rule` }, `wrappers` { `haul`, `inner`,
+`upstream` { `path`, `canonical`, `rule` }, `wrappers` { `qrust`, `inner`,
 `inner_source`, `workspace_wrapper`, `order` }, `overhead`
 { `preflight_ns`, `post_ns` }, `notes`.
 
@@ -64,11 +64,11 @@ enforced on this build) }, `scenario` (benchmarks only),
 `restored_with_foreign_out_dir`: restored units whose build-script-generated code was compiled
 under another target directory, which their panic locations and debug information name.
 
-`units_compiled` counts units rustc compiled; `units_restored` units Haul's artifact
+`units_compiled` counts units rustc compiled; `units_restored` units QuickRust's artifact
 cache restored instead (Cargo asked for them; nothing was compiled). Compile time and
 CPU metrics cover compiled units only.
 `units_fresh` is `null` unless Cargo's JSON message stream was observed (it is when
-Haul rendered the build's output, or the user requested JSON on a pipe).
+QuickRust rendered the build's output, or the user requested JSON on a pipe).
 `units_fresh_referenced` counts artifacts that compiled units linked against
 without them being rebuilt. `build_script_compiler_*` covers rustc processes
 that build scripts start themselves to probe the toolchain; they are real cost
@@ -85,7 +85,7 @@ but not build units, and are told apart by the absence of Cargo's
 `restored` \| `failed` \| `fresh` \| `ran`), `start_wall_ns`, `duration_ns`,
 `rmeta_ready_ns`, `cpu_ns`, `max_rss_bytes`, `output_bytes`, `incremental`,
 `links`, `codegen` (the `-C` options rustc received), `linker`, `cacheability` (sccache's
-classes), `artifact_cache` (what Haul's artifact cache did: `hit`, `stored`, `miss`, `off`; null
+classes), `artifact_cache` (what QuickRust's artifact cache did: `hit`, `stored`, `miss`, `off`; null
 for fresh units),
 `on_critical_path`, `fingerprint` (component digests: `compiler`, `target`,
 `profile`, `features`, `rustflags`, `environment`, `source`, `generated`,
@@ -133,7 +133,7 @@ rebuild).
 `non_cacheable_incremental` }, `scope` — all about sccache, `null` with a reason when
 none is active.
 
-`artifacts` describes Haul's own artifact cache in this run: `state` (`on`, `off`, or
+`artifacts` describes QuickRust's own artifact cache in this run: `state` (`on`, `off`, or
 `off: a rustc wrapper is configured`), `restored`, `stored`, `missed` (looked up and not
 found, then compiled without being stored, e.g. a quickly linked workspace binary),
 `not_cacheable` (units the cache does not take: those linking native libraries, given
@@ -142,8 +142,8 @@ an argument file, or dependency binaries other than build scripts), `restore_tim
 ## `policy`
 
 - `fast` { `mode` (`fast` \| `compat`), `applied` [ { `key`, `value`, `why` } ]: the
-  profile settings Haul passed to Cargo and the parallel frontend (`rustc -Zthreads`),
-  `yielded` [ { `key`, `because` } ]: settings Haul left alone because the user made
+  profile settings QuickRust passed to Cargo and the parallel frontend (`rustc -Zthreads`),
+  `yielded` [ { `key`, `because` } ]: settings QuickRust left alone because the user made
   them, naming where }
 - `workload` (`local-dev` \| `ci`)
 - `incremental`: setting, decision, rationale, observed incremental units, conflict
@@ -154,10 +154,10 @@ an argument file, or dependency binaries other than build scripts), `restore_tim
 
 `root`, `files`, `logical_bytes`, `allocated_bytes`,
 `hardlink_duplicate_bytes_excluded`, `shared_outside_bytes` (allocated bytes of files that also
-have names outside the directory, such as Haul's artifact cache: deleting them here frees
+have names outside the directory, such as QuickRust's artifact cache: deleting them here frees
 nothing, and `candidate_bytes` leaves them out), `symlinks_not_followed`, `complete`,
 `errors`, `categories` (by `final`, `dependency`, `metadata`, `incremental`,
-`debug`, `relink` (what Haul's compiler driver keeps of a binary to link it again: its
+`debug`, `relink` (what QuickRust's compiler driver keeps of a binary to link it again: its
 `.rlink`, objects and record), `build-script-binary`, `build-script-output`, `proc-macro`,
 `fingerprint`, `documentation`, `package-output`, `unknown-generated`),
 `reclaimability` (by `required`, `reusable`, `rebuildable`, `uncertain`),
@@ -185,8 +185,8 @@ A numeric gain is present only when `impact.kind` is `measured` or `modeled`.
 
 ## Other documents
 
-`haul compare --format json`, `haul benchmark --format json`,
-`haul experiment --format json`, `haul inventory --format json`,
-`haul gc --dry-run --format json`, `haul analyze worktrees --format json` and
-`haul fix --dry-run --format json` follow the same conventions and carry
+`qrust compare --format json`, `qrust benchmark --format json`,
+`qrust experiment --format json`, `qrust inventory --format json`,
+`qrust gc --dry-run --format json`, `qrust analyze worktrees --format json` and
+`qrust fix --dry-run --format json` follow the same conventions and carry
 `schema_version` where they are stored.

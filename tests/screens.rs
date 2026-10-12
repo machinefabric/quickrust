@@ -1,9 +1,9 @@
-//! What Haul shows in a terminal, screen by screen: each command's screen (after progress lines
+//! What QuickRust shows in a terminal, screen by screen: each command's screen (after progress lines
 //! have been redrawn and cleared, as a terminal shows it) is compared whole with its snapshot in
 //! `tests/snapshots/`. Only what varies between runs and hosts is replaced: durations
 //! (`<time>`), sizes (`<size>`), counts of files (`<count> files`), the sandbox's paths
 //! (`<sandbox>`, `<home>`) and build-directory ids (`<id>`).
-//! A missing or different snapshot fails the test and shows the screen; `HAUL_UPDATE_SNAPSHOTS=1`
+//! A missing or different snapshot fails the test and shows the screen; `QRUST_UPDATE_SNAPSHOTS=1`
 //! writes the screens as the new snapshots, for review in the diff.
 //!
 //! The terminal is util-linux `script`'s (as for the other suites' terminal checks): Linux only.
@@ -30,7 +30,7 @@ struct Screens<'a> {
 
 impl<'a> Screens<'a> {
     fn new(sb: &'a Sandbox) -> Screens<'a> {
-        Screens { sb, dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots"), update: std::env::var_os("HAUL_UPDATE_SNAPSHOTS").is_some_and(|v| v == "1"), mismatches: Vec::new() }
+        Screens { sb, dir: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/snapshots"), update: std::env::var_os("QRUST_UPDATE_SNAPSHOTS").is_some_and(|v| v == "1"), mismatches: Vec::new() }
     }
 
     /// `cargo <args>` in a terminal in `cwd`, compared with snapshot `name`.
@@ -46,7 +46,7 @@ impl<'a> Screens<'a> {
         match fs::read_to_string(&path) {
             Ok(want) if want.trim_end_matches('\n') == shown => {}
             Ok(want) => self.mismatches.push(format!("`cargo {}` ({}):\n--- snapshot\n{}\n--- screen\n{}\n", args, path.display(), want.trim_end_matches('\n'), shown)),
-            Err(_) => self.mismatches.push(format!("`cargo {}`: no snapshot {} (HAUL_UPDATE_SNAPSHOTS=1 writes it):\n{}\n", args, path.display(), shown)),
+            Err(_) => self.mismatches.push(format!("`cargo {}`: no snapshot {} (QRUST_UPDATE_SNAPSHOTS=1 writes it):\n{}\n", args, path.display(), shown)),
         }
     }
 

@@ -2,12 +2,12 @@
 
 ## Trust model
 
-Haul adds no network service and no daemon. It runs with the permissions of the
+QuickRust adds no network service and no daemon. It runs with the permissions of the
 user who runs Cargo and delegates to the Cargo and rustc that user already
 trusts. What it adds to the trusted path:
 
-- the `haul` binary, in the position of `cargo`;
-- `haul-rustc-wrapper`, in front of every rustc invocation.
+- the `qrust` binary, in the position of `cargo`;
+- `qrust-rustc-wrapper`, in front of every rustc invocation.
 
 Both forward the user's arguments and environment unchanged. What they add, in
 fast mode (compat mode adds nothing):
@@ -16,12 +16,12 @@ fast mode (compat mode adds nothing):
 - `-Zthreads=N` for the units Cargo schedules that are compiled from scratch, with
   `RUSTC_BOOTSTRAP=1` set for the compiler processes of Cargo's units (on a stable
   compiler). That variable would also let such a process accept `#![feature]`s, so
-  Haul passes `-Zallow-features=` with it: a crate that enables a nightly feature is
+  QuickRust passes `-Zallow-features=` with it: a crate that enables a nightly feature is
   rejected as under plain stable Cargo. Build scripts and the compiler probes they run
   never see it, and nothing of this applies when the user sets `RUSTC_BOOTSTRAP`;
 - the artifact cache (below);
 - when the user has installed `wild`, linking with it: the binary found on `PATH` is
-  trusted like any tool there, through the link `~/.haul/linker/ld`;
+  trusted like any tool there, through the link `~/.qrust/linker/ld`;
 - installing toolchains: manifests and archives from the dist server
   (`toolchain.dist-server`, HTTPS to static.rust-lang.org by default), each manifest checked
   against its published SHA-256 and each archive against the manifest's; archives are
@@ -31,10 +31,10 @@ fast mode (compat mode adds nothing):
 The wrapper writes one event file per invocation into the session's private event
 directory, and the build's output is stored next to them.
 
-## Haul's artifact cache
+## QuickRust's artifact cache
 
-In fast mode Haul restores compiler outputs instead of compiling when the same unit was
-compiled before. It is local to the user (`~/.haul/cache/artifacts`, mode 0700), has no
+In fast mode QuickRust restores compiler outputs instead of compiling when the same unit was
+compiled before. It is local to the user (`~/.qrust/cache/artifacts`, mode 0700), has no
 network component, and is never consulted behind a rustc wrapper the user configured.
 
 - **Key.** rustc's identity by its own account (`rustc -vV`: release, commit, LLVM,
@@ -52,7 +52,7 @@ network component, and is never consulted behind a rustc wrapper the user config
   copied. Every file's content hash (BLAKE3) is recorded and checked as the file is
   restored, so a file rewritten in place through a link, torn by a crash or damaged on
   disk makes the entry a miss and removes it. A compilation whose inputs changed while
-  it ran is not stored. Anyone who can write to `~/.haul` can plant an artifact — the same
+  it ran is not stored. Anyone who can write to `~/.qrust` can plant an artifact — the same
   trust boundary as `~/.cargo/registry`, which holds the sources.
 - **Paths.** A restored unit's dep-info and diagnostics are rewritten to the current
   output and `OUT_DIR` paths. Its binary contents are not: a dependency restored into
@@ -62,8 +62,8 @@ network component, and is never consulted behind a rustc wrapper the user config
 
 ## sccache
 
-Haul does not implement sccache's cache or compute its keys. Correctness of
-sccache's artifacts is sccache's; Haul composes the wrapper chain and reads
+QuickRust does not implement sccache's cache or compute its keys. Correctness of
+sccache's artifacts is sccache's; QuickRust composes the wrapper chain and reads
 statistics. Consequences:
 
 - a cache outage can only result in local compilation (`cache.fail = "open"`) or
@@ -74,7 +74,7 @@ statistics. Consequences:
   fails exactly as under upstream Cargo.
 
 Remote-cache credentials, read-only modes for untrusted CI and cache
-administration are sccache configuration today; Haul neither stores nor prints
+administration are sccache configuration today; QuickRust neither stores nor prints
 them.
 
 ## Secrets
@@ -98,35 +98,35 @@ no rendered output.
 
 ## Paths
 
-State under `~/.haul` keeps real local paths (directories are created with mode
-0700). Everything exported — `HAUL_REPORT`, `--format json`, HTML, baselines —
-replaces the workspace root, the home directory, Haul's Cargo home and Haul's home
-with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$HAUL_HOME`
+State under `~/.qrust` keeps real local paths (directories are created with mode
+0700). Everything exported — `QRUST_REPORT`, `--format json`, HTML, baselines —
+replaces the workspace root, the home directory, QuickRust's Cargo home and QuickRust's home
+with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_HOME`
 (`security.redact-path-home`, on by default).
 
 ## Deleting
 
-Haul deletes only inside its own cache (`~/.haul/cache`), whose content it created and can
+QuickRust deletes only inside its own cache (`~/.qrust/cache`), whose content it created and can
 rebuild or download again: workspaces' build directories, artifact cache entries, compiler
 drivers, unfinished downloads, remembered answers. It never deletes in a project, in a target
-directory the user chose, in Haul's Cargo home or among toolchains (`haul toolchain remove`,
+directory the user chose, in QuickRust's Cargo home or among toolchains (`qrust toolchain remove`,
 and channels' superseded releases after a day unused, aside). A collection never removes
-anything used in the last 15 minutes, a build directory a Haul command holds (its lock) or one
+anything used in the last 15 minutes, a build directory a QuickRust command holds (its lock) or one
 a Cargo holds a lock in; it renames what it removes into `cache/tmp` before deleting it, so
 nothing is ever seen half deleted, and logs every removal (`cache/gc-log.jsonl`). The scans
-never follow symbolic links. `haul gc --dry-run` says what a collection would remove.
+never follow symbolic links. `qrust gc --dry-run` says what a collection would remove.
 
-`haul inventory` plans within a build directory and deletes nothing: it classifies anything it
+`qrust inventory` plans within a build directory and deletes nothing: it classifies anything it
 does not recognise as `uncertain`, which is never a candidate, and while any Cargo holds the
-build lock or any other Haul session is alive, the plan reports zero bytes as reclaimable now.
-Benchmark build directories Haul created itself are removed only with their marker file.
+build lock or any other QuickRust session is alive, the plan reports zero bytes as reclaimable now.
+Benchmark build directories QuickRust created itself are removed only with their marker file.
 
 ## Changes to a repository
 
-Haul writes into a repository only on explicit request. Remediations are
+QuickRust writes into a repository only on explicit request. Remediations are
 previews bound to the exact content they were computed from. Only changes to
-Haul's own configuration are classified `safe` and can be applied
-(`haul fix --apply <id>`); applying verifies the file is byte-identical to the
+QuickRust's own configuration are classified `safe` and can be applied
+(`qrust fix --apply <id>`); applying verifies the file is byte-identical to the
 previewed preimage, verifies the result, and can be rolled back. Profile,
 linker, dependency and `build.rs` changes are `review_required` and are only
 ever shown.
@@ -138,5 +138,5 @@ string (package names, features, paths, diagnostics) is HTML-escaped.
 
 ## Build scripts
 
-Haul never executes a build script. Their behaviour is read from what Cargo
+QuickRust never executes a build script. Their behaviour is read from what Cargo
 leaves on disk after running them.

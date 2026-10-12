@@ -1,9 +1,9 @@
-//! Shared harness for the integration suites: isolated state, a shim directory with Haul as
+//! Shared harness for the integration suites: isolated state, a shim directory with QuickRust as
 //! `cargo`, and small fixture workspaces without registry dependencies.
 //!
-//! Every sandbox has a Haul home of its own, except for its toolchains: those come from one store
-//! shared by every test run (`HAULTEST_TOOLCHAINS`, default `~/.cache/haul-test-toolchains`),
-//! which Haul fills itself the first time a test needs a toolchain (that needs the network).
+//! Every sandbox has a QuickRust home of its own, except for its toolchains: those come from one store
+//! shared by every test run (`QRUSTTEST_TOOLCHAINS`, default `~/.cache/qrust-test-toolchains`),
+//! which QuickRust fills itself the first time a test needs a toolchain (that needs the network).
 
 #![allow(dead_code)]
 
@@ -23,16 +23,16 @@ pub struct Sandbox {
 
 /// Where the suites' toolchains are kept between runs.
 pub fn toolchain_store() -> PathBuf {
-    match std::env::var_os("HAULTEST_TOOLCHAINS").filter(|v| !v.is_empty()) {
+    match std::env::var_os("QRUSTTEST_TOOLCHAINS").filter(|v| !v.is_empty()) {
         Some(d) => PathBuf::from(d),
-        None => PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache/haul-test-toolchains"),
+        None => PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache/qrust-test-toolchains"),
     }
 }
 
 static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Environment that would make the wrapped and unwrapped runs differ for reasons
-/// unrelated to Haul (it leaks in from the `cargo test` that runs this suite).
+/// unrelated to QuickRust (it leaks in from the `cargo test` that runs this suite).
 const SCRUB: &[&str] = &[
     "CARGO", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
     "CARGO_INCREMENTAL", "RUSTUP_TOOLCHAIN", "CARGO_MAKEFLAGS", "MAKEFLAGS", "CARGO_MANIFEST_DIR", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PRIMARY_PACKAGE", "CARGO_CRATE_NAME", "OUT_DIR", "CI", "GITHUB_ACTIONS",
@@ -42,7 +42,7 @@ const SCRUB: &[&str] = &[
 impl Sandbox {
     pub fn new(name: &str) -> Sandbox {
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("haul-it-{}-{}-{}", name, std::process::id(), n));
+        let dir = std::env::temp_dir().join(format!("qrust-it-{}-{}-{}", name, std::process::id(), n));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         // Canonical so that paths printed by Cargo and paths built here agree (/tmp vs /private/tmp).
@@ -50,9 +50,9 @@ impl Sandbox {
         let shim_dir = dir.join("shim");
         fs::create_dir_all(&shim_dir).unwrap();
         #[cfg(unix)]
-        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_haul"), shim_dir.join("cargo")).unwrap();
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_qrust"), shim_dir.join("cargo")).unwrap();
         let upstream_path = std::env::var_os("PATH").unwrap();
-        let home = dir.join("haul-home");
+        let home = dir.join("qrust-home");
         fs::create_dir_all(&home).unwrap();
         let store = toolchain_store();
         fs::create_dir_all(&store).unwrap();
@@ -66,42 +66,42 @@ impl Sandbox {
         c.current_dir(cwd).stdin(Stdio::null());
         for (k, _) in std::env::vars_os() {
             let k = k.to_string_lossy().into_owned();
-            if SCRUB.contains(&k.as_str()) || k.starts_with("HAUL_") || k.starts_with("CARGO_PKG_") || k.starts_with("CARGO_BIN_EXE_") {
+            if SCRUB.contains(&k.as_str()) || k.starts_with("QRUST_") || k.starts_with("CARGO_PKG_") || k.starts_with("CARGO_BIN_EXE_") {
                 c.env_remove(&k);
             }
         }
-        c.env("HAUL_HOME", &self.home).env("CARGO_TERM_COLOR", "never");
-        // Early cut-off builds Haul's compiler driver in the background when it is missing: the
+        c.env("QRUST_HOME", &self.home).env("CARGO_TERM_COLOR", "never");
+        // Early cut-off builds QuickRust's compiler driver in the background when it is missing: the
         // tests that need the driver turn it on and build it themselves.
-        c.env("HAUL_EARLY_CUTOFF", "off");
+        c.env("QRUST_EARLY_CUTOFF", "off");
         // The suites' toolchains change only when a test changes them.
-        c.env("HAUL_TOOLCHAIN_AUTO_UPDATE", "off");
-        // Haul's cache within its bounds whatever this machine's free space: it removes only
+        c.env("QRUST_TOOLCHAIN_AUTO_UPDATE", "off");
+        // QuickRust's cache within its bounds whatever this machine's free space: it removes only
         // what nothing can use, unless a test asks for more.
-        c.env("HAUL_CACHE_MIN_FREE", "1").env("HAUL_CACHE_MAX_SIZE", "1TiB");
+        c.env("QRUST_CACHE_MIN_FREE", "1").env("QRUST_CACHE_MAX_SIZE", "1TiB");
         c
     }
 
-    /// Haul's Cargo home in this sandbox (registry sources, credentials).
+    /// QuickRust's Cargo home in this sandbox (registry sources, credentials).
     pub fn cargo_home(&self) -> PathBuf {
         self.home.join("cargo")
     }
 
-    /// The target directory of the workspace `cwd` is in: Haul's, in its cache (`haul path`).
+    /// The target directory of the workspace `cwd` is in: QuickRust's, in its cache (`qrust path`).
     pub fn target_dir(&self, cwd: &Path) -> PathBuf {
-        let out = run(self.haul(cwd).arg("path"));
+        let out = run(self.qrust(cwd).arg("path"));
         assert!(out.status.success(), "no target directory: {}", String::from_utf8_lossy(&out.stderr));
         PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
     }
 
-    /// The toolchain Haul uses in `cwd` (installed into the shared store on first use).
+    /// The toolchain QuickRust uses in `cwd` (installed into the shared store on first use).
     pub fn toolchain_dir(&self, cwd: &Path) -> PathBuf {
-        let out = run(self.haul(cwd).args(["toolchain", "which"]));
+        let out = run(self.qrust(cwd).args(["toolchain", "which"]));
         assert!(out.status.success(), "no toolchain: {}", String::from_utf8_lossy(&out.stderr));
         PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
     }
 
-    /// The oracle's environment: the toolchain's own Cargo, as Haul runs it, without Haul.
+    /// The oracle's environment: the toolchain's own Cargo, as QuickRust runs it, without QuickRust.
     fn oracle_path(&self, cwd: &Path) -> (PathBuf, OsString) {
         let tc = self.toolchain_dir(cwd);
         let path = std::env::join_paths(std::iter::once(tc.join("bin")).chain(std::env::split_paths(&self.upstream_path))).unwrap();
@@ -114,15 +114,15 @@ impl Sandbox {
         std::env::join_paths(paths).unwrap()
     }
 
-    /// `cargo` resolved through the Haul shim, as a user with the shim first on PATH would run it.
+    /// `cargo` resolved through the QuickRust shim, as a user with the shim first on PATH would run it.
     pub fn cargo(&self, cwd: &Path) -> Command {
         let mut c = self.base(&self.shim_dir.join("cargo"), cwd);
         c.env("PATH", self.path_with_shim());
         c
     }
 
-    /// The toolchain's own Cargo with no Haul anywhere: the compatibility oracle. It gets the
-    /// Cargo home, compiler, PATH and (in a workspace) target directory Haul gives the Cargo it
+    /// The toolchain's own Cargo with no QuickRust anywhere: the compatibility oracle. It gets the
+    /// Cargo home, compiler, PATH and (in a workspace) target directory QuickRust gives the Cargo it
     /// runs.
     pub fn upstream(&self, cwd: &Path) -> Command {
         let (tc, path) = self.oracle_path(cwd);
@@ -133,16 +133,16 @@ impl Sandbox {
         c
     }
 
-    /// Haul's target directory for `cwd`'s workspace, given to the oracle (none outside one).
+    /// QuickRust's target directory for `cwd`'s workspace, given to the oracle (none outside one).
     fn oracle_target(&self, c: &mut Command, cwd: &Path) {
-        let out = run(self.haul(cwd).arg("path"));
+        let out = run(self.qrust(cwd).arg("path"));
         if out.status.success() {
             let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
             c.env("CARGO_TARGET_DIR", &dir).env("CARGO_BUILD_BUILD_DIR", &dir);
         }
     }
 
-    /// What Haul sets for the Cargo it runs, set for the oracle too.
+    /// What QuickRust sets for the Cargo it runs, set for the oracle too.
     fn oracle_env(c: &mut Command, tc: &Path, cargo_home: &Path) {
         c.env("CARGO_HOME", cargo_home).env("RUSTC", tc.join("bin/rustc")).env("RUSTDOC", tc.join("bin/rustdoc"));
         c.env("RUSTUP_TOOLCHAIN", tc.file_name().unwrap()).env("CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "never");
@@ -155,7 +155,7 @@ impl Sandbox {
         self.in_terminal(cwd, args, &self.path_with_shim())
     }
 
-    /// The same with the toolchain's own Cargo and no Haul: the oracle for terminal behaviour.
+    /// The same with the toolchain's own Cargo and no QuickRust: the oracle for terminal behaviour.
     pub fn upstream_in_terminal(&self, cwd: &Path, args: &str) -> Option<Command> {
         let (tc, path) = self.oracle_path(cwd);
         let mut c = self.in_terminal(cwd, args, &path)?;
@@ -182,8 +182,8 @@ impl Sandbox {
         c
     }
 
-    pub fn haul(&self, cwd: &Path) -> Command {
-        let mut c = self.base(Path::new(env!("CARGO_BIN_EXE_haul")), cwd);
+    pub fn qrust(&self, cwd: &Path) -> Command {
+        let mut c = self.base(Path::new(env!("CARGO_BIN_EXE_qrust")), cwd);
         c.env("PATH", self.path_with_shim());
         c
     }
@@ -243,10 +243,10 @@ impl Sandbox {
         self.store_dirs().into_iter().map(|d| d.join("sessions").join(format!("{}.json", id))).find(|p| p.is_file()).unwrap_or_else(|| panic!("no record of session {}", id))
     }
 
-    /// The report of the latest (or referenced) build run, as `haul report --format json` exports it.
+    /// The report of the latest (or referenced) build run, as `qrust report --format json` exports it.
     pub fn report(&self, cwd: &Path, reference: &str) -> serde_json::Value {
-        let out = run(self.haul(cwd).args(["report", "--format", "json", "--run", reference]));
-        assert!(out.status.success(), "haul report failed: {}", String::from_utf8_lossy(&out.stderr));
+        let out = run(self.qrust(cwd).args(["report", "--format", "json", "--run", reference]));
+        assert!(out.status.success(), "qrust report failed: {}", String::from_utf8_lossy(&out.stderr));
         serde_json::from_slice(&out.stdout).expect("report is JSON")
     }
 }
@@ -351,14 +351,14 @@ pub fn copy_dir(from: &Path, to: &Path) {
 }
 
 pub fn git(cwd: &Path, args: &[&str]) {
-    let out = Command::new("git").current_dir(cwd).args(["-c", "user.name=haul-test", "-c", "user.email=haul@example.invalid", "-c", "commit.gpgsign=false"]).args(args).output().expect("git is required for this test");
+    let out = Command::new("git").current_dir(cwd).args(["-c", "user.name=qrust-test", "-c", "user.email=qrust@example.invalid", "-c", "commit.gpgsign=false"]).args(args).output().expect("git is required for this test");
     assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
 }
 
-/// Builds Haul's compiler driver for the toolchain `cwd` uses (adding its `rustc-dev` component
+/// Builds QuickRust's compiler driver for the toolchain `cwd` uses (adding its `rustc-dev` component
 /// from the toolchain's own release); its path. Failing to is a failure of the test.
 pub fn build_driver(sb: &Sandbox, cwd: &Path) -> PathBuf {
-    let built = run(sb.haul(cwd).args(["driver", "build"]));
+    let built = run(sb.qrust(cwd).args(["driver", "build"]));
     assert!(built.status.success(), "{}", stderr(&built));
     PathBuf::from(stdout(&built).trim())
 }

@@ -1,18 +1,18 @@
-# Haul: Drop-In Cargo Replacement for Faster, Leaner Rust Builds
+# QuickRust: Drop-In Cargo Replacement for Faster, Leaner Rust Builds
 
 ## Executive Summary
 
 **Document status:** implementation-ready product and engineering specification  
 **Reference date:** October 5, 2026  
 **Current stable Rust baseline:** Rust 1.99.0, released October 1, 2026. citeturn15view14  
-**Working product name:** **Haul**  
-**Canonical executable:** `haul`  
+**Working product name:** **QuickRust**  
+**Canonical executable:** `qrust`  
 **Drop-in compatibility executable:** `cargo`  
 **Primary operating model:** the owner of the Rust environment — toolchains, Cargo home, build directories, installed programs, caches — running the toolchain's own Cargo and rustc as its build engine rather than a reimplementation of Cargo's package-manager semantics (see the revision of 2026-10-12).
 
 ### Product thesis
 
-Haul should make the project's build command look and behave like Cargo to users and tooling while inserting a policy, observability, caching, lifecycle-management, and optimization layer around the existing Rust toolchain.
+QuickRust should make the project's build command look and behave like Cargo to users and tooling while inserting a policy, observability, caching, lifecycle-management, and optimization layer around the existing Rust toolchain.
 
 The critical architectural decision is **not to fork or reimplement Cargo's resolver, package manager, or compiler command-generation logic in the initial product**. Cargo's documented interface for third-party tools is its command-line interface, `cargo metadata`, and machine-readable build messages; using Cargo as a Rust library remains unstable. citeturn15view1 The replacement therefore becomes authoritative at the process-orchestration boundary while treating upstream Cargo and rustc as semantic executors.
 
@@ -22,7 +22,7 @@ The intended command path is:
 developer / IDE / CI
         │
         ▼
-      cargo                 ← Haul drop-in shim
+      cargo                 ← QuickRust drop-in shim
         │
         ├── policy / config / capability resolution
         ├── workspace + graph analysis
@@ -48,16 +48,16 @@ developer / IDE / CI
 
 This boundary is intentionally aligned with current upstream work. Cargo already exposes stable machine-readable compilation messages and versioned metadata, while nightly Cargo has experimental `--unit-graph` and `-Zbuild-analysis` facilities for more accurate build-unit graphs, timings, rebuild reasons, and historical sessions. citeturn15view1turn16view0turn16view1 Cargo's 2026 roadmap is also developing a cross-workspace build cache, while the compiler roadmap is explicitly redesigning incremental compilation so compatible `check`, `build`, `test`, and potentially Clippy invocations can share work. citeturn16view4turn16view5
 
-> **Revision (2026-10-12): Haul owns the Rust environment.** Haul is the only thing a developer installs. It installs, selects (in rustup's order: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain file, default), updates and retires Rust toolchains itself under `~/.haul/toolchains`; `haul setup` puts Haul first on `PATH` as `cargo`, `rustc`, `rustfmt` and the other toolchain programs; `haul install` builds and installs programs into `~/.haul/bin` itself. The toolchain's own Cargo remains the build engine — an internal component the user never meets — run with Haul's Cargo home (`~/.haul/cargo`). Projects have no `target/`: each workspace builds into a directory of Haul's disposable cache (`~/.haul/cache/builds/`), given to Cargo and every tool under it through `CARGO_TARGET_DIR`, and the whole cache — build directories, artifact cache, compiler drivers, Cargo's downloads — keeps itself within a size and a free-space bound, removing what is least recently used. Every command's output is Haul's in a terminal. Where the requirements below speak of an upstream Cargo found on `PATH`, of rustup, of a project's `target/`, of delegating `install`, or of Haul never deleting build output, this revision supersedes them (`docs/conformance.md`, deviations 6 and 14, says what changed).
+> **Revision (2026-10-12): QuickRust owns the Rust environment.** QuickRust is the only thing a developer installs. It installs, selects (in rustup's order: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain file, default), updates and retires Rust toolchains itself under `~/.qrust/toolchains`; `qrust setup` puts QuickRust first on `PATH` as `cargo`, `rustc`, `rustfmt` and the other toolchain programs; `qrust install` builds and installs programs into `~/.qrust/bin` itself. The toolchain's own Cargo remains the build engine — an internal component the user never meets — run with QuickRust's Cargo home (`~/.qrust/cargo`). Projects have no `target/`: each workspace builds into a directory of QuickRust's disposable cache (`~/.qrust/cache/builds/`), given to Cargo and every tool under it through `CARGO_TARGET_DIR`, and the whole cache — build directories, artifact cache, compiler drivers, Cargo's downloads — keeps itself within a size and a free-space bound, removing what is least recently used. Every command's output is QuickRust's in a terminal. Where the requirements below speak of an upstream Cargo found on `PATH`, of rustup, of a project's `target/`, of delegating `install`, or of QuickRust never deleting build output, this revision supersedes them (`docs/conformance.md`, deviations 6 and 14, says what changed).
 
-> **Revision (2026-10-11): fast by default.** The product goal is that a developer who replaces `cargo` with Haul on any project *immediately feels that builds are faster* — the way Bun felt next to npm — with no configuration. Haul may therefore, **by default**, change anything that leaves the built program behaving identically: linker, debug-information level, compiler parallelism, a global content-addressed artifact cache, and, where it manages the toolchain itself, nightly-only compiler capabilities once proven. Exact upstream output remains one switch away (`mode = "compat"`, and `haul upstream`). Settings the user made explicitly are never overridden. Every claimed improvement must be backed by a recorded entry of the speed index (`benchmarks/README.md`). Where the rules below and earlier sections speak of optimizations as opt-in, this revision supersedes them; the rest of the specification stands.
+> **Revision (2026-10-11): fast by default.** The product goal is that a developer who replaces `cargo` with QuickRust on any project *immediately feels that builds are faster* — the way Bun felt next to npm — with no configuration. QuickRust may therefore, **by default**, change anything that leaves the built program behaving identically: linker, debug-information level, compiler parallelism, a global content-addressed artifact cache, and, where it manages the toolchain itself, nightly-only compiler capabilities once proven. Exact upstream output remains one switch away (`mode = "compat"`, and `qrust upstream`). Settings the user made explicitly are never overridden. Every claimed improvement must be backed by a recorded entry of the speed index (`benchmarks/README.md`). Where the rules below and earlier sections speak of optimizations as opt-in, this revision supersedes them; the rest of the specification stands.
 
 The design therefore follows four rules:
 
 1. **Preserve Cargo compatibility first.** Unknown flags, commands, external subcommands, stdout formats, environment variables, exit statuses, terminal behavior, lockfiles, and package-selection semantics belong to upstream Cargo. Optimizations that keep program behaviour identical are on by default (see the revision above); `mode = "compat"` turns them all off.
 2. **Eliminate work before accelerating it.** Duplicate builds, avoidable invalidation, unshared workspaces, unused feature variants, unnecessary linker/codegen work, stale artifacts, and ineffective caches are the highest-value optimization targets.
 3. **Never trade correctness for cache hits.** Any optimization that changes compilation inputs, artifacts, profiles, linkers, incremental behavior, or build-script execution must have explicit provenance and validation: it is recorded in every run, measured by the speed index, and verified by the benchmark workloads' own test suites before it becomes a default.
-4. **Exploit upstream improvements instead of competing with them.** Experimental adapters shall be capability-gated. As native Cargo features stabilize, Haul should delegate to them and retire redundant implementations.
+4. **Exploit upstream improvements instead of competing with them.** Experimental adapters shall be capability-gated. As native Cargo features stabilize, QuickRust should delegate to them and retire redundant implementations.
 
 ### Why a wrapper can materially improve Rust builds
 
@@ -127,7 +127,7 @@ Long-term work can integrate native Cargo cross-workspace caching, future shared
 
 **Product boundary**
 
-**OBJ-001 [C]** Haul shall be a **drop-in Cargo replacement CLI**, not merely an analyzer or Cargo subcommand.
+**OBJ-001 [C]** QuickRust shall be a **drop-in Cargo replacement CLI**, not merely an analyzer or Cargo subcommand.
 
 **OBJ-002 [C]** It shall act as the authoritative entry point for project builds while delegating package resolution, dependency fetching, lockfile interpretation, compilation command construction, registry operations, and other Cargo semantics to a real upstream Cargo binary unless a separately specified capability requires otherwise.
 
@@ -137,7 +137,7 @@ Long-term work can integrate native Cargo cross-workspace caching, future shared
 
 **OBJ-005 [C]** Project scripts must be able to use the replacement as `cargo`, not require every invocation to be rewritten to a proprietary syntax.
 
-**OBJ-006 [R]** Enhanced functionality shall live primarily under the canonical `haul` executable so that the compatibility `cargo` surface can remain maximally conservative.
+**OBJ-006 [R]** Enhanced functionality shall live primarily under the canonical `qrust` executable so that the compatibility `cargo` surface can remain maximally conservative.
 
 Examples:
 
@@ -147,12 +147,12 @@ cargo build --workspace
 cargo +nightly test -p core --features foo
 
 # Enhanced management surface
-haul analyze
-haul compare baseline candidate
-haul gc --dry-run
-haul doctor
-haul policy explain
-haul cache status
+qrust analyze
+qrust compare baseline candidate
+qrust gc --dry-run
+qrust doctor
+qrust policy explain
+qrust cache status
 ```
 
 This separation prevents an enhanced command name from accidentally colliding with a command that a future Cargo release introduces.
@@ -185,7 +185,7 @@ persistent build footprint
 + worktree/workspace duplication
 ```
 
-Cargo's native timings already represent compiler units, codegen portions, active/waiting/inactive concurrency and dependency-unblocking relationships, and explicitly suggest examining slow dependencies, duplicated versions, features, large crates, and dependency bottlenecks. citeturn15view8 Haul shall generalize that analysis across runs and add space, cache, invalidation, and lifecycle dimensions.
+Cargo's native timings already represent compiler units, codegen portions, active/waiting/inactive concurrency and dependency-unblocking relationships, and explicitly suggest examining slow dependencies, duplicated versions, features, large crates, and dependency bottlenecks. citeturn15view8 QuickRust shall generalize that analysis across runs and add space, cache, invalidation, and lifecycle dimensions.
 
 **Fundamental sources of waste and product response**
 
@@ -325,7 +325,7 @@ flowchart TD
     O --> CG[Upstream Cargo]
 
     CG --> BS[build.rs]
-    CG --> RW[Haul rustc wrapper]
+    CG --> RW[QuickRust rustc wrapper]
     CG --> RD[rustdoc]
     RW --> CW[Existing workspace wrapper if any]
     RW --> CC[sccache / compiler cache]
@@ -475,7 +475,7 @@ stateDiagram-v2
 
 **Drop-in Cargo compatibility contract**
 
-Haul's strongest contract is behavioral transparency.
+QuickRust's strongest contract is behavioral transparency.
 
 **COMP-001 [C]** The `cargo` shim shall accept the raw argument vector without requiring proprietary flags.
 
@@ -493,19 +493,19 @@ Haul's strongest contract is behavioral transparency.
 
 **COMP-008 [C]** Cargo aliases, package selection, `--manifest-path`, `--workspace`, `--exclude`, profiles, targets, features and lock behavior shall be delegated unchanged.
 
-**COMP-009 [C]** `cargo clean` shall preserve upstream semantics. Smart lifecycle management shall use `haul gc`, never silently redefine `cargo clean`. Cargo's native `clean` can remove the entire target directory or selected package/profile/target output. citeturn15view12
+**COMP-009 [C]** `cargo clean` shall preserve upstream semantics. Smart lifecycle management shall use `qrust gc`, never silently redefine `cargo clean`. Cargo's native `clean` can remove the entire target directory or selected package/profile/target output. citeturn15view12
 
-**COMP-010 [I]** Publishing, owner, login/logout, yank, init/new and registry-oriented commands shall be run by the toolchain's Cargo with only session-level observability (and Haul's rendering of their output in a terminal). `install`/`uninstall` are Haul's own (revision of 2026-10-12): Cargo's resolver chooses the release, Haul builds it and installs its binaries into `~/.haul/bin`.
+**COMP-010 [I]** Publishing, owner, login/logout, yank, init/new and registry-oriented commands shall be run by the toolchain's Cargo with only session-level observability (and QuickRust's rendering of their output in a terminal). `install`/`uninstall` are QuickRust's own (revision of 2026-10-12): Cargo's resolver chooses the release, QuickRust builds it and installs its binaries into `~/.qrust/bin`.
 
 **COMP-011 [R]** Build-affecting commands to instrument include `build`, `check`, `test`, `bench`, `run`, `doc`, `rustc` and applicable external tools such as Clippy when compatible.
 
 **COMP-012 [I]** `cargo +toolchain ...` shall preserve rustup's documented override precedence. citeturn15view15
 
-**COMP-013 [C]** `haul upstream ...` shall be an explicit escape hatch that invokes the toolchain's Cargo without optimization policy or instrumentation except minimum recursion prevention.
+**COMP-013 [C]** `qrust upstream ...` shall be an explicit escape hatch that invokes the toolchain's Cargo without optimization policy or instrumentation except minimum recursion prevention.
 
-**Toolchains and the engine** (revised 2026-10-12: Haul manages toolchains itself)
+**Toolchains and the engine** (revised 2026-10-12: QuickRust manages toolchains itself)
 
-**COMP-020 [R]** Haul shall install Rust toolchains from the Rust dist server into its home, verified against the published checksums, and select the toolchain of a command in this order: `+toolchain`; `RUSTUP_TOOLCHAIN`; the nearest `rust-toolchain.toml` / `rust-toolchain`; the default toolchain. The toolchain, the components and targets its file lists and the standard library of each `--target` shall be installed on first use. Every command shall run that toolchain's own Cargo (the engine) with Haul's Cargo home; Haul shall fail with a diagnostic rather than execute itself recursively.
+**COMP-020 [R]** QuickRust shall install Rust toolchains from the Rust dist server into its home, verified against the published checksums, and select the toolchain of a command in this order: `+toolchain`; `RUSTUP_TOOLCHAIN`; the nearest `rust-toolchain.toml` / `rust-toolchain`; the default toolchain. The toolchain, the components and targets its file lists and the standard library of each `--target` shall be installed on first use. Every command shall run that toolchain's own Cargo (the engine) with QuickRust's Cargo home; QuickRust shall fail with a diagnostic rather than execute itself recursively.
 
 **COMP-021 [I]** The session record shall name the toolchain, how it was selected, and the canonical path of the Cargo that ran.
 
@@ -517,9 +517,9 @@ Cargo forwards the `CARGO` environment variable to build scripts and external su
 
 **COMP-030 [R]** In authoritative mode, the orchestrator should set `CARGO` for delegated builds to the compatibility shim so nested tooling stays inside the same orchestration boundary.
 
-**COMP-031 [I]** A recursion/session variable, for example `HAUL_SESSION_ID`, shall associate nested invocation records with the parent.
+**COMP-031 [I]** A recursion/session variable, for example `QRUST_SESSION_ID`, shall associate nested invocation records with the parent.
 
-**COMP-032 [R]** `HAUL_NESTED=upstream` shall permit projects that are incompatible with wrapped nested Cargo to opt out.
+**COMP-032 [R]** `QRUST_NESTED=upstream` shall permit projects that are incompatible with wrapped nested Cargo to opt out.
 
 **Environment contract**
 
@@ -539,10 +539,10 @@ The orchestrator shall have a separate namespace:
 
 ```text
 built-in safe defaults
-  < user $HAUL_HOME/config.toml
-  < repository .haul/config.toml
-  < HAUL_* environment
-  < explicit haul management flags
+  < user $QRUST_HOME/config.toml
+  < repository .qrust/config.toml
+  < QRUST_* environment
+  < explicit qrust management flags
 ```
 
 Organization policy may impose **constraints** above this precedence—for example “remote cache writes forbidden from untrusted forks”—but shall not invisibly replace ordinary values.
@@ -658,7 +658,7 @@ Every major FR below uses the same mandatory fields. Fields that are not applica
 |---|---|
 | **Actors** | Developer, CI identity, IDE/tool, external Cargo subcommand |
 | **Preconditions** | Orchestrator shim installed or selected as project Cargo |
-| **Entry points** | `cargo <args>`; canonical `haul upstream <args>` |
+| **Entry points** | `cargo <args>`; canonical `qrust upstream <args>` |
 | **Inputs** | `argv[]: bytes/string[]` required; `cwd: path`; environment map; stdin; TTY metadata |
 | **Validation** | Do not Unicode-normalize arguments; reject only orchestrator-owned malformed management options |
 | **Behavior** | Classify without consuming unknown Cargo syntax; resolve upstream Cargo; establish session; delegate |
@@ -693,7 +693,7 @@ Every major FR below uses the same mandatory fields. Fields that are not applica
 |---|---|
 | **Actors** | All build actors |
 | **Preconditions** | Cargo project or command that does not require a workspace |
-| **Entry points** | Automatically before instrumented build; `haul inspect` |
+| **Entry points** | Automatically before instrumented build; `qrust inspect` |
 | **Inputs** | cwd, manifest path, Cargo metadata format version, environment allowlist |
 | **Validation** | Verify metadata JSON/version; canonicalize only for internal identity, never rewrite user path |
 | **Behavior** | Discover workspace, members, package graph, source revision, toolchain, target/build dirs, profile-relevant configuration |
@@ -729,7 +729,7 @@ Cargo's stable metadata API is versioned and intended for external tools; tools 
 |---|---|
 | **Actors** | Build engineer, maintainer, CI |
 | **Preconditions** | Buildable workspace and scenario definition |
-| **Entry points** | `haul benchmark`; CI scenario |
+| **Entry points** | `qrust benchmark`; CI scenario |
 | **Inputs** | command; setup mode; mutations; repetitions; warmups; cache state; timeout |
 | **Validation** | Mutation paths must be inside approved workspace/sandbox; repetition ≥1 |
 | **Behavior** | Prepare deterministic state, run warmups, execute measured runs, restore source mutations |
@@ -1340,13 +1340,13 @@ unknown-generated
 Cargo-compatible commands shall not alter Cargo stdout. Orchestrator output is written to a sidecar selected through:
 
 ```bash
-HAUL_REPORT=/path/report.json cargo build
+QRUST_REPORT=/path/report.json cargo build
 ```
 
 or:
 
 ```bash
-haul analyze --format json
+qrust analyze --format json
 ```
 
 Recommended versioned contract:
@@ -1532,7 +1532,7 @@ Response:
 
 **UX-002 [R]** The compatibility shim should print no extra success output by default unless a material policy warning or failure exists.
 
-**UX-003 [C]** Deep diagnostics live under `haul analyze/report`.
+**UX-003 [C]** Deep diagnostics live under `qrust analyze/report`.
 
 **UX-004 [C]** Long-running benchmark mode displays scenario, iteration and elapsed time.
 
@@ -1577,7 +1577,7 @@ Default recommendation view: **measured value adjusted for risk/effort**.
 **Configuration example**
 
 ```toml
-# .haul/config.toml
+# .qrust/config.toml
 
 [compatibility]
 nested-cargo = "orchestrator"
@@ -1585,7 +1585,7 @@ unknown-command = "delegate"
 
 [measurement]
 enabled = true
-report = ".haul/runs/{session}.json"
+report = ".qrust/runs/{session}.json"
 
 [incremental]
 local-dev = "cargo-default"
@@ -1601,7 +1601,7 @@ inventory = true
 gc = "manual"
 
 [ci]
-budget-policy = ".haul/budgets.toml"
+budget-policy = ".qrust/budgets.toml"
 
 [security]
 persist-environment = "allowlist"
@@ -1899,8 +1899,8 @@ Migration must be staged because globally shadowing rustup's Cargo proxy too ear
 **Migration stage — Observe without replacement**
 
 ```bash
-haul upstream build
-haul analyze
+qrust upstream build
+qrust analyze
 ```
 
 Goals:
@@ -1915,8 +1915,8 @@ No build policy changes.
 **Migration stage — Explicit wrapper**
 
 ```bash
-haul build
-haul test
+qrust build
+qrust test
 ```
 
 The canonical binary accepts Cargo-compatible syntax, but upstream `cargo` remains the default executable.
@@ -1942,7 +1942,7 @@ Project dev environment, shell setup, devcontainer/Nix/other launcher makes `car
 Escape hatch:
 
 ```bash
-haul upstream build
+qrust upstream build
 ```
 
 **Migration stage — Optional machine-wide installation**
@@ -1951,7 +1951,7 @@ Only after broad compatibility validation. Because rustup toolchain routing is c
 
 **MIG-001 [C]** Installation shall store enough information to uninstall without destroying the original Cargo/rustup setup.
 
-**MIG-002 [C]** `haul doctor` shall show:
+**MIG-002 [C]** `qrust doctor` shall show:
 
 ```text
 shim path
@@ -1969,14 +1969,14 @@ compatibility capability set
 
 **MIG-004 [C]** Existing `.cargo/config.toml` remains valid.
 
-**MIG-005 [I]** No lockfile format is owned by Haul.
+**MIG-005 [I]** No lockfile format is owned by QuickRust.
 
 **Backward-compatibility risks**
 
 | Risk | Why | Mitigation |
 |---|---|---|
 | Future Cargo adds new option | Wrapper parser becomes stale | Raw forwarding and minimal parsing |
-| Future Cargo adds command matching enhanced command | Collision | Enhanced commands remain on `haul`, not `cargo` |
+| Future Cargo adds command matching enhanced command | Collision | Enhanced commands remain on `qrust`, not `cargo` |
 | Cargo JSON schema evolves | Parser breakage | Version/capability adapters; preserve raw output |
 | Nightly unit graph changes | Unstable API | Feature probe; version adapter; fallback |
 | Build-analysis schema changes | Explicit stabilization work remains upstream | Adapter + fallback wrapper telemetry citeturn16view0 |
@@ -2196,7 +2196,7 @@ A requirement is Done only when:
 | ID | Assumption | Basis | Impact if wrong | Validation |
 |---|---|---|---|---|
 | ASM-001 | Upstream Cargo remains semantic executor for P0 | Safest drop-in strategy; Cargo internals not stable public library API | Very high | Confirm before architecture freeze |
-| ASM-002 | `haul` is an acceptable working canonical name | Need namespace separate from Cargo compatibility surface | Low | Rename-safe |
+| ASM-002 | `qrust` is an acceptable working canonical name | Need namespace separate from Cargo compatibility surface | Low | Rename-safe |
 | ASM-003 | Drop-in executable is actually named `cargo` in authoritative deployments | Explicit product requirement | High | Confirmed |
 | ASM-004 | Local builds must work without central service | Developer ergonomics/reliability | High | Treat as binding unless changed |
 | ASM-005 | Stable Rust is mandatory; Nightly optional | Drop-in usability | High | Recommended baseline |
@@ -2267,7 +2267,7 @@ The compiler roadmap is explicitly working toward compatible shared bases among 
 **P0 — Required for initial production release**
 
 - [ ] **[C]** `cargo` compatibility shim.
-- [ ] **[C]** `haul` canonical management executable.
+- [ ] **[C]** `qrust` canonical management executable.
 - [ ] **[I]** real-Cargo recursion-safe resolver.
 - [ ] **[C]** rustup `+toolchain` preservation.
 - [ ] **[C]** raw argv/stdin/stdout/stderr/signal forwarding.
@@ -2379,4 +2379,4 @@ The governing architectural principle is therefore:
 
 > **Replace Cargo as the project's command and policy boundary, not as the source of Cargo semantics.**
 
-Haul should own **when, under what resource/cache/artifact policy, with what instrumentation, with what lifecycle rules, and against what performance budgets** a build executes. Upstream Cargo should remain responsible for **what the Cargo command means**. rustc should remain responsible for **what valid Rust compilation means**. The orchestrator's long-term advantage comes from connecting the information those tools currently expose only in fragments—across commands, worktrees, machines, caches and time—then using that global view to eliminate redundant work, control storage, validate optimizations, and progressively delegate to upstream Rust improvements as they mature.
+QuickRust should own **when, under what resource/cache/artifact policy, with what instrumentation, with what lifecycle rules, and against what performance budgets** a build executes. Upstream Cargo should remain responsible for **what the Cargo command means**. rustc should remain responsible for **what valid Rust compilation means**. The orchestrator's long-term advantage comes from connecting the information those tools currently expose only in fragments—across commands, worktrees, machines, caches and time—then using that global view to eliminate redundant work, control storage, validate optimizations, and progressively delegate to upstream Rust improvements as they mature.

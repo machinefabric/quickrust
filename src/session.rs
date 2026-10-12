@@ -1,7 +1,7 @@
 //! One orchestrated Cargo invocation: resolve, apply policy, delegate, record.
 //!
 //! The delegated Cargo inherits stdin/stdout/stderr, the full environment and
-//! the raw argument vector. Haul only adds its own variables (and, when a
+//! the raw argument vector. QuickRust only adds its own variables (and, when a
 //! policy says so, `CARGO_INCREMENTAL`), and records what it did.
 
 use crate::config::Config;
@@ -21,7 +21,7 @@ use std::time::Instant;
 pub enum Mode {
     /// Invoked under the name `cargo`.
     Shim,
-    /// `haul <cargo-command> …`.
+    /// `qrust <cargo-command> …`.
     Explicit,
 }
 
@@ -40,9 +40,9 @@ pub struct Spec {
     /// (benchmarks, experiments) whose own stdout carries their result.
     pub stdout_to_stderr: bool,
     /// A private artifact cache (benchmarks and experiments, whose repetitions must not reuse
-    /// each other's results); the shared one in `HAUL_HOME` otherwise.
+    /// each other's results); the shared one in `QRUST_HOME` otherwise.
     pub artifact_cache: Option<PathBuf>,
-    /// The build is a step of a command that reports its own result (`haul install`): a rendered
+    /// The build is a step of a command that reports its own result (`qrust install`): a rendered
     /// build that succeeds says nothing of its own (its progress, warnings and failure show).
     pub step: bool,
 }
@@ -97,7 +97,7 @@ pub fn env_fingerprint(tok: &util::Tokenizer, mode: &str) -> Value {
 fn wrapper_binary() -> Option<PathBuf> {
     let (exe, _) = resolve::self_identity();
     let dir = exe.parent()?;
-    util::exe_candidates(dir, "haul-rustc-wrapper").into_iter().find(|p| util::is_executable(p))
+    util::exe_candidates(dir, "qrust-rustc-wrapper").into_iter().find(|p| util::is_executable(p))
 }
 
 /// Compact record of one Cargo JSON message, kept for analysis.
@@ -176,7 +176,7 @@ struct Plan {
     frontend_threads: Option<u32>,
     /// The fast linker in use (fast mode).
     linker: Option<PathBuf>,
-    /// Early cut-off is on: the wrapper compiles with Haul's compiler driver when it is built.
+    /// Early cut-off is on: the wrapper compiles with QuickRust's compiler driver when it is built.
     early_cutoff: bool,
 }
 
@@ -238,7 +238,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
             },
             (None, "sccache") => {
                 cache_state = "degraded";
-                cache_detail = "sccache needs the Haul rustc wrapper, which is unavailable or disabled".into();
+                cache_detail = "sccache needs the QuickRust rustc wrapper, which is unavailable or disabled".into();
                 p.warnings.push(cache_detail.clone());
             }
             _ => {}
@@ -278,7 +278,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         ("on" | "off", Some(v)) => ("cargo-default", None, format!("explicit CARGO_INCREMENTAL={} is respected over the `{}` policy from {}", v, setting, cfg.origin(&format!("incremental.{}", workload)))),
         ("on", None) if inv.family.builds() => ("force-on", Some("1"), format!("incremental.{} = on ({})", workload, cfg.origin(&format!("incremental.{}", workload)))),
         ("off", None) if inv.family.builds() => ("force-off", Some("0"), format!("incremental.{} = off ({}){}", workload, cfg.origin(&format!("incremental.{}", workload)), if sccache_active { "; lets sccache cache workspace crates" } else { "" })),
-        ("experiment", _) => ("experiment", None, "left at Cargo's default; compare alternatives with `haul experiment`".to_string()),
+        ("experiment", _) => ("experiment", None, "left at Cargo's default; compare alternatives with `qrust experiment`".to_string()),
         _ => ("cargo-default", None, "no policy override; Cargo's profile settings decide".to_string()),
     };
     if let Some(v) = applied {
@@ -301,7 +301,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         match &wrapper {
             Some(w) => {
                 let dir = store.events_dir(id);
-                // Haul's artifact cache: fast mode only, and never behind a wrapper the user
+                // QuickRust's artifact cache: fast mode only, and never behind a wrapper the user
                 // configured, which may be a cache with rules of its own.
                 let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
                 // The parallel frontend and the linker need `-Z` flags (RUSTC_BOOTSTRAP on a stable
@@ -323,7 +323,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     p.instrumented = true;
                     p.env_set.push(("RUSTC_WRAPPER".into(), path_str(w)));
                     p.env_set.push((crate::ENV_EVENT_DIR.into(), path_str(&dir)));
-                    // Only a cache Haul chained itself may be skipped when it cannot start; a wrapper the
+                    // Only a cache QuickRust chained itself may be skipped when it cannot start; a wrapper the
                     // user configured fails exactly as it would under upstream Cargo.
                     let skippable = fail_open && inner.as_ref().map(|(_, src)| src.starts_with("policy")).unwrap_or(false);
                     p.env_set.push((crate::ENV_WRAPPER_FAIL.into(), if skippable { "open" } else { "closed" }.into()));
@@ -338,20 +338,20 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     p.events_dir = Some(dir);
                 }
             }
-            None => p.warnings.push("haul-rustc-wrapper was not found next to the haul binary; rustc-level observation is disabled".into()),
+            None => p.warnings.push("qrust-rustc-wrapper was not found next to the qrust binary; rustc-level observation is disabled".into()),
         }
     }
     p.wrappers = json!({
-        "haul": if p.instrumented { wrapper.as_ref().map(|w| path_str(w)) } else { None },
+        "qrust": if p.instrumented { wrapper.as_ref().map(|w| path_str(w)) } else { None },
         "inner": inner.as_ref().map(|(w, _)| w.clone()),
         "inner_source": inner.as_ref().map(|(_, s)| s.clone()),
         "workspace_wrapper": std::env::var("RUSTC_WORKSPACE_WRAPPER").ok().filter(|v| !v.is_empty()),
-        "order": "haul-rustc-wrapper → existing RUSTC_WRAPPER → RUSTC_WORKSPACE_WRAPPER (applied by Cargo) → rustc",
+        "order": "qrust-rustc-wrapper → existing RUSTC_WRAPPER → RUSTC_WORKSPACE_WRAPPER (applied by Cargo) → rustc",
     });
     Ok(p)
 }
 
-/// The fast linker for this machine: wild in Haul's `bin` or on PATH, for a Linux host with
+/// The fast linker for this machine: wild in QuickRust's `bin` or on PATH, for a Linux host with
 /// glibc. Returns the directory whose `ld` is wild — handed to the compiler driver with `-B` —
 /// and wild itself. `None` when wild is not installed or the link cannot be maintained.
 fn fast_linker(engine: &crate::engine::Engine) -> Option<(PathBuf, PathBuf)> {
@@ -361,7 +361,7 @@ fn fast_linker(engine: &crate::engine::Engine) -> Option<(PathBuf, PathBuf)> {
     }
     let wild = util::exe_candidates(&crate::engine::bin_dir(), "wild").into_iter().find(|p| util::is_executable(p)).or_else(|| util::which("wild"))?;
     let wild = util::canon(&wild);
-    let dir = util::haul_home().join("linker");
+    let dir = util::qrust_home().join("linker");
     let ld = dir.join("ld");
     if std::fs::read_link(&ld).ok().as_deref() != Some(wild.as_path()) {
         // Replaced atomically: a concurrent build sees the old link or the new one.
@@ -391,7 +391,7 @@ fn count_cache_hits(dir: &Path) -> (u64, u64) {
     (hits.len() as u64, foreign)
 }
 
-/// `args` with Haul's `--config` overlays in the group of `--config` arguments Cargo applies:
+/// `args` with QuickRust's `--config` overlays in the group of `--config` arguments Cargo applies:
 /// before the subcommand, or after it when the user put theirs there (Cargo then ignores the
 /// ones before it).
 fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Vec<OsString> {
@@ -406,12 +406,12 @@ fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Ve
     out
 }
 
-/// `haul upstream …`: the toolchain's Cargo with no policy and no instrumentation (COMP-013).
-/// Haul's configuration is not read: the escape hatch works when it is broken.
+/// `qrust upstream …`: the toolchain's Cargo with no policy and no instrumentation (COMP-013).
+/// QuickRust's configuration is not read: the escape hatch works when it is broken.
 pub fn exec_upstream(args: Vec<OsString>) -> ! {
     let inv = resolve::classify(&args);
     if resolve::recursion_detected() {
-        fail("refusing to run Cargo: the toolchain's `cargo` is Haul itself");
+        fail("refusing to run Cargo: the toolchain's `cargo` is QuickRust itself");
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     let cfg = Config::defaults();
@@ -423,11 +423,11 @@ pub fn exec_upstream(args: Vec<OsString>) -> ! {
 }
 
 pub fn fail(msg: &str) -> ! {
-    eprintln!("haul: error: {}", msg);
-    std::process::exit(crate::EXIT_HAUL_ERROR)
+    eprintln!("qrust: error: {}", msg);
+    std::process::exit(crate::EXIT_QRUST_ERROR)
 }
 
-/// Runs one Cargo invocation. `Err` means Haul could not delegate at all.
+/// Runs one Cargo invocation. `Err` means QuickRust could not delegate at all.
 /// The triple a `cargo run` builds for: its `--target`, or the host of the compiler.
 fn target_triple(inv: &Invocation, engine: &crate::engine::Engine) -> Option<String> {
     if let Some(t) = inv.targets.first() {
@@ -446,21 +446,21 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     };
     let mut inv = resolve::classify(&spec.args);
     if resolve::recursion_detected() {
-        return Err(format!("refusing to run Cargo: the toolchain's `cargo` is Haul itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
+        return Err(format!("refusing to run Cargo: the toolchain's `cargo` is QuickRust itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
     }
-    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
-    // Haul installs programs itself.
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
+    // QuickRust installs programs itself.
     if matches!(inv.command.as_deref(), Some("install" | "uninstall")) && spec.scenario.is_none() {
         let code = crate::install::run(&spec.args, &inv, &cwd, &cfg)?;
         return Ok(Outcome { exit: ExitInfo { code: Some(code), signal: None }, session_id: None, store: None, report: None, policy_exit: None });
     }
-    // The disk nearly full: Haul's cache gives back what it can first (for ten seconds at most).
+    // The disk nearly full: QuickRust's cache gives back what it can first (for ten seconds at most).
     if let Some(freed) = crate::space::before_command(&cfg) {
         match freed {
-            Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: Haul's cache gave back {} ({} → {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
-            // Nothing of Haul's left to give: said once an hour, not on every command.
-            Ok(c) => crate::ui::notice_hourly("disk-full", &format!("the disk is nearly full, and nothing in Haul's cache ({}) can go now", util::human_bytes(c.after))),
-            Err(e) => crate::ui::note(&format!("the disk is nearly full, and Haul's cache could not give back space: {}", e)),
+            Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: QuickRust's cache gave back {} ({} → {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
+            // Nothing of QuickRust's left to give: said once an hour, not on every command.
+            Ok(c) => crate::ui::notice_hourly("disk-full", &format!("the disk is nearly full, and nothing in QuickRust's cache ({}) can go now", util::human_bytes(c.after))),
+            Err(e) => crate::ui::note(&format!("the disk is nearly full, and QuickRust's cache could not give back space: {}", e)),
         }
     }
     let engine = crate::engine::for_command(&inv, &cwd, &cfg)?;
@@ -468,7 +468,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
 
     let start_dir = crate::builddir::start_dir(&inv, &cwd);
-    // The workspace's build directory is in use (Haul's cache leaves it alone) while this runs.
+    // The workspace's build directory is in use (QuickRust's cache leaves it alone) while this runs.
     let _in_use = match (&engine.target, &engine.workspace_root) {
         (Some(t), Some(root)) if t.managed => {
             crate::builddir::mark_used(&t.dir, root);
@@ -480,7 +480,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     resolve::apply_aliases(&mut inv, &subset);
 
     // Queries, help output and opted-out nested invocations: replace ourselves with Cargo; a
-    // query whose downloads Haul shows in a terminal (`cargo tree`) is rendered like `cargo fetch`.
+    // query whose downloads QuickRust shows in a terminal (`cargo tree`) is rendered like `cargo fetch`.
     let shown_query = inv.family == Family::Query && spec.scenario.is_none() && !spec.stdout_to_stderr && crate::ui::rendering(&inv, &spec.args, &cfg) == Rendering::Lines;
     if spec.scenario.is_none() && (inv.command.is_none() || (inv.family == Family::Query && !shown_query) || nested_upstream) {
         let mut cmd = engine.command(&spec.args, &inv);
@@ -493,7 +493,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let store = WsStore::open(ws_root.as_deref());
     let store_ok = store.ensure().is_ok();
     let id = util::new_id();
-    let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::haul_home().join("cache").join("artifacts"));
+    let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::qrust_home().join("cache").join("artifacts"));
     let mut plan = plan(&inv, &cfg, &subset, &store, &id, &artifact_cache, &engine)?;
     if !store_ok {
         plan.instrumented = false;
@@ -515,7 +515,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
 
-    // Haul's own rendering of the command's output (a terminal, nothing the user chose).
+    // QuickRust's own rendering of the command's output (a terminal, nothing the user chose).
     let mut rendering = if !spec.stdout_to_stderr && spec.scenario.is_none() { crate::ui::rendering(&inv, &spec.args, &cfg) } else { Rendering::Off };
     // The command as it reaches Cargo, with fast mode's settings.
     let mut args = with_overlays(&spec.args, &inv, &fast.args);
@@ -538,8 +538,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if render_build {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
     }
-    // Cargo's progress (units done of all, crates left to download) for Haul's status line; and
-    // its colours for the lines Haul shows as they are, though it writes into a pipe.
+    // Cargo's progress (units done of all, crates left to download) for QuickRust's status line; and
+    // its colours for the lines QuickRust shows as they are, though it writes into a pipe.
     let mut progress_env: Vec<(String, String)> = if render { vec![("CARGO_TERM_PROGRESS_WHEN".into(), "always".into()), ("CARGO_TERM_PROGRESS_WIDTH".into(), "1000".into())] } else { vec![] };
     if rendering == Rendering::Lines && crate::ui::color() {
         progress_env.push(("CARGO_TERM_COLOR".into(), "always".into()));
@@ -571,14 +571,14 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         cmd.stdout(Stdio::from(std::io::stderr()));
     }
     for w in &plan.warnings {
-        eprintln!("haul: warning: {}", w);
+        eprintln!("qrust: warning: {}", w);
     }
     let lock = store::register_active(&id, ws_root.as_deref(), &cwd);
     let overhead_pre = preflight.elapsed().as_nanos() as u64;
 
-    // A build Haul renders is skipped when its stamp shows nothing it depends on changed (see
+    // A build QuickRust renders is skipped when its stamp shows nothing it depends on changed (see
     // prebuilt.rs). For `run` / `test` the command itself still checks freshness; for a build
-    // alone Haul's verdict is the answer.
+    // alone QuickRust's verdict is the answer.
     let judged = render_build;
     let prebuilt_key = (judged && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &engine.cargo(), &engine.env));
     let known_fresh = prebuilt_key.as_deref().and_then(|k| crate::prebuilt::fresh(&store.dir, k));
@@ -636,7 +636,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
         messages = Some(fin.messages);
     }
-    // Early cut-off needs Haul's compiler driver for this toolchain: built once, in the
+    // Early cut-off needs QuickRust's compiler driver for this toolchain: built once, in the
     // background, after the build that found it missing (not alongside it, competing for the
     // processor).
     if plan.early_cutoff {
@@ -652,16 +652,16 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if let Some(key) = &engine.channel {
         if let Err(e) = crate::toolchain::start_update(&crate::toolchain::Layout::current(), key, &resolve::self_identity().0, cfg.str("toolchain.auto-update")) {
             if render {
-                crate::ui::note(&format!("Haul could not check for a newer Rust release: {}", e));
+                crate::ui::note(&format!("QuickRust could not check for a newer Rust release: {}", e));
             }
         }
     }
     // The command itself, once what it needs is built: the program gets the real terminal.
     if let (Rendering::BuildFirst(how), true) = (rendering, exit.success()) {
-        // Cargo replays the warnings of fresh units, which Haul has just summarised: they are
+        // Cargo replays the warnings of fresh units, which QuickRust has just summarised: they are
         // allowed here (display only: units stay fresh; Cargo versions without the setting
         // ignore it and replay them). `cargo run`'s "Finished … Running …" would repeat what
-        // Haul reported (`--quiet` leaves the program's output alone). A test run's `--quiet`
+        // QuickRust reported (`--quiet` leaves the program's output alone). A test run's `--quiet`
         // would change libtest's output too: its terminal is relayed instead (see `relay`).
         let quiet_warnings = ["--config".to_string(), "build.warnings=\"allow\"".to_string()];
         let mut second = with_overlays(&spec.args, &inv, &[fast.args.clone(), quiet_warnings.to_vec()].concat());
@@ -701,9 +701,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let mut outcome = Outcome { exit, session_id: None, store: None, report: None, policy_exit: None };
     if !store_ok {
         // Observation is optional; the build result stands on its own (NFR-020).
-        eprintln!("haul: warning: state directory {} is not writable; this run was not recorded", store.dir.display());
+        eprintln!("qrust: warning: state directory {} is not writable; this run was not recorded", store.dir.display());
         if cfg.bool("measurement.strict") && exit.success() {
-            outcome.policy_exit = Some(crate::EXIT_HAUL_ERROR);
+            outcome.policy_exit = Some(crate::EXIT_QRUST_ERROR);
         }
         return Ok(outcome);
     }
@@ -744,7 +744,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             "family": inv.family.name(),
             "name": inv.command,
             "alias_of": inv.alias_of,
-            "entry": if spec.mode == Mode::Shim { "cargo-shim" } else { "haul" },
+            "entry": if spec.mode == Mode::Shim { "cargo-shim" } else { "qrust" },
             "argv_redacted": std::iter::once("cargo".to_string()).chain(util::redact_args(&argv)).map(|a| tok.apply(&a)).collect::<Vec<_>>(),
             "toolchain_override": inv.toolchain,
             "manifest_path": inv.manifest_path.as_ref().map(|m| path_str(m)),
@@ -804,26 +804,26 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
     if let Some(e) = &telemetry_error {
-        eprintln!("haul: warning: {}", e);
+        eprintln!("qrust: warning: {}", e);
         if strict && exit.success() {
-            outcome.policy_exit = Some(crate::EXIT_HAUL_ERROR);
+            outcome.policy_exit = Some(crate::EXIT_QRUST_ERROR);
         }
     }
     // Amortised retention: roughly one invocation in 32 pays for pruning.
     if id.as_bytes()[25] % 32 == 0 {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
-    // Haul's cache keeps within its space: a collection in the background when one is due.
+    // QuickRust's cache keeps within its space: a collection in the background when one is due.
     if let Err(e) = crate::space::after_command(&cfg, &resolve::self_identity().0) {
         if render {
-            crate::ui::note(&format!("Haul could not check the space its cache uses: {}", e));
+            crate::ui::note(&format!("QuickRust could not check the space its cache uses: {}", e));
         }
     }
     outcome.store = Some(store);
     Ok(outcome)
 }
 
-/// Entry point for the `cargo` shim and for `haul <cargo-command>`.
+/// Entry point for the `cargo` shim and for `qrust <cargo-command>`.
 pub fn run_and_exit(args: Vec<OsString>, mode: Mode) -> ! {
     match execute(&Spec::new(args, mode)) {
         Ok(out) => {

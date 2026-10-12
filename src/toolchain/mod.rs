@@ -1,12 +1,12 @@
-//! Haul's toolchains: Rust releases Haul downloads, installs and keeps under
-//! `$HAUL_HOME/toolchains`, so that nothing besides Haul needs installing.
+//! QuickRust's toolchains: Rust releases QuickRust downloads, installs and keeps under
+//! `$QRUST_HOME/toolchains`, so that nothing besides QuickRust needs installing.
 //!
 //! Which toolchain a command uses, first match wins:
 //! 1. `+<toolchain>` as the first argument;
 //! 2. `RUSTUP_TOOLCHAIN` in the environment (the name tools and editors set);
 //! 3. the toolchain file (`rust-toolchain.toml` / `rust-toolchain`) of the directory or the
 //!    nearest one above it;
-//! 4. the default (`haul toolchain default`; `stable` until set).
+//! 4. the default (`qrust toolchain default`; `stable` until set).
 //!
 //! A toolchain, and the components and targets a toolchain file or the command asks for, are
 //! installed on first use. A channel (`stable`, `1.98`, `nightly`) names the release it was
@@ -24,7 +24,7 @@ use install::Report;
 use spec::{Channel, Spec};
 use std::path::{Path, PathBuf};
 
-/// Haul's toolchain directories under its home.
+/// QuickRust's toolchain directories under its home.
 #[derive(Clone, Debug)]
 pub struct Layout {
     home: PathBuf,
@@ -36,7 +36,7 @@ impl Layout {
     }
 
     pub fn current() -> Layout {
-        Layout::new(util::haul_home())
+        Layout::new(util::qrust_home())
     }
 
     pub fn toolchains(&self) -> PathBuf {
@@ -55,7 +55,7 @@ pub struct Toolchain {
     /// `1.99.0-x86_64-unknown-linux-gnu`, `nightly-2026-10-11-<host>`, a linked name, or a path.
     pub id: String,
     pub dir: PathBuf,
-    /// Linked or given by path: Haul uses it as it is and never changes it.
+    /// Linked or given by path: QuickRust uses it as it is and never changes it.
     pub linked: bool,
 }
 
@@ -79,7 +79,7 @@ impl Toolchain {
         self.bin(ENGINE)
     }
 
-    /// Haul's record of it (`None` for a linked toolchain).
+    /// QuickRust's record of it (`None` for a linked toolchain).
     pub fn record(&self) -> Option<install::Record> {
         if self.linked {
             return None;
@@ -89,15 +89,15 @@ impl Toolchain {
 }
 
 /// The file name (before any `.exe`) of `Toolchain::engine`.
-const ENGINE: &str = ".haul-engine";
+const ENGINE: &str = ".qrust-engine";
 
-/// The program Haul runs as Cargo for toolchain `tc`.
+/// The program QuickRust runs as Cargo for toolchain `tc`.
 ///
 /// Cargo tells everything it starts where Cargo is (`CARGO`: external subcommands such as
 /// Clippy's or nextest's, build scripts, `env!("CARGO")`, `cargo test`'s binaries), and they call
 /// it back there for nested builds. Run as a file named `cargo`, it gives its own path, and those
-/// builds would bypass Haul; run under another name, it gives its `argv[0]` when that is named
-/// `cargo`, else the `CARGO` it was given, both of which Haul sets to its own `cargo` (see
+/// builds would bypass QuickRust; run under another name, it gives its `argv[0]` when that is named
+/// `cargo`, else the `CARGO` it was given, both of which QuickRust sets to its own `cargo` (see
 /// `crate::engine`). So for an installed toolchain the program
 /// is `Toolchain::engine`, made here (staged, then renamed into place) when it is missing or no
 /// longer the same file as the toolchain's `cargo`. A linked toolchain is never changed: its
@@ -184,7 +184,7 @@ pub fn select(layout: &Layout, cwd: &Path, plus: Option<&str>) -> Result<Selecti
 }
 
 /// The host toolchains are installed for: this machine's architecture and system (on Linux, the
-/// C library the system has, whatever Haul itself was built against).
+/// C library the system has, whatever QuickRust itself was built against).
 pub fn host() -> String {
     let arch = std::env::consts::ARCH;
     match std::env::consts::OS {
@@ -220,7 +220,7 @@ pub fn ensure(layout: &Layout, sel: &Selection, needs: &Needs, server: &str, rep
         Spec::Path(dir) => linked(dir.display().to_string(), dir.clone(), &components, &targets),
         Spec::Named(name) => {
             let st = state::load(&layout.toolchains())?;
-            let dir = st.linked.get(name).ok_or_else(|| format!("no toolchain is named `{}` (`haul toolchain link {} <dir>` names one)", name, name))?;
+            let dir = st.linked.get(name).ok_or_else(|| format!("no toolchain is named `{}` (`qrust toolchain link {} <dir>` names one)", name, name))?;
             linked(name.clone(), dir.clone(), &components, &targets)
         }
         Spec::Dist { channel, date, host: for_host } => {
@@ -332,13 +332,13 @@ fn linked(id: String, dir: PathBuf, components: &[String], targets: &[String]) -
     }
     for t in targets {
         if !tc.dir.join("lib/rustlib").join(t).join("lib").is_dir() {
-            return Err(format!("toolchain {} has no standard library for {}, and Haul does not change a linked toolchain", tc.id, t));
+            return Err(format!("toolchain {} has no standard library for {}, and QuickRust does not change a linked toolchain", tc.id, t));
         }
     }
     if let Some(c) = components.first() {
         let listed = std::fs::read_to_string(tc.dir.join("lib/rustlib/components")).unwrap_or_default();
         if !components.iter().all(|c| listed.lines().any(|l| l == c || l == format!("{}-preview", c))) {
-            return Err(format!("toolchain {} may lack component {}, and Haul does not change a linked toolchain", tc.id, c));
+            return Err(format!("toolchain {} may lack component {}, and QuickRust does not change a linked toolchain", tc.id, c));
         }
     }
     Ok(tc)
@@ -398,7 +398,7 @@ pub struct Moved {
 
 /// Brings installed floating channels (`stable`, `1.98`, `nightly`; all of them, or `only`) to
 /// their latest release: the new release is installed with the components and targets the old
-/// one had, and `prepare`d (Haul's compiler driver), then the channel names it. A channel whose
+/// one had, and `prepare`d (QuickRust's compiler driver), then the channel names it. A channel whose
 /// manifest's published SHA-256 is the one it was installed from is up to date without
 /// downloading the manifest. The toolchain a channel leaves is retired later (`retire`).
 pub fn update(layout: &Layout, server: &str, only: Option<&str>, prepare: &mut dyn FnMut(&Toolchain), report: &mut dyn Report) -> Result<Vec<Moved>, String> {
@@ -455,7 +455,7 @@ pub fn update(layout: &Layout, server: &str, only: Option<&str>, prepare: &mut d
 /// How long a toolchain a channel left stays after its last use.
 pub const RETIRE_AFTER_NS: u64 = 24 * 3_600 * 1_000_000_000;
 /// The file whose modification time is a toolchain's last use (refreshed at most hourly).
-const USED: &str = ".haul-used";
+const USED: &str = ".qrust-used";
 
 /// Notes that `tc` is in use (at most one write an hour).
 pub fn mark_used(tc: &Toolchain) {
@@ -490,10 +490,10 @@ pub fn retire(layout: &Layout, report: &mut dyn Report) -> Result<Vec<String>, S
 }
 
 /// Once a day per channel, after a build that used it: checks in the background (a detached,
-/// low-priority `haul toolchain update --channel <key> --background`) whether the channel has a
+/// low-priority `qrust toolchain update --channel <key> --background`) whether the channel has a
 /// newer release, installs it for the next build, and retires what channels left behind. Never
 /// in CI, and not with `toolchain.auto-update = "off"`. Returns whether a check started.
-pub fn start_update(layout: &Layout, key: &str, haul: &Path, auto_update: &str) -> Result<bool, String> {
+pub fn start_update(layout: &Layout, key: &str, qrust: &Path, auto_update: &str) -> Result<bool, String> {
     if auto_update != "background" || util::is_ci() {
         return Ok(false);
     }
@@ -508,9 +508,9 @@ pub fn start_update(layout: &Layout, key: &str, haul: &Path, auto_update: &str) 
         Ok(())
     })?;
     let log = std::fs::File::create(layout.toolchains().join(".update.log")).map_err(|e| e.to_string())?;
-    let mut c = crate::resolve::haul_command(haul);
+    let mut c = crate::resolve::qrust_command(qrust);
     c.args(["toolchain", "update", "--channel", key, "--background"]);
-    crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", haul.display(), e))?;
+    crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", qrust.display(), e))?;
     Ok(true)
 }
 
@@ -531,7 +531,7 @@ pub fn floating_key(spec: &Spec) -> Option<String> {
 pub fn remove(layout: &Layout, id: &str, report: &mut dyn Report) -> Result<(), String> {
     let dir = layout.toolchains().join(id);
     if id.starts_with('.') || id.contains('/') || id.contains('\\') || !dir.is_dir() {
-        return Err(format!("no toolchain {} is installed (`haul toolchain list` shows them)", id));
+        return Err(format!("no toolchain {} is installed (`qrust toolchain list` shows them)", id));
     }
     let _locked = install::lock(layout, id, report)?;
     // Renamed away first: a toolchain is never seen half deleted.
@@ -545,7 +545,7 @@ pub fn remove(layout: &Layout, id: &str, report: &mut dyn Report) -> Result<(), 
     std::fs::remove_dir_all(&doomed).map_err(|e| format!("cannot remove {}: {}", doomed.display(), e))
 }
 
-/// The installed toolchain a `rustc` belongs to, if it is one of Haul's.
+/// The installed toolchain a `rustc` belongs to, if it is one of QuickRust's.
 pub fn owning(layout: &Layout, rustc: &Path) -> Option<Toolchain> {
     let dir = rustc.parent()?.parent()?;
     if dir.parent()? != layout.toolchains() || !dir.join(install::RECORD).is_file() {
@@ -667,7 +667,7 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout::new(std::env::temp_dir().join(format!("haul-tc-{}", util::new_id())))
+        Layout::new(std::env::temp_dir().join(format!("qrust-tc-{}", util::new_id())))
     }
 
     fn sel(s: &str) -> Selection {
@@ -742,7 +742,7 @@ mod tests {
         assert_eq!(report.added, vec![("1.99.0".to_string(), vec!["rustc-dev".to_string(), "target wasm32-unknown-unknown".to_string()])], "said as an addition to the release it has");
         assert!(tc.dir.join("lib/rustlib/wasm32-unknown-unknown/lib/libstd-fake.rlib").is_file());
         assert!(tc.dir.join(format!("lib/rustlib/{}/lib/librustc_driver-fake.rlib", h)).is_file());
-        assert!(!tc.dir.join("lib/rustlib/.haul-adding").exists());
+        assert!(!tc.dir.join("lib/rustlib/.qrust-adding").exists());
         let rec = tc.record().unwrap();
         assert!(rec.has("rustc-dev", &h) && rec.has("rust-std", "wasm32-unknown-unknown"));
         assert!(d.srv.requests("/dist/2026-11-12/rustc-dev-1.100.0-".to_string().as_str()).is_empty());
@@ -759,7 +759,7 @@ mod tests {
         let old = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport::default()).unwrap();
         let pinned = ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
         assert_eq!(old, pinned);
-        // What the channel moves to is prepared (Haul's compiler driver) installed, before the
+        // What the channel moves to is prepared (QuickRust's compiler driver) installed, before the
         // channel names it.
         let mut prepared = vec![];
         let mut prepare = |tc: &Toolchain| prepared.push((tc.id.clone(), tc.record().is_some(), state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].toolchain.clone()));
@@ -889,9 +889,9 @@ mod tests {
         // As if an add of rustc-dev stopped after moving one file in.
         let half = tc.dir.join(format!("lib/rustlib/{}/lib/librustc_driver-fake.rlib", h));
         std::fs::write(&half, "partial").unwrap();
-        std::fs::write(tc.dir.join("lib/rustlib/.haul-adding"), format!("rustc-dev\t{}\trustc-dev\tlib/rustlib/{}/lib/librustc_driver-fake.rlib\n", h, h)).unwrap();
+        std::fs::write(tc.dir.join("lib/rustlib/.qrust-adding"), format!("rustc-dev\t{}\trustc-dev\tlib/rustlib/{}/lib/librustc_driver-fake.rlib\n", h, h)).unwrap();
         drop(install::lock(&l, &tc.id, &mut NoReport::default()).unwrap());
-        assert!(!half.exists() && !tc.dir.join("lib/rustlib/.haul-adding").exists());
+        assert!(!half.exists() && !tc.dir.join("lib/rustlib/.qrust-adding").exists());
         assert!(tc.rustc().is_file(), "what the record holds stays");
         // A file in the way of a component: the add fails before moving anything.
         std::fs::write(&half, "in the way").unwrap();
@@ -916,7 +916,7 @@ mod tests {
         assert!(tc.linked && tc.dir == dir);
         let e = ensure(&l, &sel("mine"), &Needs { targets: vec!["wasm32-unknown-unknown".into()], ..Default::default() }, "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err();
         assert!(e.contains("does not change a linked toolchain"), "{}", e);
-        assert!(ensure(&l, &sel("other"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err().contains("haul toolchain link other"));
+        assert!(ensure(&l, &sel("other"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err().contains("qrust toolchain link other"));
     }
 
     #[test]

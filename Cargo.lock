@@ -203,32 +203,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 
 [[package]]
-name = "haul"
-version = "0.137.166"
-dependencies = [
- "blake3",
- "flate2",
- "libc",
- "liblzma",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "toml",
- "ureq",
-]
-
-[[package]]
-name = "haul-bench"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde_json",
- "toml",
-]
-
-[[package]]
 name = "icu_collections"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -472,6 +446,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "qrust-bench"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "quickrust"
+version = "0.138.174"
+dependencies = [
+ "blake3",
+ "flate2",
+ "libc",
+ "liblzma",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "toml",
+ "ureq",
 ]
 
 [[package]]

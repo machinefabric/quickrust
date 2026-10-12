@@ -132,7 +132,7 @@ mod tests {
     use super::*;
 
     fn tmp() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("haul-tcfile-{}", crate::util::new_id()));
+        let d = std::env::temp_dir().join(format!("qrust-tcfile-{}", crate::util::new_id()));
         fs::create_dir_all(d.join("a/b")).unwrap();
         d
     }

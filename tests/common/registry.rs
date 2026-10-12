@@ -1,5 +1,5 @@
 //! A crates registry for the suites: Cargo's sparse protocol over HTTP from a thread of the test,
-//! with crates made in the test. Haul's Cargo home in a sandbox points crates.io at it, so
+//! with crates made in the test. QuickRust's Cargo home in a sandbox points crates.io at it, so
 //! fixtures with dependencies build offline, through the same downloads Cargo makes from
 //! crates.io.
 
@@ -117,10 +117,10 @@ impl Registry {
 
     /// The Cargo configuration that makes crates.io this registry.
     pub fn cargo_config(&self) -> String {
-        format!("[source.crates-io]\nreplace-with = \"haul-test\"\n\n[source.haul-test]\nregistry = \"sparse+{}/index/\"\n\n[net]\nretry = 0\n", self.url)
+        format!("[source.crates-io]\nreplace-with = \"qrust-test\"\n\n[source.qrust-test]\nregistry = \"sparse+{}/index/\"\n\n[net]\nretry = 0\n", self.url)
     }
 
-    /// Makes crates.io this registry for the Haul home `home`.
+    /// Makes crates.io this registry for the QuickRust home `home`.
     pub fn serve_crates_io_for(&self, home: &Path) {
         std::fs::create_dir_all(home.join("cargo")).unwrap();
         std::fs::write(home.join("cargo/config.toml"), self.cargo_config()).unwrap();

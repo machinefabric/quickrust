@@ -1,4 +1,4 @@
-//! `haul analyze <section> --filter KEY=VALUE … --sort FIELD[:asc|desc] --limit N`: the records
+//! `qrust analyze <section> --filter KEY=VALUE … --sort FIELD[:asc|desc] --limit N`: the records
 //! of a report section, narrowed and ordered before they are rendered, as text or JSON alike.
 //!
 //! A filter key is a field of the section's records (`package`, `kind`, `source`, `target`,
@@ -46,7 +46,7 @@ impl View {
 
     /// Narrows and orders the record lists of `section` in `report`.
     pub fn apply(&self, report: &mut Value, section: &str) -> Result<(), String> {
-        let paths = lists(section).ok_or_else(|| format!("`haul analyze {}` has no list of records to filter, sort or limit; sections that have: {}", section, SECTIONS_WITH_RECORDS.join(", ")))?;
+        let paths = lists(section).ok_or_else(|| format!("`qrust analyze {}` has no list of records to filter, sort or limit; sections that have: {}", section, SECTIONS_WITH_RECORDS.join(", ")))?;
         // The fields the section's records have, to reject a key none of them has.
         let mut fields: BTreeSet<String> = BTreeSet::new();
         for path in paths {

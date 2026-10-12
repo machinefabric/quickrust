@@ -105,7 +105,7 @@ impl Manifest {
         let text = std::str::from_utf8(&bytes).map_err(|_| "the release manifest is not UTF-8".to_string())?;
         let raw: Raw = toml::from_str(text).map_err(|e| format!("not a release manifest: {}", e.message()))?;
         if raw.manifest_version != "2" {
-            return Err(format!("release manifest version {} (Haul reads version 2)", raw.manifest_version));
+            return Err(format!("release manifest version {} (QuickRust reads version 2)", raw.manifest_version));
         }
         if !raw.pkg.contains_key("rustc") {
             return Err("the release manifest has no rustc".into());

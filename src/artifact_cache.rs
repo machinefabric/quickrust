@@ -1,4 +1,4 @@
-//! Haul's global artifact cache (fast mode).
+//! QuickRust's global artifact cache (fast mode).
 //!
 //! The rustc wrapper looks a compilation up before running rustc. On a hit it restores the
 //! outputs into Cargo's output directory and replays rustc's stderr, so Cargo sees exactly
@@ -6,7 +6,7 @@
 //! only units whose sources cannot change under a name (registry and git dependencies) and
 //! that read nothing a build script produced outside `OUT_DIR`:
 //!
-//! - **key, level 1**: cache format version; rustc identity (and Haul's compiler driver, when
+//! - **key, level 1**: cache format version; rustc identity (and QuickRust's compiler driver, when
 //!   it compiles the unit); every argument, with output and search paths removed and each
 //!   `--extern` replaced by the identity of the artifact it names; Cargo's `CARGO_*`
 //!   variables; the content of `OUT_DIR`. An artifact's identity is its content hash, except
@@ -44,7 +44,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "haul-artifact-cache-3";
+const FORMAT: &str = "qrust-artifact-cache-3";
 
 /// How far past the start of a crate's metadata root its crate hash may lie: the root begins
 /// with the target triple (or a whole JSON target specification), then the hash.
@@ -62,7 +62,7 @@ pub struct Job {
     /// Produces a linked output (binary, test executable, proc-macro).
     links: bool,
     cwd: PathBuf,
-    /// For a binary or test executable whose code Haul can link again on its own: the level-1
+    /// For a binary or test executable whose code QuickRust can link again on its own: the level-1
     /// key of what its own object code depends on (its dependencies' interfaces, not what they
     /// link), under which the objects of its last compilation are relinked (see `relink`).
     compile_key1: Option<String>,
@@ -282,8 +282,8 @@ impl MirInlining {
 }
 
 /// The interface hash of the crate whose metadata is at `artifact` (its `.rmeta`, or its `.rlib`
-/// through the metadata written beside it), as Haul's compiler driver recorded it next to the
-/// metadata (`lib<crate><extra>.haul-svh`), when that metadata carries it. The metadata is what
+/// through the metadata written beside it), as QuickRust's compiler driver recorded it next to the
+/// metadata (`lib<crate><extra>.qrust-svh`), when that metadata carries it. The metadata is what
 /// dependents compile against, so the record counts only if the metadata's own root names the
 /// same crate hash: a record left by an earlier compilation, or a metadata file written by
 /// another compiler since, is not this crate's interface.
@@ -292,7 +292,7 @@ fn interface_identity(artifact: &Path) -> Option<String> {
     let name = artifact.file_name()?.to_str()?;
     let stem = name.strip_suffix(".rmeta").or_else(|| name.strip_suffix(".rlib"))?;
     let rmeta = artifact.with_file_name(format!("{}.rmeta", stem));
-    let svh = u128::from_str_radix(fs::read_to_string(artifact.with_file_name(format!("{}.haul-svh", stem))).ok()?.trim(), 16).ok()?;
+    let svh = u128::from_str_radix(fs::read_to_string(artifact.with_file_name(format!("{}.qrust-svh", stem))).ok()?.trim(), 16).ok()?;
     // `rust\0\0\0` and the format version, then the root's position (64-bit little-endian).
     let mut f = fs::File::open(&rmeta).ok()?;
     let mut head = [0u8; 16];
@@ -330,7 +330,7 @@ fn tree_digest(root: &Path) -> Option<String> {
 
 /// Prepares a lookup, or says why this compilation is not cached.
 /// `compiler` is the compiler's own account of itself (`rustc -vV`, see `rustc_info`);
-/// `driver`, Haul's compiler driver when it compiles this unit instead of rustc.
+/// `driver`, QuickRust's compiler driver when it compiles this unit instead of rustc.
 pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args: &[String]) -> Result<Job, String> {
     let root = root.ok_or("the artifact cache is off")?.to_path_buf();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
@@ -444,7 +444,7 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
     // The artifact each dependency resolves to: identical inputs, identical output. A unit that
     // links compiles the dependencies' code into its output, and the code of everything they
     // were compiled against: it is keyed by what it links.
-    // A binary's own object code depends on what it compiles against, like any unit's: Haul's
+    // A binary's own object code depends on what it compiles against, like any unit's: QuickRust's
     // driver compiles it apart from linking, so that the objects can be linked again alone.
     let executable = emits_link && (test || types.iter().any(|t| t == "bin"));
     let mut compile_key: Option<Vec<String>> = (executable && driver.is_some() && !mir.inlines(incremental)).then(|| {
@@ -652,10 +652,10 @@ impl Job {
     }
 
     /// What the compilation that started at `start_wall_ns` recorded of the crates whose spans
-    /// its metadata carries (Haul's driver writes `lib<stem>.haul-span-deps`); none when it wrote
+    /// its metadata carries (QuickRust's driver writes `lib<stem>.qrust-span-deps`); none when it wrote
     /// no such record (rustc compiled it, or it has no metadata).
     fn span_deps(&self, start_wall_ns: u64) -> Vec<String> {
-        let path = self.out_dir.join(format!("lib{}.haul-span-deps", self.stem));
+        let path = self.out_dir.join(format!("lib{}.qrust-span-deps", self.stem));
         match fs::metadata(&path) {
             Ok(md) if util::mtime_ns(&md) + 1_000_000_000 >= start_wall_ns => fs::read_to_string(&path).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(str::to_string).collect(),
             _ => Vec::new(),
@@ -681,17 +681,17 @@ impl Job {
     }
 
     fn relink_marker(&self) -> PathBuf {
-        self.out_dir.join(format!("{}.haul-relink", self.stem))
+        self.out_dir.join(format!("{}.qrust-relink", self.stem))
     }
 
-    /// Where Haul's driver keeps the objects of this unit's compilation (see `record_kept_objects`).
+    /// Where QuickRust's driver keeps the objects of this unit's compilation (see `record_kept_objects`).
     pub fn kept_objects(&self) -> PathBuf {
-        self.out_dir.join(format!("{}.haul-objects", self.stem))
+        self.out_dir.join(format!("{}.qrust-objects", self.stem))
     }
 
-    /// Records what Haul's driver kept of this unit's compilation, which started at
+    /// Records what QuickRust's driver kept of this unit's compilation, which started at
     /// `start_wall_ns`: the `.rlink` it wrote and the objects it names, hard-linked aside before
-    /// linking deleted them (`<stem>.haul-objects/`); with what they were compiled from (the
+    /// linking deleted them (`<stem>.qrust-objects/`); with what they were compiled from (the
     /// level-2 key of `compile_key1`) and each file's identity, so that `prepare_relink` uses
     /// them only as they were written.
     pub fn record_kept_objects(&self, start_wall_ns: u64) -> Result<(), String> {
@@ -757,8 +757,8 @@ impl Job {
         if dir.join("entry.json").exists() {
             return util::write_json_fast(&self.manifest(), &manifest).map_err(|e| e.to_string());
         }
-        // With the interface hash Haul's compiler driver recorded, which dependents key on.
-        let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.haul-svh", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
+        // With the interface hash QuickRust's compiler driver recorded, which dependents key on.
+        let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.qrust-svh", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
         let tmp = self.root.join("tmp").join(format!("{}-{}", key2, std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         util::create_private_dir(&tmp).map_err(|e| e.to_string())?;
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn the_objects_to_relink_are_exactly_those_the_rlink_names() {
-        let dir = std::env::temp_dir().join(format!("haul-rlink-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-rlink-{}", util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         // rustc encodes a path as its length, its bytes and a sentinel byte that is not ASCII.
         let path = |name: &str| {
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn an_interface_hash_counts_only_when_the_metadata_carries_it() {
-        let dir = std::env::temp_dir().join(format!("haul-iface-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-iface-{}", util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         let svh: u128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
         // Metadata as rustc lays it out: header, the root's position, …, the root (target triple, crate hash).
@@ -923,7 +923,7 @@ mod tests {
         rmeta.extend_from_slice(&svh.to_le_bytes());
         let path = dir.join("libdep-0123.rmeta");
         fs::write(&path, &rmeta).unwrap();
-        let record = dir.join("libdep-0123.haul-svh");
+        let record = dir.join("libdep-0123.qrust-svh");
         fs::write(&record, format!("{:032x}\n", svh)).unwrap();
         assert_eq!(interface_identity(&path), Some(format!("{:032x}", svh)));
         // A record left by an earlier compilation, or metadata another compiler wrote since.
@@ -952,7 +952,7 @@ mod tests {
 
     #[test]
     fn what_a_unit_links_follows_every_rlib_below_it() {
-        let dir = std::env::temp_dir().join(format!("haul-link-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-link-{}", util::new_id()));
         let (root, deps) = (dir.join("cache"), dir.join("deps"));
         fs::create_dir_all(&deps).unwrap();
         let unit = |name: &str, content: &str, externs: &[&str]| {
@@ -984,7 +984,7 @@ mod tests {
 
     #[test]
     fn remembered_hashes_follow_the_file_content() {
-        let root = std::env::temp_dir().join(format!("haul-memo-{}", util::new_id()));
+        let root = std::env::temp_dir().join(format!("qrust-memo-{}", util::new_id()));
         fs::create_dir_all(&root).unwrap();
         let f = root.join("libdep.rlib");
         fs::write(&f, b"first").unwrap();

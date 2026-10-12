@@ -242,7 +242,7 @@ pub fn compare(base: &Value, cand: &Value) -> Value {
 }
 
 pub fn baseline_dir(ws_root: &Path) -> PathBuf {
-    ws_root.join(".haul").join("baselines")
+    ws_root.join(".qrust").join("baselines")
 }
 
 fn valid_name(name: &str) -> Result<(), String> {
@@ -266,10 +266,10 @@ pub fn save_baseline(ws_root: &Path, name: &str, summary: &Value) -> Result<Path
 pub fn load_baseline(ws_root: &Path, name: &str) -> Result<Value, String> {
     valid_name(name)?;
     let path = baseline_dir(ws_root).join(format!("{}.json", name));
-    let v = util::read_json(&path).ok_or_else(|| format!("baseline `{}` not found or unreadable at {} (create it with `haul baseline set {}`)", name, path.display(), name))?;
+    let v = util::read_json(&path).ok_or_else(|| format!("baseline `{}` not found or unreadable at {} (create it with `qrust baseline set {}`)", name, path.display(), name))?;
     let major = |s: &str| s.split('.').next().unwrap_or("").to_string();
     if major(v["schema_version"].as_str().unwrap_or("")) != major(crate::SCHEMA_VERSION) {
-        return Err(format!("baseline `{}` uses schema {} but this Haul reads {}", name, v["schema_version"], crate::SCHEMA_VERSION));
+        return Err(format!("baseline `{}` uses schema {} but this QuickRust reads {}", name, v["schema_version"], crate::SCHEMA_VERSION));
     }
     Ok(v)
 }
@@ -328,7 +328,7 @@ fn threshold(v: &toml::Value, unit: &str, field: &str) -> Result<f64, String> {
     }
 }
 
-/// Parses `.haul/budgets.toml`. Unknown keys and metrics are errors: a budget that
+/// Parses `.qrust/budgets.toml`. Unknown keys and metrics are errors: a budget that
 /// silently does not apply is worse than none.
 pub fn parse_budgets(text: &str, source: &str) -> Result<Budgets, String> {
     let doc: toml::Table = text.parse().map_err(|e| format!("invalid TOML in {}: {}", source, e))?;
@@ -478,8 +478,8 @@ pub fn exit_code(result: &Value, budgets: &Budgets) -> Option<i32> {
 /// The verdict goes to stderr; Cargo's stdout is never touched (AC-016).
 pub fn enforce_on_build(store: &WsStore, cfg: &Config, report: &Value) -> (Option<i32>, Value) {
     let misconfigured = |reason: String| {
-        eprintln!("haul: error: ci.enforce-on-build is set but budgets cannot be evaluated: {}", reason);
-        (Some(crate::EXIT_HAUL_ERROR), json!({ "result": "error", "reason": reason, "evaluations": [] }))
+        eprintln!("qrust: error: ci.enforce-on-build is set but budgets cannot be evaluated: {}", reason);
+        (Some(crate::EXIT_QRUST_ERROR), json!({ "result": "error", "reason": reason, "evaluations": [] }))
     };
     let Some(root) = &store.root else { return misconfigured("the command did not run inside a Cargo workspace".into()) };
     let budgets = match load_budgets(root, cfg) {
@@ -496,7 +496,7 @@ pub fn enforce_on_build(store: &WsStore, cfg: &Config, report: &Value) -> (Optio
     let result = evaluate(&budgets, baseline.as_ref(), &summarize_run(report));
     let verdict = util::vstr(&result, "result");
     if verdict != "pass" {
-        eprintln!("haul: budget {}: {}", verdict, crate::render::budget_one_line(&result));
+        eprintln!("qrust: budget {}: {}", verdict, crate::render::budget_one_line(&result));
     }
     (exit_code(&result, &budgets), result)
 }

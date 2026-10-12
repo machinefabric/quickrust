@@ -1,7 +1,7 @@
 //! Workspace, toolchain and environment discovery (FR-010). Read-only.
 //!
 //! Workspace facts come from the toolchain's `cargo metadata --format-version 1`;
-//! Haul never resolves dependencies itself and never lets discovery touch the
+//! QuickRust never resolves dependencies itself and never lets discovery touch the
 //! network or the lockfile (`--locked --offline`).
 
 use crate::config::Config;
@@ -150,7 +150,7 @@ pub fn source_snapshot(root: &Path, skip: &[PathBuf]) -> (String, u64) {
             let Ok(md) = fs::symlink_metadata(&p) else { continue };
             let name = e.file_name();
             if md.is_dir() {
-                if name == ".git" || name == ".haul" || p.join("CACHEDIR.TAG").exists() || skip.contains(&canon(&p)) {
+                if name == ".git" || name == ".qrust" || p.join("CACHEDIR.TAG").exists() || skip.contains(&canon(&p)) {
                     continue;
                 }
                 stack.push(p);
@@ -410,7 +410,7 @@ mod tests {
 
     #[test]
     fn reads_head_from_plain_and_packed_refs() {
-        let dir = std::env::temp_dir().join(format!("haul-git-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-git-{}", util::new_id()));
         fs::create_dir_all(dir.join(".git/refs/heads")).unwrap();
         fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
         fs::write(dir.join(".git/refs/heads/main"), "abc123\n").unwrap();
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn snapshot_changes_with_content_and_ignores_build_output() {
-        let dir = std::env::temp_dir().join(format!("haul-snap-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-snap-{}", util::new_id()));
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("target")).unwrap();
         fs::write(dir.join("target/CACHEDIR.TAG"), "x").unwrap();

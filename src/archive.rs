@@ -1,4 +1,4 @@
-//! Unpacking the archives Haul downloads: toolchain components (`.tar.xz`) and crates (`.crate`,
+//! Unpacking the archives QuickRust downloads: toolchain components (`.tar.xz`) and crates (`.crate`,
 //! a `.tar.gz`). Both hold one top-level directory with a known name, and nothing may land
 //! outside it: an entry with an absolute path, a `..` component, a link pointing out of the
 //! tree, an entry beneath a link, a hard link or a device is an error, and so is content beyond a size bound (a
@@ -256,7 +256,7 @@ mod tests {
     use super::*;
 
     fn dest() -> PathBuf {
-        std::env::temp_dir().join(format!("haul-archive-{}", crate::util::new_id())).join("out")
+        std::env::temp_dir().join(format!("qrust-archive-{}", crate::util::new_id())).join("out")
     }
 
     fn fails(items: &[Item], expect: &str) {

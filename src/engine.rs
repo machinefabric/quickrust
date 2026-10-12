@@ -1,24 +1,24 @@
-//! The engine: the Cargo of the toolchain a command uses, which Haul runs for it with the
-//! environment Haul gives every build.
+//! The engine: the Cargo of the toolchain a command uses, which QuickRust runs for it with the
+//! environment QuickRust gives every build.
 //!
 //! - Cargo runs as `toolchain::engine_program`, a name it does not take for its own, with `CARGO`
-//!   set to Haul's `cargo`: Cargo hands that on to everything it starts, so a nested build through
-//!   `$CARGO` (Clippy's, nextest's, a build script's, a test's) runs through Haul too.
-//! - `CARGO_HOME` is Haul's (`$HAUL_HOME/cargo`): registry index and sources, git checkouts and
+//!   set to QuickRust's `cargo`: Cargo hands that on to everything it starts, so a nested build through
+//!   `$CARGO` (Clippy's, nextest's, a build script's, a test's) runs through QuickRust too.
+//! - `CARGO_HOME` is QuickRust's (`$QRUST_HOME/cargo`): registry index and sources, git checkouts and
 //!   Cargo's own configuration live there for every project on the machine.
 //! - `RUSTUP_TOOLCHAIN` names the toolchain, so that a nested `cargo` or `rustc` (a build script,
-//!   an external subcommand) reaching Haul's proxies uses the same one.
+//!   an external subcommand) reaching QuickRust's proxies uses the same one.
 //! - `RUSTC` and `RUSTDOC` are the toolchain's, unless the user set them to something else.
-//! - `PATH` starts with Haul's `bin`: Haul as `cargo`, the toolchain proxies (`PROXIES`) and
+//! - `PATH` starts with QuickRust's `bin`: QuickRust as `cargo`, the toolchain proxies (`PROXIES`) and
 //!   installed programs, so that a nested `cargo` (a build script's, an external subcommand's)
-//!   runs through Haul and a nested `rustfmt` through the same toolchain. The toolchain's own
+//!   runs through QuickRust and a nested `rustfmt` through the same toolchain. The toolchain's own
 //!   `bin` comes last.
 //! - The toolchain's `lib` comes first on the dynamic library path (`LD_LIBRARY_PATH`;
 //!   `DYLD_FALLBACK_LIBRARY_PATH` on macOS), as rustup sets it: Cargo puts the toolchain's
 //!   `lib/rustlib/<host>/lib` there for build scripts, and with the `rustc-dev` component that
 //!   holds a copy of `librustc_driver` which finds LLVM only through the toolchain's `lib`.
 //! - Cargo never deletes cached downloads on its own (`CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`):
-//!   Haul manages that space.
+//!   QuickRust manages that space.
 //!
 //! `+<toolchain>` is consumed here and never reaches Cargo.
 
@@ -30,12 +30,12 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Marks the toolchain directory Haul set `RUSTC`/`RUSTDOC`/`PATH` for, so that a nested
-/// invocation can tell Haul's settings from the user's.
-pub const ENV_ENGINE: &str = "HAUL_ENGINE";
+/// Marks the toolchain directory QuickRust set `RUSTC`/`RUSTDOC`/`PATH` for, so that a nested
+/// invocation can tell QuickRust's settings from the user's.
+pub const ENV_ENGINE: &str = "QRUST_ENGINE";
 
-/// The toolchain programs Haul's `bin` holds as proxies (links to the `haul` binary): run as one
-/// of these, Haul runs that program of the toolchain the directory uses. `cargo` is Haul itself.
+/// The toolchain programs QuickRust's `bin` holds as proxies (links to the `qrust` binary): run as one
+/// of these, QuickRust runs that program of the toolchain the directory uses. `cargo` is QuickRust itself.
 pub const PROXIES: &[&str] = &["rustc", "rustdoc", "rustfmt", "cargo-fmt", "cargo-clippy", "clippy-driver", "rust-analyzer", "rust-gdb", "rust-gdbgui", "rust-lldb", "cargo-miri"];
 
 /// Runs toolchain program `tool` (see `PROXIES`) with `args`; a leading `+toolchain` chooses the
@@ -43,7 +43,7 @@ pub const PROXIES: &[&str] = &["rustc", "rustdoc", "rustfmt", "cargo-fmt", "carg
 pub fn run_proxy(tool: &str, args: Vec<OsString>) -> ! {
     let fail = |e: String| -> ! { crate::session::fail(&e) };
     let cwd = std::env::current_dir().unwrap_or_else(|e| fail(format!("cannot determine the current directory: {}", e)));
-    let cfg = Config::load(&cwd).unwrap_or_else(|e| fail(format!("invalid Haul configuration: {}", e)));
+    let cfg = Config::load(&cwd).unwrap_or_else(|e| fail(format!("invalid QuickRust configuration: {}", e)));
     let plus = args.first().and_then(|a| a.to_str()).and_then(|a| a.strip_prefix('+')).map(str::to_string);
     let engine = for_tool(tool, plus.as_deref(), &cwd, &cfg).unwrap_or_else(|e| fail(e));
     let program = engine.toolchain.bin(tool);
@@ -56,18 +56,18 @@ pub fn run_proxy(tool: &str, args: Vec<OsString>) -> ! {
     fail(format!("could not run {}: {}", program.display(), err))
 }
 
-/// Haul's Cargo home.
+/// QuickRust's Cargo home.
 pub fn cargo_home() -> PathBuf {
     util::cargo_home()
 }
 
-/// Haul's `bin`: its own binaries, the toolchain proxies and installed programs.
+/// QuickRust's `bin`: its own binaries, the toolchain proxies and installed programs.
 pub fn bin_dir() -> PathBuf {
-    util::haul_home().join("bin")
+    util::qrust_home().join("bin")
 }
 
-/// Haul as `cargo`, in its `bin`.
-fn haul_cargo() -> PathBuf {
+/// QuickRust as `cargo`, in its `bin`.
+fn qrust_cargo() -> PathBuf {
     util::exe_candidates(&bin_dir(), "cargo").remove(0)
 }
 
@@ -98,14 +98,14 @@ impl Engine {
     }
 
     /// Cargo with `args` (without a leading `+toolchain`) and the engine's environment. Its
-    /// `argv[0]` is Haul's `cargo`, which Cargo takes for its own path and name (`CARGO`, and
+    /// `argv[0]` is QuickRust's `cargo`, which Cargo takes for its own path and name (`CARGO`, and
     /// `Usage: cargo build` in its help and errors); Windows has no separate `argv[0]`, and there
     /// Cargo goes by `CARGO` and names itself after the file it runs as.
     pub fn command(&self, args: &[OsString], inv: &Invocation) -> Command {
         let mut cmd = Command::new(&self.program);
         #[cfg(unix)]
         if self.program != self.cargo() {
-            std::os::unix::process::CommandExt::arg0(&mut cmd, haul_cargo());
+            std::os::unix::process::CommandExt::arg0(&mut cmd, qrust_cargo());
         }
         cmd.args(&args[usize::from(inv.toolchain.is_some())..]);
         for (k, v) in &self.env {
@@ -115,7 +115,7 @@ impl Engine {
     }
 
     /// The toolchain's own Cargo, run as itself with the engine's environment but for `CARGO`:
-    /// what it starts calls it back directly (`haul upstream`).
+    /// what it starts calls it back directly (`qrust upstream`).
     pub fn upstream_command(&self, args: &[OsString], inv: &Invocation) -> Command {
         let mut cmd = Command::new(self.cargo());
         cmd.args(&args[usize::from(inv.toolchain.is_some())..]);
@@ -153,7 +153,7 @@ pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine,
     Ok(engine)
 }
 
-/// The engine for a toolchain program run through Haul's proxy (`rustc`, `rustfmt`, …), with the
+/// The engine for a toolchain program run through QuickRust's proxy (`rustc`, `rustfmt`, …), with the
 /// component that provides it.
 pub fn for_tool(tool: &str, plus: Option<&str>, cwd: &Path, cfg: &Config) -> Result<Engine, String> {
     let component = match tool {
@@ -183,7 +183,7 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     let program = toolchain::engine_program(&tc).map_err(|e| format!("toolchain {}: {}", tc.id, e))?;
     let mut env = environment(&tc);
     if program != tc.cargo() {
-        env.push(("CARGO".to_string(), util::path_str(&haul_cargo())));
+        env.push(("CARGO".to_string(), util::path_str(&qrust_cargo())));
     }
     Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, program, env })
 }
@@ -205,7 +205,7 @@ pub fn library_dir(dir: &Path) -> PathBuf {
 }
 
 /// A toolchain program (`<toolchain>/bin/<program>`), or a program linked against the toolchain's
-/// libraries (Haul's compiler driver), run directly: the toolchain's libraries come first on
+/// libraries (QuickRust's compiler driver), run directly: the toolchain's libraries come first on
 /// `LIBRARY_PATH`. An inherited path (rustup puts its toolchain's `lib` there for everything it
 /// runs, `cargo test` included) could otherwise hand it another toolchain's `librustc_driver` of
 /// the same release, and with it that toolchain as its sysroot.
@@ -227,7 +227,7 @@ fn libraries_first(lib: &Path) -> OsString {
 /// The environment of commands run with toolchain `tc` (see the module notes).
 fn environment(tc: &Toolchain) -> Vec<(String, String)> {
     let inherited_engine = std::env::var_os(ENV_ENGINE).map(PathBuf::from);
-    // A variable set by an enclosing Haul for its toolchain is Haul's to replace; one the user set
+    // A variable set by an enclosing QuickRust for its toolchain is QuickRust's to replace; one the user set
     // to something else stays.
     let ours = |var: &str| match std::env::var_os(var).filter(|v| !v.is_empty()) {
         None => true,
@@ -271,12 +271,12 @@ fn environment(tc: &Toolchain) -> Vec<(String, String)> {
     env
 }
 
-/// Haul's `bin` holds `cargo` and the proxies, each Haul itself: made here when missing (or
-/// left dangling by a Haul binary that is gone), pointing at the running binary. `haul setup`
-/// installs Haul there for good.
+/// QuickRust's `bin` holds `cargo` and the proxies, each QuickRust itself: made here when missing (or
+/// left dangling by a QuickRust binary that is gone), pointing at the running binary. `qrust setup`
+/// installs QuickRust there for good.
 fn ensure_proxies() {
     let bin = bin_dir();
-    let cargo = haul_cargo();
+    let cargo = qrust_cargo();
     if std::fs::metadata(&cargo).is_ok() {
         return;
     }

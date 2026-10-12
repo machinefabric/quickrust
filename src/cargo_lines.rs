@@ -1,6 +1,6 @@
 //! Cargo's human-readable output, read: its status lines (`    Updating crates.io index`,
 //! `  Downloaded serde v1.0.229`), its progress bars (`    Building [===>  ] 9/16: syn, quote`,
-//! ` Downloading 3 crates, remaining bytes: 281.0KiB`) and everything else, which Haul shows as
+//! ` Downloading 3 crates, remaining bytes: 281.0KiB`) and everything else, which QuickRust shows as
 //! Cargo printed it.
 
 /// One line (or progress update) of Cargo's stderr, its colours removed.

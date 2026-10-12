@@ -5,8 +5,8 @@
 //! large crate) when its type context ends, and only then links the outputs (`Linker::link`):
 //! Cargo, and every unit waiting on this one, wait for the save. Wrapped here, the backend joins
 //! code generation and links inside `codegen_crate`, which runs while the type context lives,
-//! then tells Haul's wrapper the outputs are written (one byte on the pipe it passed in
-//! `HAUL_DRIVER_READY_FD`) and stops writing to stdout and stderr. rustc then saves its
+//! then tells QuickRust's wrapper the outputs are written (one byte on the pipe it passed in
+//! `QRUST_DRIVER_READY_FD`) and stops writing to stdout and stderr. rustc then saves its
 //! incremental state, its work products (handed back by `join_codegen`) and finalizes the
 //! session exactly as it would have, while the build goes on.
 //!
@@ -14,7 +14,7 @@
 //! (whose unused-feature warnings rustc emits after code generation), and the crate's metadata
 //! emitted as a file (Cargo emits it for every library) or not needed at all (binaries).
 //!
-//! For a unit Haul relinks, `HAUL_DRIVER_KEEP_OBJECTS` names a directory: before linking (which
+//! For a unit QuickRust relinks, `QRUST_DRIVER_KEEP_OBJECTS` names a directory: before linking (which
 //! deletes the object files), the `.rlink` naming them is written and they are hard-linked there.
 
 use rustc_codegen_ssa::traits::CodegenBackend;
@@ -32,8 +32,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-pub const READY_FD: &str = "HAUL_DRIVER_READY_FD";
-pub const KEEP_OBJECTS: &str = "HAUL_DRIVER_KEEP_OBJECTS";
+pub const READY_FD: &str = "QRUST_DRIVER_READY_FD";
+pub const KEEP_OBJECTS: &str = "QRUST_DRIVER_KEEP_OBJECTS";
 
 /// Keeps the ready pipe from the processes the compiler starts (linkers): it is for this one.
 pub fn keep_to_self(fd: i32) {
@@ -71,7 +71,7 @@ impl EarlyLink {
         let sess = tcx.sess;
         if !tcx.needs_metadata() {
             // An empty file reads back as no metadata.
-            let empty = outputs.with_extension(&format!("haul-no-metadata-{}", std::process::id()));
+            let empty = outputs.with_extension(&format!("qrust-no-metadata-{}", std::process::id()));
             std::fs::File::create(&empty).ok()?;
             let metadata = EncodedMetadata::from_path(empty.clone(), None, None).ok();
             let _ = std::fs::remove_file(&empty);
@@ -199,9 +199,9 @@ impl CodegenBackend for EarlyLink {
         let outputs = tcx.output_filenames(());
         let Some(metadata) = Self::metadata(tcx, outputs) else { return ongoing };
         let crate_info = CrateInfo::new(tcx, self.inner.target_cpu(sess));
-        #[cfg(haul_rustc_ge_99)]
+        #[cfg(qrust_rustc_ge_99)]
         let (compiled, work_products) = self.inner.join_codegen(ongoing, sess, tcx.incr_comp_session, outputs, &crate_info);
-        #[cfg(not(haul_rustc_ge_99))]
+        #[cfg(not(qrust_rustc_ge_99))]
         let (compiled, work_products) = self.inner.join_codegen(ongoing, sess, outputs, &crate_info);
         sess.dcx().abort_if_errors();
         if let Some(dir) = &self.keep_objects {
@@ -222,7 +222,7 @@ impl CodegenBackend for EarlyLink {
         Box::new(Linked)
     }
 
-    #[cfg(haul_rustc_ge_99)]
+    #[cfg(qrust_rustc_ge_99)]
     fn join_codegen(&self, ongoing: Box<dyn Any>, sess: &Session, incremental: Option<&rustc_session::IncrCompSession>, outputs: &OutputFilenames, crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
         match ongoing.downcast::<Linked>() {
             Ok(_) => self.handed_back(),
@@ -230,7 +230,7 @@ impl CodegenBackend for EarlyLink {
         }
     }
 
-    #[cfg(not(haul_rustc_ge_99))]
+    #[cfg(not(qrust_rustc_ge_99))]
     fn join_codegen(&self, ongoing: Box<dyn Any>, sess: &Session, outputs: &OutputFilenames, crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
         match ongoing.downcast::<Linked>() {
             Ok(_) => self.handed_back(),
