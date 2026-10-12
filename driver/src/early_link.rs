@@ -35,6 +35,17 @@ use std::sync::Mutex;
 pub const READY_FD: &str = "HAUL_DRIVER_READY_FD";
 pub const KEEP_OBJECTS: &str = "HAUL_DRIVER_KEEP_OBJECTS";
 
+/// Keeps the ready pipe from the processes the compiler starts (linkers): it is for this one.
+pub fn keep_to_self(fd: i32) {
+    extern "C" {
+        fn fcntl(fd: i32, cmd: i32, ...) -> i32;
+    }
+    // F_SETFD, FD_CLOEXEC: the same values on every Unix.
+    unsafe {
+        fcntl(fd, 2, 1);
+    }
+}
+
 pub struct EarlyLink {
     inner: Box<dyn CodegenBackend>,
     ready_fd: i32,
@@ -200,6 +211,13 @@ impl CodegenBackend for EarlyLink {
         sess.dcx().abort_if_errors();
         *self.linked.lock().unwrap_or_else(|e| e.into_inner()) = Some(work_products);
         self.linked_early.store(true, Ordering::SeqCst);
+        // What rustc reports once the compilation ends (stashed diagnostics, the warning count,
+        // the future-incompatibility report Cargo asks for), reported now, while the build still
+        // listens; rustc's own later call then reports nothing it has not. Not ready if that
+        // turned up an error: the compilation fails as it would have.
+        if sess.finish_diagnostics().is_some() || sess.dcx().has_errors().is_some() {
+            return Box::new(Linked);
+        }
         self.ready();
         Box::new(Linked)
     }

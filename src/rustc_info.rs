@@ -11,19 +11,38 @@ use std::path::{Path, PathBuf};
 /// `rustc -vV` of `rustc` (a path, or a bare name looked up on `PATH` as Cargo may pass it),
 /// remembered in `memo_dir` per binary identity and rustup toolchain selection.
 pub fn version_verbose(memo_dir: &Path, rustc: &str) -> Result<String, String> {
+    let text = ask(memo_dir, rustc, "-vV")?;
+    if !text.starts_with("rustc ") {
+        return Err(format!("{} -vV did not identify a Rust compiler", rustc));
+    }
+    Ok(text)
+}
+
+/// `rustc --print sysroot`: the toolchain the compiler is (two toolchains can share a release
+/// and a commit), remembered like `version_verbose`.
+pub fn sysroot(memo_dir: &Path, rustc: &str) -> Result<PathBuf, String> {
+    let text = ask(memo_dir, rustc, "--print=sysroot")?;
+    let path = PathBuf::from(text.trim());
+    if !path.is_absolute() {
+        return Err(format!("{} --print sysroot did not name a directory", rustc));
+    }
+    Ok(path)
+}
+
+fn ask(memo_dir: &Path, rustc: &str, arg: &str) -> Result<String, String> {
     let path = if rustc.contains(std::path::MAIN_SEPARATOR) || rustc.contains('/') { PathBuf::from(rustc) } else { util::which(rustc).ok_or_else(|| format!("{} is not on PATH", rustc))? };
     let md = fs::metadata(&path).map_err(|e| format!("cannot inspect {}: {}", path.display(), e))?;
     let env = |k: &str| std::env::var(k).unwrap_or_default();
-    let memo = memo_dir.join(util::digest_parts([util::path_str(&util::canon(&path)), md.len().to_string(), util::mtime_ns(&md).to_string(), env("RUSTUP_TOOLCHAIN"), env("RUSTUP_HOME")]));
+    let memo = memo_dir.join(util::digest_parts([util::path_str(&util::canon(&path)), md.len().to_string(), util::mtime_ns(&md).to_string(), env("RUSTUP_TOOLCHAIN"), env("RUSTUP_HOME"), arg.to_string()]));
     if let Ok(text) = fs::read_to_string(&memo) {
-        if text.starts_with("rustc ") {
+        if !text.is_empty() {
             return Ok(text);
         }
     }
-    let out = std::process::Command::new(&path).arg("-vV").stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {} -vV: {}", path.display(), e))?;
-    let text = String::from_utf8(out.stdout).map_err(|_| format!("{} -vV printed something other than UTF-8", path.display()))?;
-    if !out.status.success() || !text.starts_with("rustc ") {
-        return Err(format!("{} -vV did not identify a Rust compiler", path.display()));
+    let out = std::process::Command::new(&path).arg(arg).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {} {}: {}", path.display(), arg, e))?;
+    let text = String::from_utf8(out.stdout).map_err(|_| format!("{} {} printed something other than UTF-8", path.display(), arg))?;
+    if !out.status.success() || text.trim().is_empty() {
+        return Err(format!("{} {} failed", path.display(), arg));
     }
     util::create_private_dir(memo_dir).and_then(|_| util::write_atomic_fast(&memo, text.as_bytes())).map_err(|e| e.to_string())?;
     Ok(text)

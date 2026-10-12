@@ -658,7 +658,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // processor). Only for a toolchain's own Cargo, whose compiler is known.
     if plan.early_cutoff && up.toolchain_cargo {
         let rustc = up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
-        let started = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &path_str(&rustc)).and_then(|vv| crate::driver::start_build(&resolve::self_identity().0, &rustc, &vv).map(|s| (s, vv)));
+        let started = crate::driver::Compiler::of(&path_str(&rustc)).and_then(|c| crate::driver::start_build(&resolve::self_identity().0, &rustc, &c).map(|s| (s, c.version_verbose)));
         match started {
             Ok((true, vv)) if render => crate::ui::notice_driver_build(vv.lines().find_map(|l| l.strip_prefix("release: ")).unwrap_or("this toolchain")),
             Err(e) if render => crate::ui::notice_driver_unavailable(&e),
