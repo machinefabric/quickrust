@@ -191,3 +191,20 @@ fn every_screen_of_commands_that_do_not_build_matches_its_snapshot() {
     s.check("init", &sb.dir.join("lib-here"), "init --lib --vcs none");
     s.finish();
 }
+
+#[test]
+fn every_screen_of_a_mistake_matches_its_snapshot() {
+    let sb = Sandbox::new("screens-mistakes");
+    let nowhere = sb.dir.join("not-a-project");
+    fs::create_dir_all(&nowhere).unwrap();
+    sb.file("not-a-project/rust-toolchain.toml", &format!("[toolchain]\nchannel = \"{}\"\n", TOOLCHAIN));
+    let p = sb.package("p", "p");
+    sb.file("p/rust-toolchain.toml", &format!("[toolchain]\nchannel = \"{}\"\n", TOOLCHAIN));
+    let mut s = Screens::new(&sb);
+    s.check("no-manifest", &nowhere, "build");
+    s.check("unknown-command", &p, "biuld");
+    s.check("unknown-flag", &p, "build --frobnicate");
+    s.check("no-such-toolchain", &p, "+no-such-toolchain-xyz build");
+    s.check("no-such-package", &p, "build -p nothere");
+    s.finish();
+}

@@ -1,0 +1,4 @@
+error: no such command: `biuld`
+help: a command with a similar name exists: `build`
+help: view all installed commands with `cargo --list`
+help: find a package to install `biuld` with `cargo search cargo-biuld`
