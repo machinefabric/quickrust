@@ -121,6 +121,9 @@ jobs:
         run: |
           tasklist | grep -i -E "haul|cargo|rustc" || true
           home="$(cygpath -u "$HAUL_HOME")"
-          for f in "$home"/cache/gc.log "$home"/cache/gc-log.jsonl "$home"/toolchains/.update.log "$home"/cache/drivers/*/build.log; do
-            [ -f "$f" ] && { echo "== $f"; cat "$f"; }
+          for f in "$home"/cache/gc.log "$home"/cache/gc-log.jsonl "$home"/toolchains/.update.log "$home"/cache/drivers/*/build.log "$home"/active/*.json; do
+            if [ -f "$f" ]; then echo "== $f"; cat "$f"; echo; fi
+          done
+          for pid in $(cat "$home"/active/*.json 2>/dev/null | grep -o '"pid":[0-9]*' | cut -d: -f2); do
+            echo "== process $pid"; tasklist //FI "PID eq $pid" || true
           done
