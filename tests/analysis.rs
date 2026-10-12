@@ -753,6 +753,11 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     }
     assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not Haul's overlays");
 
+    // A `--config` of the user's after the subcommand makes Cargo ignore every `--config` before
+    // it: Haul's settings go with it, so the build is the same one, fresh.
+    ok(sb.cargo(&p).args(["build", "--config", "build.jobs=2"]));
+    assert!(debuginfo(&sb.report(&p, "latest")).is_empty(), "rebuilt without fast mode's settings: {:?}", debuginfo(&sb.report(&p, "latest")));
+
     // compat: exactly what upstream Cargo builds.
     ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
     let r = sb.report(&p, "latest");
@@ -983,6 +988,59 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("\x1b["), "{}", screen);
     assert!(stdout(&ok(sb.haul(&p).arg("warnings"))).contains("unused variable: `unused`"));
+}
+
+#[test]
+fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
+    let sb = Sandbox::new("render-run");
+    let p = sb.package("p", "p");
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n");
+    sb.file("p/src/main.rs", "use std::io::IsTerminal;\nfn main() {\n    let args: Vec<String> = std::env::args().skip(1).collect();\n    println!(\"terminal={} args={:?} sum={}\", std::io::stdout().is_terminal(), args, p::add(1, 2));\n}\n");
+    let Some(mut first) = sb.cargo_in_terminal(&p, "run -- one two") else {
+        eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
+        return;
+    };
+    // Every unit compiled in the latest session, by its `-C metadata`: one compilation each.
+    let compiled_once = |sb: &Sandbox| {
+        let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+        let mut units: Vec<String> = fs::read_dir(s["events_dir"].as_str().unwrap())
+            .unwrap()
+            .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+            .filter(|e| e["kind"] == "compile")
+            .map(|e| e["args"].as_array().unwrap().iter().filter_map(Value::as_str).find(|a| a.starts_with("metadata=")).unwrap_or("").to_string())
+            .collect();
+        let n = units.len();
+        units.sort();
+        units.dedup();
+        assert!(n > 0 && units.len() == n, "a unit was compiled twice: {:?}", units);
+    };
+
+    let out = run(&mut first);
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{}", screen);
+    assert!(screen.contains("✓ Built") && screen.contains("1 warning in p: unused_variables ×1"), "Haul's summary of the build: {}", screen);
+    assert!(screen.contains(r#"terminal=true args=["one", "two"] sum=3"#), "the program has the terminal and its arguments: {}", screen);
+    assert_eq!(screen.matches("terminal=").count(), 1, "the program ran once: {}", screen);
+    assert!(!screen.contains("let unused = 1") && !screen.contains(crate_noop()), "nothing replayed, nothing of the build's mechanics: {}", screen);
+    compiled_once(&sb);
+
+    let out = run(&mut sb.cargo_in_terminal(&p, "test").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("test adds ... ") && screen.contains("1 passed"), "{}", screen);
+    assert!(!screen.contains("let unused = 1") && !screen.contains("Compiling p v0.1.0"), "{}", screen);
+    compiled_once(&sb);
+
+    // A build that fails runs nothing, and the exit status is Cargo's.
+    sb.file("p/src/main.rs", "fn main() {\n    let x: u32 = \"no\";\n}\n");
+    let out = run(&mut sb.cargo_in_terminal(&p, "run").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert_eq!(out.status.code(), Some(101), "{}", screen);
+    assert!(screen.contains("✗ Build failed") && screen.contains("mismatched types") && !screen.contains("terminal="), "{}", screen);
+}
+
+/// The argument under which Haul is the do-nothing runner of `cargo run`'s build.
+fn crate_noop() -> &'static str {
+    "__haul-noop-runner"
 }
 
 #[test]

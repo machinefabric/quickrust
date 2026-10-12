@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::proc::{self, ExitInfo};
 use crate::resolve::{self, Family, Invocation};
 use crate::store::{self, WsStore};
+use crate::ui::Rendering;
 use crate::util::{self, canon, path_str};
 use serde_json::{json, Value};
 use std::ffi::OsString;
@@ -413,8 +414,15 @@ fn count_cache_hits(dir: &Path) -> u64 {
 }
 
 /// The user's arguments with `--config` overlays placed before the subcommand (after `+toolchain`).
+/// `args` with Haul's `--config` overlays in the group of `--config` arguments Cargo applies:
+/// before the subcommand, or after it when the user put theirs there (Cargo then ignores the
+/// ones before it).
 fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Vec<OsString> {
-    let at = usize::from(inv.toolchain.is_some()).min(args.len());
+    let at = match (inv.configs_after_command, inv.command_index) {
+        (true, Some(ci)) => ci + 1,
+        _ => usize::from(inv.toolchain.is_some()),
+    }
+    .min(args.len());
     let mut out = args[..at].to_vec();
     out.extend(overlays.iter().map(OsString::from));
     out.extend_from_slice(&args[at..]);
@@ -443,6 +451,23 @@ pub fn fail(msg: &str) -> ! {
 }
 
 /// Runs one Cargo invocation. `Err` means Haul could not delegate at all.
+/// The triple a `cargo run` builds for: its `--target`, or the host of the compiler.
+fn target_triple(inv: &Invocation, up: &resolve::Upstream) -> Option<String> {
+    if let Some(t) = inv.targets.first() {
+        return Some(t.clone());
+    }
+    let rustc = std::env::var("RUSTC").ok().filter(|r| !r.is_empty()).unwrap_or_else(|| {
+        let beside = up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+        if beside.is_file() {
+            path_str(&beside)
+        } else {
+            "rustc".into()
+        }
+    });
+    let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &rustc).ok()?;
+    vv.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
+}
+
 pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let preflight = Instant::now();
     let cwd = match &spec.cwd {
@@ -506,22 +531,41 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
 
-    // Haul's own rendering of the build's output (a terminal, a build command, nothing the user chose).
-    let render = !spec.stdout_to_stderr && spec.scenario.is_none() && crate::ui::wanted(&inv, &spec.args, &cfg);
+    // Haul's own rendering of the command's output (a terminal, nothing the user chose).
+    let mut rendering = if !spec.stdout_to_stderr && spec.scenario.is_none() { crate::ui::rendering(&inv, &spec.args, &cfg) } else { Rendering::Off };
+    // The command as it reaches Cargo, with fast mode's settings.
     let mut args = with_overlays(&spec.args, &inv, &fast.args);
+    if let Rendering::BuildFirst(how) = rendering {
+        match target_triple(&inv, &up) {
+            Some(target) => {
+                // The command's own arguments (what follows `--` is for the program) and what
+                // keeps it from running anything.
+                let (flags, configs) = crate::ui::prebuild(how, &resolve::self_identity().0, &target);
+                let own: Vec<OsString> = spec.args.iter().take_while(|a| *a != "--").cloned().chain(flags.into_iter().map(OsString::from)).collect();
+                args = with_overlays(&own, &inv, &[fast.args.clone(), configs].concat());
+            }
+            // A compiler that cannot name its host leaves the command to Cargo as it is.
+            None => rendering = Rendering::Off,
+        }
+    }
+    let render = rendering != Rendering::Off;
     if render {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
     }
-    let mut cmd = upstream_command(&up, &args, &inv);
-    cmd.current_dir(&cwd);
-    for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
-        cmd.env(k, v);
-    }
-    for k in &plan.env_remove {
-        cmd.env_remove(k);
-    }
-    cmd.env(crate::ENV_SESSION, &id);
-    cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}", std::process::id(), id));
+    let command = |args: &[OsString]| -> Command {
+        let mut cmd = upstream_command(&up, args, &inv);
+        cmd.current_dir(&cwd);
+        for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
+            cmd.env(k, v);
+        }
+        for k in &plan.env_remove {
+            cmd.env_remove(k);
+        }
+        cmd.env(crate::ENV_SESSION, &id);
+        cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}", std::process::id(), id));
+        cmd
+    };
+    let mut cmd = command(&args);
 
     let tee = !spec.stdout_to_stderr && cfg.str("measurement.cargo-json") == "auto" && inv.json_messages && inv.family.builds() && !std::io::stdout().is_terminal();
     if tee || render {
@@ -545,7 +589,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let run = proc::run_with(&mut cmd, true, &mut |child| {
         if render {
             if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
-                live = Some(crate::ui::start(out, err));
+                live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_))));
             }
         } else if let Some(out) = child.stdout.take() {
             let tx = tx.clone();
@@ -554,11 +598,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             });
         }
     });
-    let duration_ns = started.elapsed().as_nanos() as u64;
-    if let Some(l) = &lock {
-        let _ = std::fs::remove_file(l);
-    }
-    let (exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+    let mut duration_ns = started.elapsed().as_nanos() as u64;
+    let (mut exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
     // Drain the pipe; a lingering grandchild holding it open must not hang us.
     let mut messages = if tee { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { None };
     if let Some(live) = live {
@@ -573,6 +614,26 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
         }
         messages = Some(fin.messages);
+    }
+    // The command itself, once what it needs is built: the program gets the real terminal.
+    if let (Rendering::BuildFirst(how), true) = (rendering, exit.success()) {
+        // Cargo replays the warnings of fresh units, which Haul has just summarised: they are
+        // allowed here (display only: units stay fresh; Cargo versions without the setting
+        // ignore it and replay them). `cargo run`'s "Finished … Running …" would repeat what
+        // Haul reported; a test run's lines name the test binaries, and `--quiet` would change
+        // libtest's output too.
+        let quiet_warnings = ["--config".to_string(), "build.warnings=\"allow\"".to_string()];
+        let mut second = with_overlays(&spec.args, &inv, &[fast.args.clone(), quiet_warnings.to_vec()].concat());
+        if how == crate::ui::Prebuild::Runner {
+            second = crate::ui::with_arg(second, "--quiet");
+        }
+        let again = Instant::now();
+        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+        exit = e;
+        duration_ns += again.elapsed().as_nanos() as u64;
+    }
+    if let Some(l) = &lock {
+        let _ = std::fs::remove_file(l);
     }
 
     let post = Instant::now();
