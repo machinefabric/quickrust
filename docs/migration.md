@@ -44,19 +44,21 @@ any existing `cargo`.
 
 ## How the shim finds the real Cargo
 
-In this order (COMP-020), never selecting itself:
+Haul runs the Cargo the shell would have run without it, never itself:
 
-1. `HAUL_REAL_CARGO`;
-2. rustup's proxy with an explicit `+toolchain`;
-3. rustup's proxy for the current directory's toolchain;
-4. `compatibility.real-cargo` in Haul's configuration;
-5. the first other `cargo` on `PATH`;
-6. otherwise an error — never a recursive call.
+1. `HAUL_REAL_CARGO`, if set;
+2. `compatibility.real-cargo` in Haul's configuration, if set;
+3. the first `cargo` on `PATH` that is not Haul — normally rustup's proxy;
+4. if Haul itself occupies that position and no other `cargo` exists (Haul installed in
+   rustup's proxy slot), `rustup which cargo`;
+5. otherwise an error — never a recursive call.
 
-Because rules 2 and 3 run rustup's own proxy, rustup's precedence
-(`+toolchain`, `RUSTUP_TOOLCHAIN`, directory override, `rust-toolchain.toml`,
-default) is applied by rustup itself. If the resolved "Cargo" turns out to be
-another copy of Haul, the nested copy detects it and stops with a diagnostic.
+rustup's proxy applies rustup's own precedence (`+toolchain`, `RUSTUP_TOOLCHAIN`,
+directory override, `rust-toolchain.toml`, default). In fast mode Haul learns the proxy's
+choice once per set of inputs (by running a probe through it) and then calls that
+toolchain's Cargo directly with the variables the proxy would set; compat mode always goes
+through the proxy. If the resolved "Cargo" turns out to be another copy of Haul, the
+nested copy detects it and stops with a diagnostic.
 
 ## Uninstalling
 

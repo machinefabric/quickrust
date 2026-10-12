@@ -364,26 +364,27 @@ fn is_self(candidate: &Path) -> bool {
     canon(candidate) == exe || (id.is_some() && util::file_identity(candidate) == id)
 }
 
-fn rustup_bin_dir() -> Option<PathBuf> {
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    if let Some(h) = util::cargo_home() {
-        dirs.push(h.join("bin"));
-    }
-    if let Some(r) = util::which("rustup") {
-        if let Some(p) = r.parent() {
-            dirs.push(p.to_path_buf());
-        }
-    }
-    dirs.into_iter().find(|d| util::exe_candidates(d, "rustup").iter().any(|c| util::is_executable(c)))
-}
-
 fn first_exe(dir: &Path, name: &str) -> Option<PathBuf> {
     util::exe_candidates(dir, name).into_iter().find(|c| util::is_executable(c))
 }
 
-/// Resolves the real Cargo in the order of COMP-020; never returns ourselves.
+/// The first `cargo` on `PATH` that is not Haul: what the shell would run without Haul.
+fn path_cargo() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path).filter(|d| !d.as_os_str().is_empty()).find_map(|d| first_exe(&d, "cargo").filter(|c| !is_self(c)))
+}
+
+/// Resolves the Cargo a command would have run without Haul; never returns Haul itself.
+///
+/// 1. `HAUL_REAL_CARGO`;
+/// 2. `compatibility.real-cargo`;
+/// 3. the first `cargo` on `PATH` that is not Haul — normally rustup's proxy, which applies
+///    `+toolchain`, `RUSTUP_TOOLCHAIN`, directory overrides and toolchain files itself
+///    (COMP-012); fast mode learns its choice once and calls that toolchain's Cargo directly;
+/// 4. when no other Cargo is on `PATH` because Haul occupies rustup's proxy slot,
+///    `rustup which cargo`;
+/// 5. an error, never a recursion.
 pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, String> {
-    // 1. Explicit override.
     if let Some(p) = std::env::var_os(crate::ENV_REAL_CARGO).filter(|v| !v.is_empty()) {
         let p = PathBuf::from(p);
         if is_self(&p) {
@@ -394,42 +395,6 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
         }
         return Ok(Upstream { program: p, strip_toolchain_arg: false, env: vec![], rule: "explicit HAUL_REAL_CARGO" });
     }
-    // 2 + 3. rustup: the proxy applies rustup's own precedence (+toolchain, RUSTUP_TOOLCHAIN,
-    // directory override, rust-toolchain.toml, default), so we never re-implement it (COMP-012).
-    if let Some(dir) = rustup_bin_dir() {
-        if let Some(proxy) = first_exe(&dir, "cargo").filter(|p| !is_self(p)) {
-            // Fast mode: rustup's choice, learned once for these inputs, without the proxy's ~5 ms.
-            if cfg.str("mode") == "fast" {
-                if let Some((cargo, env)) = std::env::current_dir().ok().and_then(|cwd| crate::toolchain_cache::resolve(&proxy, inv.toolchain.as_deref(), &cwd)) {
-                    return Ok(Upstream { program: cargo, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup's toolchain, resolved once (proxy skipped)" });
-                }
-            }
-            let rule = if inv.toolchain.is_some() { "rustup proxy with explicit +toolchain" } else { "rustup proxy (directory toolchain)" };
-            return Ok(Upstream { program: proxy, strip_toolchain_arg: false, env: vec![], rule });
-        }
-        // The proxy slot is occupied by Haul (machine-wide install): ask rustup directly.
-        if let Some(rustup) = first_exe(&dir, "rustup") {
-            let mut cmd = Command::new(&rustup);
-            cmd.arg("which").arg("cargo");
-            if let Some(tc) = &inv.toolchain {
-                cmd.arg("--toolchain").arg(tc);
-            }
-            match cmd.output() {
-                Ok(out) if out.status.success() => {
-                    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-                    if util::is_executable(&p) && !is_self(&p) {
-                        let env = inv.toolchain.iter().map(|t| ("RUSTUP_TOOLCHAIN".to_string(), t.clone())).collect();
-                        return Ok(Upstream { program: p, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup which cargo" });
-                    }
-                }
-                Ok(out) if inv.toolchain.is_some() => {
-                    return Err(format!("rustup could not select toolchain `{}`: {}", inv.toolchain.as_deref().unwrap_or(""), String::from_utf8_lossy(&out.stderr).trim()));
-                }
-                _ => {}
-            }
-        }
-    }
-    // 4. Configured absolute binary.
     let configured = cfg.str("compatibility.real-cargo");
     if !configured.is_empty() {
         let p = PathBuf::from(configured);
@@ -438,19 +403,38 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
         }
         return Ok(Upstream { program: p, strip_toolchain_arg: false, env: vec![], rule: "configured compatibility.real-cargo" });
     }
-    // 5. PATH search excluding this executable by identity, not only by spelling.
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            if let Some(c) = first_exe(&dir, "cargo") {
-                if !is_self(&c) {
-                    return Ok(Upstream { program: c, strip_toolchain_arg: false, env: vec![], rule: "PATH search" });
-                }
+    if let Some(cargo) = path_cargo() {
+        // Fast mode: rustup's choice, learned once for these inputs, without the proxy's ~5 ms.
+        if cfg.str("mode") == "fast" {
+            if let Some((direct, env)) = std::env::current_dir().ok().and_then(|cwd| crate::toolchain_cache::resolve(&cargo, inv.toolchain.as_deref(), &cwd)) {
+                return Ok(Upstream { program: direct, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup's toolchain, resolved once (proxy skipped)" });
             }
         }
+        return Ok(Upstream { program: cargo, strip_toolchain_arg: false, env: vec![], rule: "first cargo on PATH" });
     }
-    // 6. Fail rather than recurse.
+    // Haul in rustup's proxy slot (machine-wide install): ask rustup directly.
+    if let Some(rustup) = util::which("rustup") {
+        let mut cmd = Command::new(&rustup);
+        cmd.arg("which").arg("cargo");
+        if let Some(tc) = &inv.toolchain {
+            cmd.arg("--toolchain").arg(tc);
+        }
+        match cmd.output() {
+            Ok(out) if out.status.success() => {
+                let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+                if util::is_executable(&p) && !is_self(&p) {
+                    let env = inv.toolchain.iter().map(|t| ("RUSTUP_TOOLCHAIN".to_string(), t.clone())).collect();
+                    return Ok(Upstream { program: p, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup which cargo" });
+                }
+            }
+            Ok(out) if inv.toolchain.is_some() => {
+                return Err(format!("rustup could not select toolchain `{}`: {}", inv.toolchain.as_deref().unwrap_or(""), String::from_utf8_lossy(&out.stderr).trim()));
+            }
+            _ => {}
+        }
+    }
     Err(format!(
-        "could not find an upstream Cargo to delegate to.\n  tried: {}, rustup, compatibility.real-cargo, PATH (excluding this shim)\n  fix: install Rust (https://rustup.rs) or set {}=/absolute/path/to/cargo",
+        "could not find an upstream Cargo to delegate to.\n  tried: {}, compatibility.real-cargo, PATH (excluding this shim), rustup\n  fix: install Rust (https://rustup.rs) or set {}=/absolute/path/to/cargo",
         crate::ENV_REAL_CARGO,
         crate::ENV_REAL_CARGO
     ))

@@ -82,9 +82,12 @@ and listed in `toolchain.capabilities`; nothing depends on them.
    (`invoked.timestamp`, then `stderr` / `root-output`). Cargo back-dates
    `output` to the invocation time, so it cannot be used.
 
-6. **Resolution order follows COMP-020 literally**: rustup is preferred over a
-   non-rustup `cargo` that happens to be earlier on `PATH`. Set
-   `HAUL_REAL_CARGO` to choose otherwise.
+6. **Resolution follows `PATH`, not COMP-020's rustup preference.** The specification
+   prefers rustup's proxy even over a different `cargo` earlier on `PATH`; a drop-in
+   must run what the shell would have run without it, so Haul takes the first `cargo`
+   on `PATH` that is not Haul (normally rustup's proxy, which then applies rustup's
+   precedence itself). Guessing the proxy's location from the first `rustup` on `PATH`
+   failed on macOS, where Homebrew's `rustup` is not next to the proxies.
 
 7. **Configuration errors apply to every command.** An invalid
    `.haul/config.toml` stops `cargo --version` as well as `cargo build`, with the

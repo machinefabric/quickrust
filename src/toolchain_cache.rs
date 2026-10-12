@@ -33,7 +33,7 @@ fn digest_file(p: &Path) -> Option<String> {
 
 fn key(proxy: &Path, toolchain: Option<&str>, cwd: &Path) -> Option<String> {
     let md = std::fs::metadata(proxy).ok()?;
-    let mut parts = vec!["haul-toolchain-1".to_string(), util::path_str(&util::canon(proxy)), md.len().to_string(), util::mtime_ns(&md).to_string()];
+    let mut parts = vec!["haul-toolchain-2".to_string(), util::path_str(&util::canon(proxy)), md.len().to_string(), util::mtime_ns(&md).to_string()];
     parts.push(format!("cwd={}", util::path_str(cwd)));
     parts.push(format!("+{}", toolchain.unwrap_or("")));
     let mut env: Vec<String> = std::env::vars().filter(|(k, _)| relevant(k)).map(|(k, v)| format!("{}={}", k, v)).collect();
@@ -77,6 +77,10 @@ pub fn resolve(proxy: &Path, toolchain: Option<&str>, cwd: &Path) -> Option<(Pat
             e
         }
     };
+    // Learned: the `cargo` found is Cargo itself, not a proxy; there is nothing to skip.
+    if entry["proxy"] == json!(false) {
+        return None;
+    }
     let cargo = PathBuf::from(entry["cargo"].as_str()?);
     // An uninstalled or replaced toolchain: back to the proxy, which may install it.
     if !util::is_executable(&cargo) {
@@ -113,8 +117,12 @@ fn probe(proxy: &Path, toolchain: Option<&str>, cwd: &Path) -> Option<Value> {
     }
     let via = run_probe(proxy, toolchain, cwd, &bin)?;
     let cargo = PathBuf::from(via.get("CARGO")?);
-    if !cargo.is_absolute() || util::canon(&cargo) == util::canon(proxy) {
+    if !cargo.is_absolute() {
         return None;
+    }
+    if util::canon(&cargo) == util::canon(proxy) {
+        // Not a proxy: remembered, so that later commands do not probe again.
+        return Some(json!({ "proxy": false, "learned_at": util::iso8601(util::now_wall_ns()) }));
     }
     let direct = run_probe(&cargo, None, cwd, &bin)?;
     let mut env = Map::new();
@@ -138,7 +146,7 @@ fn probe(proxy: &Path, toolchain: Option<&str>, cwd: &Path) -> Option<Value> {
             (None, None) => {}
         }
     }
-    Some(json!({ "cargo": util::path_str(&cargo), "env": env, "learned_at": util::iso8601(util::now_wall_ns()) }))
+    Some(json!({ "proxy": true, "cargo": util::path_str(&cargo), "env": env, "learned_at": util::iso8601(util::now_wall_ns()) }))
 }
 
 /// Entry point when Cargo runs this binary as the probe subcommand: print the environment.
