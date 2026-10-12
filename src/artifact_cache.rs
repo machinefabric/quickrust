@@ -64,6 +64,53 @@ fn file_identity(p: &Path) -> Option<String> {
     Some(format!("{}:{}:{}", util::path_str(&util::canon(p)), md.len(), util::mtime_ns(&md)))
 }
 
+/// Identity of a file's current content, without reading it: a rewrite changes its modification
+/// time and usually its inode, as Cargo's own fingerprints assume.
+fn content_identity(md: &fs::Metadata, path: &Path) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        format!("{}:{}:{}:{}", md.dev(), md.ino(), md.len(), util::mtime_ns(md))
+    }
+    #[cfg(not(unix))]
+    {
+        format!("{}:{}:{}", util::path_str(path), md.len(), util::mtime_ns(md))
+    }
+}
+
+fn memo_path(root: &Path, md: &fs::Metadata, path: &Path) -> PathBuf {
+    root.join("h").join(util::digest_parts([content_identity(md, path)]))
+}
+
+/// Content hash of an artifact, remembered per content identity. Every unit hashes the
+/// dependencies it links against, and a binary links them all: tens of megabytes per lookup.
+fn content_hash(root: &Path, path: &Path) -> std::io::Result<String> {
+    let md = fs::metadata(path)?;
+    let memo = memo_path(root, &md, path);
+    if let Ok(h) = fs::read_to_string(&memo) {
+        if h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Ok(h);
+        }
+    }
+    let h = util::sha256_file(path)?;
+    remember_hash(root, path, &h)?;
+    Ok(h)
+}
+
+/// Records the content hash of a file whose content is known (a restored artifact).
+fn remember_hash(root: &Path, path: &Path, hash: &str) -> std::io::Result<()> {
+    let md = fs::metadata(path)?;
+    let memo = memo_path(root, &md, path);
+    fs::create_dir_all(root.join("h"))?;
+    util::write_atomic_fast(&memo, hash.as_bytes())
+}
+
+/// Outputs another unit can name in `--extern`, whose hashes are kept with a cache entry.
+fn is_linkable(name: &str) -> bool {
+    [".rlib", ".rmeta", ".so", ".dylib", ".dll"].iter().any(|e| name.ends_with(e))
+}
+
 /// Content digest of a directory tree: relative names and file contents, sorted.
 fn tree_digest(root: &Path) -> Option<String> {
     let mut parts = Vec::new();
@@ -115,7 +162,7 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
         } else if let Some(v) = value_of(args, &mut i, "--extern") {
             // The artifact a dependency resolves to, by content: identical inputs, identical output.
             match v.split_once('=') {
-                Some((name, path)) => key.push(format!("--extern={}=sha:{}", name, util::sha256_file(Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?)),
+                Some((name, path)) => key.push(format!("--extern={}=sha:{}", name, content_hash(&root, Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?)),
                 None => key.push(format!("--extern={}", v)),
             }
         } else if let Some(v) = value_of(args, &mut i, "-L") {
@@ -243,13 +290,17 @@ impl Job {
                 let bytes = if f.ends_with(".d") { rewrite(&bytes, &pairs) } else { bytes };
                 // A fresh file, so Cargo's mtime-based staleness check sees a new output.
                 util::write_atomic_fast(&self.out_dir.join(f), &bytes)?;
+                // Its content is known: dependents hashing it for their own keys need not read it.
+                if let Some(h) = entry["hashes"][f].as_str() {
+                    remember_hash(&self.root, &self.out_dir.join(f), h)?;
+                }
                 #[cfg(unix)]
                 if entry["executable"].as_array().into_iter().flatten().any(|x| x.as_str() == Some(f)) {
                     use std::os::unix::fs::PermissionsExt;
                     fs::set_permissions(self.out_dir.join(f), fs::Permissions::from_mode(0o755))?;
                 }
             }
-            Ok(rewrite(&fs::read(dir.join("stderr")).unwrap_or_default(), &pairs))
+            Ok(rewrite(&fs::read(dir.join("stderr"))?, &pairs))
         };
         match restore() {
             Ok(stderr) => {
@@ -300,7 +351,7 @@ impl Job {
         let tmp = self.root.join("tmp").join(format!("{}-{}", key2, std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         util::create_private_dir(&tmp).map_err(|e| e.to_string())?;
-        let (mut files, mut executable) = (Vec::new(), Vec::new());
+        let (mut files, mut executable, mut hashes) = (Vec::new(), Vec::new(), serde_json::Map::new());
         for name in candidates {
             let p = self.out_dir.join(&name);
             let Ok(md) = fs::metadata(&p) else { continue };
@@ -309,6 +360,9 @@ impl Job {
                 continue;
             }
             fs::copy(&p, tmp.join(&name)).map_err(|e| e.to_string())?;
+            if is_linkable(&name) {
+                hashes.insert(name.clone(), json!(content_hash(&self.root, &p).map_err(|e| e.to_string())?));
+            }
             if has_execute_permission(&md) {
                 executable.push(name.clone());
             }
@@ -319,7 +373,7 @@ impl Job {
             return Err("the compilation left no output to cache".into());
         }
         fs::write(tmp.join("stderr"), stderr).map_err(|e| e.to_string())?;
-        let entry = json!({ "files": files, "executable": executable, "out_dir": util::path_str(&self.out_dir), "out_dir_env": self.out_dir_env, "env_deps": names, "inputs": inputs, "stored_at": util::iso8601(util::now_wall_ns()) });
+        let entry = json!({ "files": files, "executable": executable, "hashes": hashes, "out_dir": util::path_str(&self.out_dir), "out_dir_env": self.out_dir_env, "env_deps": names, "inputs": inputs, "stored_at": util::iso8601(util::now_wall_ns()) });
         util::write_json(&tmp.join("entry.json"), &entry).map_err(|e| e.to_string())?;
         fs::create_dir_all(self.root.join("e")).map_err(|e| e.to_string())?;
         // Another build may have stored the same entry meanwhile; either copy is the same.
@@ -371,12 +425,38 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
             over = over.saturating_sub(bytes);
         }
     }
+    // Remembered hashes are a few bytes each; those not refreshed for two weeks name files
+    // long gone, and a live one is simply computed again.
+    let cutoff = util::now_wall_ns().saturating_sub(14 * 86_400 * 1_000_000_000);
+    for e in fs::read_dir(root.join("h")).into_iter().flatten().flatten() {
+        if e.metadata().map(|m| util::mtime_ns(&m) < cutoff).unwrap_or(false) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
     (total, removed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remembered_hashes_follow_the_file_content() {
+        let root = std::env::temp_dir().join(format!("haul-memo-{}", util::new_id()));
+        fs::create_dir_all(&root).unwrap();
+        let f = root.join("libdep.rlib");
+        fs::write(&f, b"first").unwrap();
+        assert_eq!(content_hash(&root, &f).unwrap(), util::sha256_hex(b"first"));
+        // Remembered: a planted wrong value for this exact file identity is what comes back,
+        // which shows the file is not read again.
+        remember_hash(&root, &f, &"0".repeat(64)).unwrap();
+        assert_eq!(content_hash(&root, &f).unwrap(), "0".repeat(64));
+        // A rewrite changes the identity: the new content is hashed.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(&f, b"second, longer").unwrap();
+        assert_eq!(content_hash(&root, &f).unwrap(), util::sha256_hex(b"second, longer"));
+        fs::remove_dir_all(&root).ok();
+    }
 
     #[test]
     fn eviction_removes_least_recently_used_entries_first() {
