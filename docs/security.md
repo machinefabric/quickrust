@@ -35,7 +35,8 @@ In fast mode Haul restores compiler outputs instead of compiling when the same u
 compiled before. It is local to the user (`~/.haul/cache/artifacts`, mode 0700), has no
 network component, and is never consulted behind a rustc wrapper the user configured.
 
-- **Key.** rustc's identity (path, size, modification time), every argument with
+- **Key.** rustc's identity by its own account (`rustc -vV`: release, commit, LLVM,
+  host — asked once per compiler binary and toolchain selection), every argument with
   output and search paths removed and each `--extern` replaced by the content hash of the
   artifact it names, Cargo's per-unit variables, the content of `OUT_DIR`, then the values
   of the variables rustc reported reading and, for workspace units, the content of every
