@@ -595,7 +595,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
                     }
                 } else if render {
                     if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
-                        live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_))));
+                        live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_)), inv.alias_of.as_deref().or(inv.command.as_deref()).unwrap_or("")));
                     }
                 } else if let Some(out) = child.stdout.take() {
                     let tx = tx.clone();
