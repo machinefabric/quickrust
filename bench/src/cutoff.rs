@@ -7,8 +7,15 @@
 //! as in a developer's loop; (B) the edited source is built from nothing with empty Haul state,
 //! at the same path. Every library, metadata file and executable must be byte-identical.
 //!
-//! Both sides build without incremental compilation, without rustc's parallel frontend and
-//! without the wild linker: neither of those two produces the same bytes twice (under several
+//! An incremental loop runs alongside (its own target directory and Haul state, default settings):
+//! after each edit it builds, then appends a line to every source file the workload compiles and
+//! builds again (every workspace crate recompiles incrementally against the metadata of crates
+//! early cut-off kept), then restores them and builds again. Every one of those builds must
+//! succeed: rustc verifies, in an incremental session, what it reads from a crate whose hash
+//! did not change.
+//!
+//! Both byte-compared sides build without incremental compilation, without rustc's parallel
+//! frontend and without the wild linker: neither of those two produces the same bytes twice (under several
 //! threads rustc numbers nested statics in a varying order; wild sets one section's entry size
 //! in a varying way), which would make byte comparison meaningless, and neither changes what
 //! the cut-off restores.
@@ -224,8 +231,21 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             let home = base.join(name);
             let _ = fs::remove_dir_all(&home);
             crate::copy_tree(drivers, &home.join("drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver: {}", e)));
-            fs::write(home.join("config.toml"), "[fast]\nfrontend-threads = \"off\"\nlinker = \"off\"\n").unwrap_or_else(|e| fail(&e.to_string()));
+            if name != "home-incremental" {
+                fs::write(home.join("config.toml"), "[fast]\nfrontend-threads = \"off\"\nlinker = \"off\"\n").unwrap_or_else(|e| fail(&e.to_string()));
+            }
             home
+        };
+        let inc_target = base.join("target-incremental");
+        // A build of the incremental loop: its stderr's error lines (and any panic) when it fails.
+        let build_incremental = |home: &Path| -> Result<(), String> {
+            let out = ctx.sealed.command(&ctx.haul, &co, &inc_target, false).env("HAUL_HOME", home).arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
+            let err = String::from_utf8_lossy(&out.stderr);
+            if out.status.success() && !err.contains("panicked") && !err.contains("driver failed") {
+                Ok(())
+            } else {
+                Err(err.lines().filter(|l| l.starts_with("error") || l.contains("panicked") || l.contains("driver failed")).take(3).collect::<Vec<_>>().join(" | "))
+            }
         };
         let build = |home: &Path| -> Result<(), String> {
             let out = ctx.sealed.command(&ctx.haul, &co, &target, false).env("HAUL_HOME", home).env("CARGO_INCREMENTAL", "0").arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
@@ -238,7 +258,10 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
         println!("\n{} @ {}", w.name, &w.rev[..w.rev.len().min(10)]);
         let home_a = fresh_home("home-a");
         build(&home_a).unwrap_or_else(|e| fail(&format!("[{}] the workload does not build: {}", w.name, e)));
-        let mut candidates: Vec<LiteralEdit> = compiled_sources(&co, &target).iter().flat_map(|f| literal_edits(&co, f)).collect();
+        let home_inc = fresh_home("home-incremental");
+        build_incremental(&home_inc).unwrap_or_else(|e| fail(&format!("[{}] the workload does not build incrementally: {}", w.name, e)));
+        let sources = compiled_sources(&co, &target);
+        let mut candidates: Vec<LiteralEdit> = sources.iter().flat_map(|f| literal_edits(&co, f)).collect();
         if candidates.is_empty() {
             fail(&format!("[{}] no literal to edit in the workload's own sources", w.name));
         }
@@ -260,6 +283,24 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
                 fs::write(&path, &original).unwrap_or_else(|e| fail(&e.to_string()));
                 continue;
             }
+            // The incremental loop: the edit, then every compiled source touched and restored.
+            let mut differ: Vec<String> = Vec::new();
+            let touched = || -> Result<(), String> {
+                build_incremental(&home_inc).map_err(|e| format!("incremental build after the edit: {}", e))?;
+                let originals: Vec<(PathBuf, String)> = sources.iter().map(|f| co.join(f)).filter_map(|p| fs::read_to_string(&p).ok().map(|t| (p, t))).collect();
+                for (p, t) in &originals {
+                    fs::write(p, format!("{}\n// haul-bench\n", t)).map_err(|e| e.to_string())?;
+                }
+                let touched = build_incremental(&home_inc).map_err(|e| format!("incremental build of every crate: {}", e));
+                for (p, t) in &originals {
+                    fs::write(p, t).map_err(|e| e.to_string())?;
+                }
+                touched?;
+                build_incremental(&home_inc).map_err(|e| format!("incremental build after restoring them: {}", e))
+            };
+            if let Err(e) = touched() {
+                differ.push(e);
+            }
             let units = unit_results(&home_a);
             let restored: Vec<&str> = units.iter().filter(|(_, r)| r == "hit").map(|(n, _)| n.as_str()).collect();
             let relinked: Vec<&str> = units.iter().filter(|(_, r)| r == "relinked").map(|(n, _)| n.as_str()).collect();
@@ -269,7 +310,6 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             let home_b = fresh_home("home-b");
             let b = build(&home_b);
             let (a_out, b_out) = (outputs(&target_a), outputs(&target));
-            let mut differ: Vec<String> = Vec::new();
             match &b {
                 Err(e) => differ.push(format!("the edited source does not build from nothing: {}", e)),
                 Ok(()) => {
