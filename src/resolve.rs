@@ -151,10 +151,14 @@ pub fn classify(args: &[OsString]) -> Invocation {
     }
     inv.command_index = cmd_index;
     let mut configs: Vec<(usize, String)> = Vec::new();
+    let mut help = false;
     for i in 0..args.len() {
         let a = args[i].to_string_lossy();
         if a == "--" {
             break;
+        }
+        if a == "--help" || a == "-h" {
+            help = true;
         }
         if let Some(v) = flag_value(args, i, "--manifest-path") {
             inv.manifest_path = Some(PathBuf::from(v));
@@ -171,6 +175,11 @@ pub fn classify(args: &[OsString]) -> Invocation {
         } else if let Some(v) = flag_value(args, i, "--profile") {
             inv.release |= v == "release";
         }
+    }
+    // `cargo build --help` prints Cargo's help and builds nothing; an external subcommand's
+    // flags are its own.
+    if help && inv.family != Family::External {
+        inv.family = Family::Query;
     }
     let after = |i: usize| cmd_index.is_some_and(|ci| i > ci);
     inv.configs_after_command = configs.iter().any(|(i, _)| after(*i));
@@ -416,6 +425,12 @@ mod tests {
         assert_eq!(classify(&os(&[])).command, None);
         assert_eq!(classify(&os(&["publish", "--dry-run"])).family, Family::Passthrough);
         assert_eq!(classify(&os(&["clean"])).family, Family::Clean);
+        // Help for a command is a query, whatever the command; after `--` it is the program's.
+        for help in [&["build", "--help"][..], &["-v", "check", "-h"][..], &["test", "--release", "--help"][..]] {
+            assert_eq!(classify(&os(help)).family, Family::Query, "{:?}", help);
+        }
+        assert_eq!(classify(&os(&["run", "--", "--help"])).family, Family::Run);
+        assert_eq!(classify(&os(&["nextest", "run", "-h"])).family, Family::External);
     }
 
     #[test]
