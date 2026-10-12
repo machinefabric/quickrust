@@ -34,6 +34,9 @@ pub const ENV_WRAPPER_FAIL: &str = "HAUL_WRAPPER_FAIL";
 pub const ENV_EXEC_GUARD: &str = "HAUL_EXEC_GUARD";
 pub const ENV_REAL_CARGO: &str = "HAUL_REAL_CARGO";
 pub const ENV_HOME: &str = "HAUL_HOME";
+/// Settings for the rustc wrapper, written by the session into its event directory. A file and
+/// not more variables: programs run by `cargo run` / `cargo test` inherit Cargo's environment.
+pub const WRAPPER_CONFIG: &str = "_wrapper.config";
 
 /// Exit status used when Haul itself (not Cargo) fails before delegation.
 pub const EXIT_HAUL_ERROR: i32 = 2;

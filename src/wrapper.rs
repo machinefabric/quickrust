@@ -32,13 +32,28 @@ pub fn main() {
     let event_dir = std::env::var_os(crate::ENV_EVENT_DIR).filter(|v| !v.is_empty()).map(PathBuf::from);
     let fail_open = std::env::var(crate::ENV_WRAPPER_FAIL).map(|v| v == "open").unwrap_or(false);
 
+    // Settings the session left for this build (fast mode); none outside a Haul session.
+    let settings = event_dir.as_ref().and_then(|d| util::read_json(&d.join(crate::WRAPPER_CONFIG))).unwrap_or(Value::Null);
+    let cache_root = settings["artifact_cache"].as_str().map(PathBuf::from);
+
+    // Fast mode: rustc's parallel frontend for the units Cargo schedules. Build scripts also run
+    // rustc through this wrapper to probe the compiler; those must see it exactly as it is.
+    let mut bootstrap = false;
+    if let (Some(n), None) = (settings["frontend_threads"].as_u64(), &inner) {
+        let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
+        if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
+            argv.push(format!("-Zthreads={}", n).into());
+            bootstrap = true;
+        }
+    }
+
     let start_wall = util::now_wall_ns();
     let started = Instant::now();
 
     // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
     let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let job = match (&inner, &event_dir, &args_utf8, rustc.to_str()) {
-        (None, Some(_), Some(args), Some(r)) => artifact_cache::prepare(r, args),
+        (None, Some(_), Some(args), Some(r)) => artifact_cache::prepare(cache_root.as_deref(), r, args),
         _ => Err("off".into()),
     };
     if let Ok(j) = &job {
@@ -64,6 +79,10 @@ pub fn main() {
     let direct = |rustc: &OsString, argv: &[OsString]| {
         let mut c = Command::new(rustc);
         c.args(argv);
+        if bootstrap {
+            // Unlocks `-Z` on a stable compiler for this process only.
+            c.env("RUSTC_BOOTSTRAP", "1");
+        }
         c
     };
     let mut fallback = false;
@@ -153,6 +172,13 @@ fn run_teed(cmd: &mut Command) -> std::io::Result<(ExitInfo, Option<proc::Usage>
     // A grandchild holding the pipe open must not hang the build.
     let buf = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
     Ok((exit, usage, buf))
+}
+
+/// A compilation Cargo scheduled, as opposed to a compiler probe run by a build script:
+/// Cargo passes `-C metadata` to every unit it builds.
+fn is_cargo_unit(args: &[String]) -> bool {
+    let named = arg_value(args, "--crate-name").map(|n| n != "___").unwrap_or(false);
+    named && codegen_value(args, "metadata").is_some() && !args.iter().any(|a| a.starts_with("--print"))
 }
 
 fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -366,6 +392,15 @@ mod tests {
     #[test]
     fn depinfo_paths_with_spaces() {
         assert_eq!(split_depinfo_paths("src/lib.rs src/my\\ file.rs  build.rs"), vec!["src/lib.rs", "src/my file.rs", "build.rs"]);
+    }
+
+    #[test]
+    fn only_cargo_units_get_the_parallel_frontend() {
+        let unit: Vec<String> = ["--crate-name", "foo", "-C", "metadata=abc", "src/lib.rs"].iter().map(|s| s.to_string()).collect();
+        let probe: Vec<String> = ["--crate-name", "probe", "probe.rs"].iter().map(|s| s.to_string()).collect();
+        let info: Vec<String> = ["--crate-name", "___", "-C", "metadata=x", "--print=cfg"].iter().map(|s| s.to_string()).collect();
+        assert!(is_cargo_unit(&unit));
+        assert!(!is_cargo_unit(&probe) && !is_cargo_unit(&info));
     }
 
     #[test]

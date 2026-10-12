@@ -691,7 +691,15 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     ok(sb.cargo(&p).arg("build"));
     let r = sb.report(&p, "latest");
     assert!(!debuginfo(&r).is_empty() && debuginfo(&r).iter().all(|d| d == "line-tables-only"), "{:?}", debuginfo(&r));
-    assert_eq!(r["policy"]["fast"]["applied"].as_array().unwrap().len(), 2);
+    let applied: Vec<&str> = r["policy"]["fast"]["applied"].as_array().unwrap().iter().map(|a| a["key"].as_str().unwrap()).collect();
+    assert!(applied.contains(&"profile.dev.debug") && applied.contains(&"profile.dev.package.\"*\".debug"), "{:?}", applied);
+    // The parallel frontend reaches the units Cargo built (on machines with at least four cores).
+    if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) >= 4 {
+        assert!(applied.contains(&"rustc -Zthreads"), "{:?}", applied);
+        let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+        let events: Vec<Value> = fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|e: &Value| e["kind"] == "compile").collect();
+        assert!(!events.is_empty() && events.iter().all(|e| e["args"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().starts_with("-Zthreads="))));
+    }
     assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not Haul's overlays");
 
     // compat: exactly what upstream Cargo builds.
