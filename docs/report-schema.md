@@ -25,9 +25,9 @@ Rules (API-001 … API-004):
 | `workspace` | members, digests, directories, source state |
 | `toolchain` | Cargo and rustc identity, host, capabilities |
 | `environment` | `machine` (OS, CPU, memory, filesystem, `class`) and `variables` (allowlisted, redacted) |
-| `policy` | workload class, incremental decision, cache state |
+| `policy` | mode, the fast settings applied and left alone, workload class, incremental decision, cache state |
 | `metrics` | scalar measurements |
-| `cache` | sccache statistics for the run |
+| `cache` | sccache statistics for the run, and what Haul's artifact cache did (`artifacts`) |
 | `critical_path`, `critical_path_model` | the longest dependency chain and how trustworthy it is |
 | `units`, `edges` | the observed build DAG |
 | `rebuilds` | why each compiled unit ran |
@@ -55,12 +55,16 @@ enforced on this build) }, `scenario` (benchmarks only),
 `wall_time_ns`, `critical_path_ns`, `sum_unit_time_ns`,
 `build_script_run_time_ns`, `average_parallelism`, `max_concurrent_compilers`,
 `cpu_time_ns`, `peak_rss_bytes`, `units_observed`, `units_compiled`,
-`units_failed`, `units_fresh`, `units_fresh_referenced`, `build_scripts_run`,
+`units_restored`, `units_failed`, `units_fresh`, `units_fresh_referenced`, `build_scripts_run`,
 `probe_invocations`, `build_script_compiler_invocations`,
 `build_script_compiler_time_ns`, `output_bytes_written`, `artifact_logical_bytes`,
 `artifact_allocated_bytes`.
 
-`units_fresh` is `null` unless Cargo's JSON message stream was observed.
+`units_compiled` counts units rustc compiled; `units_restored` units Haul's artifact
+cache restored instead (Cargo asked for them; nothing was compiled). Compile time and
+CPU metrics cover compiled units only.
+`units_fresh` is `null` unless Cargo's JSON message stream was observed (it is when
+Haul rendered the build's output, or the user requested JSON on a pipe).
 `units_fresh_referenced` counts artifacts that compiled units linked against
 without them being rebuilt. `build_script_compiler_*` covers rustc processes
 that build scripts start themselves to probe the toolchain; they are real cost
@@ -74,14 +78,15 @@ but not build units, and are told apart by the absence of Cargo's
 `test`, `example`, `proc-macro`, `build-script`, `build-script-run`, `cdylib`,
 …), `mode` (`check` \| `build` \| `test` \| `run`), `target`, `role` (`host` \|
 `target` \| `unknown`), `primary`, `features`, `freshness` (`compiled` \|
-`failed` \| `fresh` \| `ran`), `start_wall_ns`, `duration_ns`,
+`restored` \| `failed` \| `fresh` \| `ran`), `start_wall_ns`, `duration_ns`,
 `rmeta_ready_ns`, `cpu_ns`, `max_rss_bytes`, `output_bytes`, `incremental`,
 `links`, `codegen` (the `-C` options rustc received), `linker`, `cacheability`,
 `on_critical_path`, `fingerprint` (component digests: `compiler`, `target`,
 `profile`, `features`, `rustflags`, `environment`, `source`, `generated`,
 `dependencies`), `exact_id`, `portable_id`, `logical_key`.
 
-`fresh` units have no timing: they were not built in this run.
+`fresh` units have no timing: they were not built in this run. A `restored` unit's
+duration is the time restoring it took.
 
 ## `edges[]`
 
@@ -119,7 +124,25 @@ rebuild).
 `non_cacheable_reasons`, `errors`, `timeouts`, `writes`, `read_bytes` (always
 `null`: sccache does not report it), `write_bytes`, `lookup_time_ns`,
 `write_time_ns`, `units` { `cacheable`, `non_cacheable_linking`,
-`non_cacheable_incremental` }, `scope`.
+`non_cacheable_incremental` }, `scope` — all about sccache, `null` with a reason when
+none is active.
+
+`artifacts` describes Haul's own artifact cache in this run: `state` (`on`, `off`, or
+`off: a rustc wrapper is configured`), `restored`, `stored`, `missed` (looked up and not
+found, then compiled without being stored, e.g. a quickly linked workspace binary),
+`not_cacheable` (units the cache does not take: those linking native libraries, given
+an argument file, or dependency binaries other than build scripts), `restore_time_ns`.
+
+## `policy`
+
+- `fast` { `mode` (`fast` \| `compat`), `applied` [ { `key`, `value`, `why` } ]: the
+  profile settings Haul passed to Cargo and the parallel frontend (`rustc -Zthreads`),
+  `yielded` [ { `key`, `because` } ]: settings Haul left alone because the user made
+  them, naming where }
+- `workload` (`local-dev` \| `ci`)
+- `incremental`: setting, decision, rationale, observed incremental units, conflict
+  with sccache
+- `cache`: provider policy and state
 
 ## `artifacts[]`
 

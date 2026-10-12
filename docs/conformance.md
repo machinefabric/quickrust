@@ -9,7 +9,7 @@ behaviour is asserted.
 |---|---|---|
 | `cargo` compatibility shim; `haul` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
 | Recursion-safe real-Cargo resolver (COMP-020…022) | done | `src/resolve.rs` · `recursion_is_refused…`, `missing_upstream…` |
-| rustup `+toolchain` and directory overrides | done, by delegating to rustup's proxy | `qa003_*` |
+| rustup `+toolchain` and directory overrides | done: compat mode delegates to rustup's proxy; fast mode learns the proxy's choice once per set of inputs and calls that Cargo directly | `qa003_*`, `fast_mode_learns_rustups_toolchain…`, `environment_reaches_build_scripts_unchanged` |
 | argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |
 | Cargo config / environment non-interference | done | `environment_reaches_build_scripts_unchanged`, `no_rebuild_when_alternating…` |
@@ -106,6 +106,23 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     independent units in a different order from run to run, so the
     compatibility test compares the set of messages byte for byte, not their
     sequence.
+
+11. **Fast by default (spec revision of 2026-10-11).** In the default `mode =
+    "fast"`, Haul changes what upstream Cargo would build in ways that keep program
+    behaviour identical: debug-information settings, rustc's parallel frontend for
+    non-incremental units, a global artifact cache, rustup's proxy skipped, and its
+    own terminal output. `mode = "compat"` builds exactly upstream's builds; the
+    compatibility corpus's byte-for-byte oracle tests run in compat mode, and fast
+    mode has tests of its own (settings yield to the user, the parallel frontend
+    reaches only non-incremental units, the cache restores correctly and never
+    serves an edited source, fast mode and upstream keep separate artifacts instead
+    of rebuilding each other). Every lever is measured by the speed index and checked
+    against the benchmark workloads' own test suites before it becomes a default.
+
+12. **`RUSTC_BOOTSTRAP` for the parallel frontend.** The stable compiler contains the
+    parallel frontend behind `-Z`. Haul's wrapper sets `RUSTC_BOOTSTRAP=1` for the
+    compiler processes of Cargo's non-incremental units only, never for build scripts
+    or the compiler probes they run, so crates do not switch to nightly code paths.
 
 ## Open decisions of the specification, as resolved here
 

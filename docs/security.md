@@ -9,13 +9,51 @@ trusts. What it adds to the trusted path:
 - the `haul` binary, in the position of `cargo`;
 - `haul-rustc-wrapper`, in front of every rustc invocation.
 
-Both forward arguments and environment unchanged. The wrapper's only side effect
-is one event file per invocation in the session's private event directory.
+Both forward the user's arguments and environment unchanged. What they add, in
+fast mode (compat mode adds nothing):
 
-## Compiler caches
+- the profile settings, as `--config` arguments before the subcommand;
+- `-Zthreads=N` for Cargo's non-incremental units, with `RUSTC_BOOTSTRAP=1` set for
+  those compiler processes only. That variable also lets such a process accept other
+  unstable flags and `#![feature]`s; a crate that enables a nightly feature
+  unconditionally would compile under Haul where plain stable Cargo rejects it.
+  Build scripts and the compiler probes they run never see it;
+- the artifact cache (below);
+- calling the toolchain's Cargo directly instead of rustup's proxy, with exactly the
+  variables the proxy sets, learned by running a probe once through the proxy: Cargo
+  executes Haul itself as an external subcommand (`cargo haul-env-probe`, from
+  `~/.haul/probe-bin`) to report its environment.
 
-Haul does not implement a cache and does not compute cache keys. Correctness of
-cached artifacts is sccache's; Haul composes the wrapper chain and reads
+The wrapper writes one event file per invocation into the session's private event
+directory, and the build's output is stored next to them.
+
+## Haul's artifact cache
+
+In fast mode Haul restores compiler outputs instead of compiling when the same unit was
+compiled before. It is local to the user (`~/.haul/cache/artifacts`, mode 0700), has no
+network component, and is never consulted behind a rustc wrapper the user configured.
+
+- **Key.** rustc's identity (path, size, modification time), every argument with
+  output and search paths removed and each `--extern` replaced by the content hash of the
+  artifact it names, Cargo's per-unit variables, the content of `OUT_DIR`, then the values
+  of the variables rustc reported reading and, for workspace units, the content of every
+  input file rustc read. Inputs rustc does not report (files or variables a proc macro
+  reads without declaring them) are not part of the key: such a macro can yield a stale
+  hit, as it can with sccache.
+- **Integrity.** Entries are written to a temporary directory and renamed into place;
+  a damaged or missing entry is a miss. A compilation whose inputs changed while it ran
+  is not stored. Anyone who can write to `~/.haul` can plant an artifact — the same
+  trust boundary as `~/.cargo/registry`, which holds the sources.
+- **Paths.** A restored unit's dep-info and diagnostics are rewritten to the current
+  output and `OUT_DIR` paths. Its binary contents are not: a dependency restored into
+  another target directory names the first one's `OUT_DIR` in panic locations and debug
+  information of build-script-generated code. Workspace units are only reused within the
+  checkout that built them.
+
+## sccache
+
+Haul does not implement sccache's cache or compute its keys. Correctness of
+sccache's artifacts is sccache's; Haul composes the wrapper chain and reads
 statistics. Consequences:
 
 - a cache outage can only result in local compilation (`cache.fail = "open"`) or

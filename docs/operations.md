@@ -4,19 +4,28 @@
 
 | `mode` | Builds |
 |---|---|
-| `fast` (default) | upstream Cargo, plus build settings that keep program behaviour identical, applied as `--config` arguments to build commands only (see the README). A setting the user made in the manifest, a Cargo config file, `CARGO_PROFILE_*` or `--config` is never overridden. |
-| `compat` | exactly upstream Cargo's builds; Haul only observes |
+| `fast` (default) | upstream Cargo, plus everything below. Program behaviour is identical. |
+| `compat` | exactly upstream Cargo's builds, through rustup's proxy; Haul only observes |
 
 Set it in `.haul/config.toml` (`mode = "compat"`), `~/.haul/config.toml`, or `HAUL_MODE`.
-The run report's `policy.fast` lists what was applied and what was left alone, with the
-user setting that caused it. External subcommands (`cargo nextest`, …) never receive the
-settings, because Cargo does not pass `--config` on to them.
+
+What fast mode does, and the settings that control it:
+
+| | Setting | Notes |
+|---|---|---|
+| Profile settings (debug info) | — | `--config` arguments to built-in build commands only. A setting the user made in the root manifest, a Cargo config file, `CARGO_PROFILE_*` or `--config` is never overridden; the report's `policy.fast` says what was applied, what was left alone, and why. External subcommands (`cargo nextest`, …) never receive them: Cargo does not pass `--config` on. |
+| rustc's parallel frontend | `fast.frontend-threads` = `auto` (up to 8 on 4+ cores) \| `off` \| a count ≥ 2 | Applied by the rustc wrapper to the units Cargo schedules that are not compiled incrementally (dependencies, release, CI), with `RUSTC_BOOTSTRAP=1` for that compiler process only. Incremental units never get it: it slows small incremental rebuilds 2–3× and switching it discards rustc's incremental session. Off behind a user rustc wrapper and when `RUSTC_BOOTSTRAP` is set. |
+| Artifact cache | `cache.artifacts` = `on` \| `off`; `cache.artifacts-max-size` (`10GiB`); `cache.artifacts-min-link-ms` (`300`) | Dependencies are shared across all checkouts; workspace units within the same checkout (their debug information names it). Linked workspace outputs that built faster than the threshold are not stored. Least recently used entries are evicted above the size. Off behind a user rustc wrapper. |
+| rustup's proxy skipped | — | rustup's toolchain choice is learned once per set of inputs and the toolchain's Cargo is called directly with the variables rustup would set. |
+| Build output | `output` = `haul` \| `cargo` | In a terminal: status line, errors in full, warnings counted, everything stored (`haul warnings`, `haul errors`, `haul log`). compat mode defaults to `cargo`. |
 
 ## Where state lives
 
 | Location | Content | Safe to delete |
 |---|---|---|
-| `~/.haul/` (`HAUL_HOME`) | per-workspace sessions, raw rustc events, reports, unit index, benchmarks, remediation records | yes; history is lost |
+| `~/.haul/` (`HAUL_HOME`) | per-workspace sessions, raw rustc events, stored build output, reports, unit index, benchmarks, remediation records | yes; history is lost |
+| `~/.haul/cache/artifacts/` | the artifact cache (bounded by `cache.artifacts-max-size`) | yes; the next builds compile instead |
+| `~/.haul/toolchains.json`, `~/.haul/probe-bin/` | rustup's learned toolchain choices, and the link through which they are learned | yes; relearned on the next build |
 | `<target>/haul-bench/` | benchmark and experiment build directories | yes |
 | `<repo>/.haul/` | configuration, budgets, baselines — written only on request | it is yours |
 
@@ -81,7 +90,7 @@ min-value = 0.6
 ```
 
 Metrics: `wall_time_ns`, `critical_path_ns`, `sum_unit_time_ns`, `cpu_time_ns`,
-`peak_rss_bytes`, `units_compiled`, `artifact_allocated_bytes`,
+`peak_rss_bytes`, `units_compiled`, `units_restored`, `artifact_allocated_bytes`,
 `artifact_logical_bytes`, `output_bytes_written`, `cache_hits`, `cache_misses`,
 `cache_non_cacheable`, `cache_hit_ratio`, `cache_lookup_time_ns`.
 
@@ -140,6 +149,10 @@ edit and restored on normal exit, on failure and on interruption. If Haul is
 killed outright, the next `haul benchmark` restores the file — but only if it is
 still exactly the original plus Haul's marker lines; otherwise it stops and
 tells you where the original is.
+
+Each benchmark builds with an artifact cache of its own inside its build directory:
+cold scenarios start every repetition with it empty (a clean build is cold, and still
+pays for storing), and an experiment's baseline and candidate never share results.
 
 Runs whose build failed, that timed out, during which source files changed, or
 that used a different toolchain than the rest are discarded and counted.

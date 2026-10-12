@@ -91,7 +91,7 @@ your program's behaviour identical:
 |---|---|
 | `profile.dev.debug = "line-tables-only"` | dev builds keep file and line information (backtraces, stepping, breakpoints) but not local-variable and type information, the bulk of the debug data that has to be generated, linked and stored |
 | `profile.dev.package."*".debug = false` | no debug information for dependencies in dev builds, as Cargo's own build-performance guide recommends |
-| rustc's parallel frontend (`-Zthreads`, up to 8) | the large crates on a build's critical path are compiled with several threads. Applied by Haul's rustc wrapper to the units Cargo schedules only (with `RUSTC_BOOTSTRAP=1` for those compiler processes, so it works on stable); build scripts and their compiler probes see the compiler exactly as it is. `fast.frontend-threads = "off"` disables it |
+| rustc's parallel frontend (`-Zthreads`, up to 8) | large crates compiled from scratch (dependencies, release and CI builds) use several threads. Applied by Haul's rustc wrapper to the units Cargo schedules that are not compiled incrementally (with `RUSTC_BOOTSTRAP=1` for those compiler processes, so it works on stable); incremental rebuilds are faster without it. Build scripts and their compiler probes see the compiler exactly as it is. `fast.frontend-threads = "off"` disables it |
 | a global artifact cache | a unit compiled once is restored instead of compiled again: dependencies across all your checkouts, your own crates within the same checkout (after `cargo clean`, when switching branches back and forth). `cache.artifacts = "off"` disables it |
 
 The profile settings reach Cargo as `--config` arguments; nothing in your repository changes. A setting
