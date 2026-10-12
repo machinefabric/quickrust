@@ -793,6 +793,105 @@ fn doctor_setup_and_uninstall() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn haul_updates_itself_from_its_releases_and_only_to_what_they_say() {
+    use std::io::Write as _;
+    let sb = Sandbox::new("selfupdate");
+    let home = sb.dir.join("user");
+    fs::create_dir_all(&home).unwrap();
+    ok(sb.haul(&sb.dir).args(["setup", "--toolchain", "none", "--no-modify-path"]).env("HOME", &home));
+    let haul = sb.home.join("bin/haul");
+    let target = if cfg!(target_arch = "aarch64") { "aarch64-unknown-linux-musl" } else { "x86_64-unknown-linux-musl" };
+    // A release: Haul's archive (here, scripts that say what they are) and its checksum.
+    let release = |says: &str| -> Vec<u8> {
+        let mut b = tar::Builder::new(Vec::new());
+        for (name, body) in [("haul", format!("#!/bin/sh\necho '{}'\n", says)), ("haul-rustc-wrapper", "#!/bin/sh\n".to_string())] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(body.len() as u64);
+            h.set_mode(0o755);
+            b.append_data(&mut h, format!("haul-{}/{}", target, name), body.as_bytes()).unwrap();
+        }
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        gz.write_all(&b.into_inner().unwrap()).unwrap();
+        gz.finish().unwrap()
+    };
+    let server = common::registry::Registry::start();
+    let publish = |version: &str, says: &str, sum_of: Option<&[u8]>| {
+        let archive = release(says);
+        let sum = sha256_hex(sum_of.unwrap_or(&archive));
+        server.put("/version.txt", format!("{}\n", version).into_bytes());
+        server.put(&format!("/haul-{}.tar.gz", target), archive);
+        server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  haul-{}.tar.gz\n", sum, target).into_bytes());
+    };
+    let update = || run(sb.haul(&sb.dir).args(["self", "update"]).env("HAUL_UPDATE_URL", &server.url));
+    let current = env!("CARGO_PKG_VERSION");
+    let before = fs::read(&haul).unwrap();
+    // Not newer: nothing to do.
+    publish(current, "haul old", None);
+    let out = update();
+    assert!(out.status.success() && stderr(&out).contains("is the latest"), "{}", stderr(&out));
+    // Tampered with: refused, nothing replaced.
+    publish("999.0.0", "haul 999.0.0", Some(b"something else"));
+    let out = update();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("is not the published file"), "{}", stderr(&out));
+    // Not the version it was published as: refused.
+    publish("999.0.0", "haul 998.0.0", None);
+    let out = update();
+    assert!(stderr(&out).contains("says \"haul 998.0.0\", not haul 999.0.0"), "{}", stderr(&out));
+    assert_eq!(fs::read(&haul).unwrap(), before);
+    // A newer release: installed, and the proxies are it.
+    publish("999.0.0", "haul 999.0.0", None);
+    let out = update();
+    assert!(out.status.success() && stderr(&out).contains("Haul 999.0.0 installed"), "{}", stderr(&out));
+    assert_eq!(stdout(&ok(std::process::Command::new(&haul).arg("--version"))), "haul 999.0.0\n");
+    assert_eq!(stdout(&ok(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version"))), "haul 999.0.0\n");
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn the_install_script_checks_the_release_and_sets_haul_up() {
+    use std::io::Write as _;
+    let sb = Sandbox::new("installsh");
+    let home = sb.dir.join("user");
+    fs::create_dir_all(&home).unwrap();
+    let target = if cfg!(target_arch = "aarch64") { "aarch64-unknown-linux-musl" } else { "x86_64-unknown-linux-musl" };
+    // The release archive, of the Haul under test.
+    let mut b = tar::Builder::new(Vec::new());
+    let haul = std::path::Path::new(env!("CARGO_BIN_EXE_haul"));
+    for name in ["haul", "haul-rustc-wrapper"] {
+        b.append_path_with_name(haul.with_file_name(name), format!("haul-{}/{}", target, name)).unwrap();
+    }
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    gz.write_all(&b.into_inner().unwrap()).unwrap();
+    let archive = gz.finish().unwrap();
+    let server = common::registry::Registry::start();
+    server.put(&format!("/haul-{}.tar.gz", target), archive.clone());
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
+    let install = || {
+        let mut c = sb.with_shim("sh", &sb.dir);
+        c.arg(&script).args(["--toolchain", "none", "--no-modify-path"]).env("HOME", &home).env("HAUL_UPDATE_URL", &server.url);
+        run(&mut c)
+    };
+    server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  x\n", "0".repeat(64)).into_bytes());
+    let refused = install();
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(stderr(&refused).contains("is not the published file"), "{}", stderr(&refused));
+    assert!(!sb.home.join("bin/haul").exists());
+    server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  haul.tar.gz\n", sha256_hex(&archive)).into_bytes());
+    let out = install();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("installed in"), "{}", stderr(&out));
+    let cargo = run(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version").env("HAUL_HOME", &sb.home).env("HOME", &home).env_remove("CARGO_HOME"));
+    assert!(stdout(&cargo).starts_with("cargo 1."), "{}", stderr(&cargo));
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+#[test]
 fn retention_bounds_recorded_state() {
     // NFR-SPACE-001 / R-014.
     let sb = Sandbox::new("retention");

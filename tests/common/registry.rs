@@ -103,6 +103,11 @@ impl Registry {
         st.files.entry(format!("/index/{}", index_path(c.name))).or_default().extend_from_slice(line.as_bytes());
     }
 
+    /// Serves `bytes` at `path` (any file: the server is a plain one).
+    pub fn put(&self, path: &str, bytes: Vec<u8>) {
+        self.state.lock().unwrap().files.insert(path.to_string(), bytes);
+    }
+
     /// Paths requested so far.
     pub fn requests(&self) -> Vec<String> {
         self.state.lock().unwrap().requests.clone()
