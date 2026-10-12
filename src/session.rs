@@ -337,6 +337,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     let wrapper_config = json!({
                         "artifact_cache": if artifacts { Some(path_str(&util::haul_home().join("cache").join("artifacts"))) } else { None },
                         "frontend_threads": threads,
+                        "unit_times": path_str(&util::haul_home().join("cache").join("unit-times")),
                     });
                     let _ = util::write_atomic_fast(&dir.join(crate::WRAPPER_CONFIG), &serde_json::to_vec(&wrapper_config).unwrap_or_default());
                     p.events_dir = Some(dir);

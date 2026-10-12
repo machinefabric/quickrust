@@ -135,6 +135,8 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
                 extra = e.to_string();
             }
             key.push(format!("-C{}", v));
+        } else if a.starts_with("-Zthreads") {
+            // How many threads rustc's frontend uses does not change what it produces.
         } else if a == "--test" {
             test = true;
             key.push(a.to_string());
