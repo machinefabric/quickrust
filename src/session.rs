@@ -312,7 +312,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     frontend_threads: threads,
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                     linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
-                    early_cutoff: artifacts && cfg.str("fast.early-cutoff") == "auto",
+                    early_cutoff: artifacts && crate::driver::wanted(cfg),
                     target_dir: engine.target.as_ref().map(|t| t.dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.

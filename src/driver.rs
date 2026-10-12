@@ -140,6 +140,33 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
     }
 }
 
+/// Whether builds under `cfg` compile with the driver (early cut-off: fast mode with the artifact
+/// cache, `fast.early-cutoff = "auto"`).
+pub fn wanted(cfg: &crate::config::Config) -> bool {
+    cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && cfg.str("fast.early-cutoff") == "auto"
+}
+
+/// Builds the driver for a toolchain just installed (`haul setup`, a channel's new release),
+/// before any build uses the toolchain: the driver is part of what an artifact-cache entry is
+/// keyed by, so what builds store without it, builds with it never find. Shown as a phase. A
+/// failure is a note, not an error: the driver only saves time, and builds try again.
+pub fn prepare(tc: &crate::toolchain::Toolchain) {
+    let rustc = tc.dir.join("bin").join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
+    let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
+    if Compiler::of(&util::path_str(&rustc)).ok().and_then(|c| find(&c)).is_some() {
+        return;
+    }
+    let mut phase = crate::ui::Phase::start();
+    phase.status(&format!("Preparing Haul's compiler driver for Rust {}", release), true);
+    match build(&rustc) {
+        Ok(_) => phase.finish(true, &format!("Compiler driver for Rust {} ready", release)),
+        Err(e) => {
+            phase.clear_line();
+            crate::ui::notice_driver_unavailable(&e);
+        }
+    }
+}
+
 /// Builds the driver for the compiler at `rustc` (a toolchain's own binary) and installs it where
 /// `find` looks; one build at a time. Adds the `rustc-dev` component to a toolchain Haul installed
 /// when it is missing; any other compiler must have it. A failure is recorded, and background builds
@@ -177,9 +204,15 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         Some(tc) => {
             let cwd = std::env::current_dir().unwrap_or_default();
             let server = crate::config::Config::load(&cwd).map(|c| c.str("toolchain.dist-server").to_string()).unwrap_or_else(|_| crate::toolchain::dist::UPSTREAM.to_string());
-            let mut progress = crate::ui::ToolchainProgress::new(&tc.id);
-            crate::toolchain::ensure_components(&layout, &tc, &["rustc-dev".to_string()], &server, &mut progress).map_err(|e| format!("{} for {}: {}", NO_RUSTC_DEV, name, e))?;
-            progress.finish(&tc);
+            let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
+            let mut progress = crate::ui::ToolchainProgress::adding(&release, "rustc-dev");
+            match crate::toolchain::ensure_components(&layout, &tc, &["rustc-dev".to_string()], &server, &mut progress) {
+                Ok(()) => progress.finish(&tc),
+                Err(e) => {
+                    progress.fail(&e);
+                    return Err(format!("{} for {}: {}", NO_RUSTC_DEV, name, e));
+                }
+            }
         }
         None => {
             let listed = fs::read_to_string(toolchain.join("lib/rustlib/components")).unwrap_or_default();

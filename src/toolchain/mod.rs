@@ -339,10 +339,10 @@ pub struct Moved {
 
 /// Brings installed floating channels (`stable`, `1.98`, `nightly`; all of them, or `only`) to
 /// their latest release: the new release is installed with the components and targets the old
-/// one had, then the channel names it. A channel whose manifest's published SHA-256 is the one
-/// it was installed from is up to date without downloading the manifest. The toolchain a channel
-/// leaves is retired later (`retire`).
-pub fn update(layout: &Layout, server: &str, only: Option<&str>, report: &mut dyn Report) -> Result<Vec<Moved>, String> {
+/// one had, and `prepare`d (Haul's compiler driver), then the channel names it. A channel whose
+/// manifest's published SHA-256 is the one it was installed from is up to date without
+/// downloading the manifest. The toolchain a channel leaves is retired later (`retire`).
+pub fn update(layout: &Layout, server: &str, only: Option<&str>, prepare: &mut dyn FnMut(&Toolchain), report: &mut dyn Report) -> Result<Vec<Moved>, String> {
     let client = net::Client::new();
     let mut moved = vec![];
     for (key, ch) in state::load(&layout.toolchains())?.channels {
@@ -382,6 +382,7 @@ pub fn update(layout: &Layout, server: &str, only: Option<&str>, report: &mut dy
             }
         }
         if id != ch.toolchain {
+            prepare(&Toolchain { id: id.clone(), dir: layout.toolchains().join(&id), linked: false });
             moved.push(Moved { channel: key.clone(), from: ch.toolchain.clone(), to: id.clone() });
         }
         state::update(&layout.toolchains(), |s| {
@@ -662,10 +663,15 @@ mod tests {
         let old = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         let pinned = ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(old, pinned);
-        assert!(update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap().is_empty(), "nothing newer yet");
+        // What the channel moves to is prepared (Haul's compiler driver) installed, before the
+        // channel names it.
+        let mut prepared = vec![];
+        let mut prepare = |tc: &Toolchain| prepared.push((tc.id.clone(), tc.record().is_some(), state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].toolchain.clone()));
+        assert!(update(&l, &d.srv.base, None, &mut prepare, &mut NoReport { waited: 0 }).unwrap().is_empty(), "nothing newer yet");
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
-        let moved = update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap();
+        let moved = update(&l, &d.srv.base, None, &mut prepare, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(moved, vec![Moved { channel: format!("stable-{}", h), from: old.id.clone(), to: format!("1.100.0-{}", h) }]);
+        assert_eq!(prepared, vec![(format!("1.100.0-{}", h), true, old.id.clone())]);
         let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(new.id, format!("1.100.0-{}", h));
         assert!(new.record().unwrap().has("rust-std", "wasm32-unknown-unknown"), "the new release gets the old one's targets");
@@ -685,12 +691,12 @@ mod tests {
         let before = state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns;
         let manifests = || d.srv.requests("/dist/channel-rust-stable.toml").len();
         let fetched = manifests();
-        assert!(update(&l, &d.srv.base, Some(&format!("stable-{}", h)), &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert!(update(&l, &d.srv.base, Some(&format!("stable-{}", h)), &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap().is_empty());
         assert_eq!(manifests(), fetched, "the manifest is not downloaded again");
         assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
         assert!(state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns > before);
         // Another channel is not touched by an update of this one.
-        assert!(update(&l, &d.srv.base, Some("nightly-x"), &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert!(update(&l, &d.srv.base, Some("nightly-x"), &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap().is_empty());
         assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
     }
 
@@ -703,7 +709,7 @@ mod tests {
         let pinned = ensure(&l, &sel("1.98.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         mark_used(&old);
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
-        update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap();
+        update(&l, &d.srv.base, None, &mut |_: &Toolchain| {}, &mut NoReport { waited: 0 }).unwrap();
         assert!(retire(&l, &mut NoReport { waited: 0 }).unwrap().is_empty(), "used within the day");
         let day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600);
         for tc in [&old, &pinned] {
