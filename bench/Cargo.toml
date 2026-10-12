@@ -2,6 +2,7 @@
 name = "haul-bench"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.80"
 publish = false
 description = "Speed index: the same developer loop through upstream Cargo and through Haul"
 license = "MIT OR Apache-2.0"

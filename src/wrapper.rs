@@ -37,6 +37,9 @@ pub struct Settings {
     pub min_link_store_ns: u64,
     /// Directory whose `ld` is the fast linker, when one is used for this build.
     pub linker_dir: Option<PathBuf>,
+    /// Compile Cargo's units with Haul's compiler driver, when it is built for the compiler, and
+    /// key dependents by the interfaces of the crates they compile against (early cut-off).
+    pub early_cutoff: bool,
 }
 
 const SETTINGS_FILE: &str = "_wrapper.settings";
@@ -111,19 +114,31 @@ pub fn main() {
         }
     }
 
+    // Early cut-off (fast mode): Haul's compiler driver compiles the units Cargo schedules,
+    // recording each library's interface hash; never compiler probes, which must see rustc as
+    // it is. Without a driver built for this compiler, rustc compiles them as usual.
+    // A unit the driver failed on before is compiled by rustc until the driver changes.
+    let mut driver: Option<PathBuf> = match (&settings, &inner, &compiler) {
+        (Some(s), None, Ok(vv)) if s.early_cutoff && is_cargo_unit(&lossy) => crate::driver::find(vv).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
+        _ => None,
+    };
+
     let start_wall = util::now_wall_ns();
     let started = Instant::now();
 
     // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
     let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let job = match (&inner, &event_dir, &args_utf8, &compiler) {
-        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, args),
+        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, driver.as_deref(), args),
         (None, Some(_), Some(_), Err(e)) if cache_root.is_some() => Err(e.clone()),
         _ => Err("off".into()),
     };
     if let Ok(j) = &job {
         if let artifact_cache::Lookup::Hit { stderr, entry, foreign_out_dir } = j.lookup() {
             use std::io::Write;
+            if let (Some(root), Some(args)) = (&cache_root, &args_utf8) {
+                let _ = artifact_cache::record_link_inputs(root, args);
+            }
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(&stderr).and_then(|_| err.flush());
             drop(err);
@@ -170,8 +185,15 @@ pub fn main() {
     }
 
     let mut captured: Option<Vec<u8>> = None;
-    let direct = |rustc: &OsString, argv: &[OsString]| {
-        let mut c = Command::new(rustc);
+    let direct = |rustc: &OsString, argv: &[OsString], driver: &Option<PathBuf>| {
+        let mut c = match driver {
+            Some(d) => {
+                let mut c = Command::new(d);
+                c.env(crate::driver::ENV_INTERFACE_HASH, "1");
+                c
+            }
+            None => Command::new(rustc),
+        };
         c.args(argv);
         if bootstrap {
             // Unlocks `-Z` on a stable compiler for this process only.
@@ -180,6 +202,7 @@ pub fn main() {
         c
     };
     let mut fallback = false;
+    let mut held: Option<(Vec<u8>, bool)> = None;
     let result = match &inner {
         Some(w) => {
             let mut c = Command::new(w);
@@ -190,29 +213,77 @@ pub fn main() {
                 Err(e) if fail_open => {
                     fallback = true;
                     eprintln!("haul: warning: could not run rustc wrapper {:?} ({}); compiling without it", w, e);
-                    proc::run(&mut direct(&rustc, &argv), true)
+                    proc::run(&mut direct(&rustc, &argv, &None), true)
                 }
                 Err(e) => Err(e),
             }
         }
-        // A cacheable miss: rustc's stderr streams through unchanged and is kept for replay.
-        None if job.is_ok() => run_teed(&mut direct(&rustc, &argv)).map(|(e, u, buf)| {
-            captured = Some(buf);
-            (e, u)
+        // A cacheable miss, or a compilation by Haul's driver: the compiler's stderr streams
+        // through and is kept for replay; under the driver, text that is not one of the JSON
+        // messages Cargo reads (a crash report) waits until the driver has succeeded.
+        None if job.is_ok() || driver.is_some() => run_teed(&mut direct(&rustc, &argv, &driver), driver.is_some()).map(|t| {
+            let teed = (t.exit, t.usage);
+            captured = Some(t.forwarded);
+            held = Some((t.held, t.artifact_notice));
+            teed
         }),
-        None => proc::run(&mut direct(&rustc, &argv), true),
+        None => proc::run(&mut direct(&rustc, &argv, &None), true),
     };
-    let (exit, usage) = match result {
+    let (mut exit, mut usage) = match result {
         Ok(r) => r,
         Err(e) => {
             eprintln!("haul: error: could not execute {:?}: {}", inner.as_ref().unwrap_or(&rustc), e);
             std::process::exit(101);
         }
     };
+    // Haul's driver must never fail a build rustc would pass. When it crashes before any of its
+    // metadata reached Cargo (no dependent compiles against it yet), its report is kept aside,
+    // the unit is marked to be compiled by rustc from now on, and rustc compiles it now; what
+    // rustc builds is not stored under the driver's key. A crash after that is rustc's own
+    // (code generation is rustc's) and goes through as it is.
+    let mut driver_failure: Option<PathBuf> = None;
+    if let (Some(d), Some((text, artifact_notice))) = (driver.clone(), held.take()) {
+        if crashed(&exit) && !artifact_notice {
+            let report = crate::driver::record_failure(&d, &unit_identity(&lossy), &text);
+            let name = arg_value(&lossy, "--crate-name").unwrap_or("?");
+            eprintln!("haul: warning: Haul's compiler driver failed on crate `{}`; compiled with rustc instead ({})", name, report.as_ref().map(|p| format!("report: {}", p.display())).unwrap_or_else(|e| format!("its report could not be kept: {}", e)));
+            driver_failure = Some(report.unwrap_or_default());
+            driver = None;
+            let rerun = match &job {
+                Ok(_) => run_teed(&mut direct(&rustc, &argv, &None), false).map(|t| {
+                    captured = Some(t.forwarded);
+                    (t.exit, t.usage)
+                }),
+                Err(_) => proc::run(&mut direct(&rustc, &argv, &None), true),
+            };
+            (exit, usage) = match rerun {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("haul: error: could not execute {:?}: {}", rustc, e);
+                    std::process::exit(101);
+                }
+            };
+        } else {
+            use std::io::Write;
+            let _ = std::io::stderr().write_all(&text);
+            if let Some(c) = captured.as_mut() {
+                c.extend_from_slice(&text);
+            }
+        }
+    }
     let dur_ns = started.elapsed().as_nanos() as u64;
 
+    // What the rlib was compiled against, for the units that will link it; best effort, as
+    // storing: a unit whose dependency went unrecorded is compiled rather than restored.
+    if let (Some(root), Some(args), None, true) = (&cache_root, &args_utf8, &inner, exit.success()) {
+        if is_cargo_unit(&lossy) {
+            let _ = artifact_cache::record_link_inputs(root, args);
+        }
+    }
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
+        // Keyed for the driver's output, which this is not.
+        (Ok(_), _) if driver_failure.is_some() => json!({ "result": "miss", "not_stored": "compiled by rustc after Haul's compiler driver failed" }),
         // A freshly linked workspace binary that builds in a moment is not worth a copy on every
         // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
         // critical path a clean rebuild waits on.
@@ -241,6 +312,12 @@ pub fn main() {
         let _ = std::panic::catch_unwind(|| {
             let mut ev = build_event(&rustc, &argv, inner.as_ref(), fallback, start_wall, dur_ns, exit, usage);
             ev["cache"] = cache;
+            if let Some(d) = &driver {
+                ev["driver"] = json!(util::path_str(d));
+            }
+            if let Some(report) = &driver_failure {
+                ev["driver_failure"] = json!(util::path_str(report));
+            }
             if let Ok(bytes) = serde_json::to_vec(&ev) {
                 let name = format!("{:020}-{}.json", start_wall, std::process::id());
                 let _ = util::write_atomic_fast(&dir.join(name), &bytes);
@@ -250,37 +327,90 @@ pub fn main() {
     proc::propagate(exit)
 }
 
-/// Runs `cmd` with its stderr copied through to ours as it arrives, returning a copy.
-fn run_teed(cmd: &mut Command) -> std::io::Result<(ExitInfo, Option<proc::Usage>, Vec<u8>)> {
+/// How rustc's JSON output marks an `artifact` notice.
+const ARTIFACT_NOTICE: &[u8] = b"\"$message_type\":\"artifact\"";
+
+/// What a compiler run through `run_teed` printed.
+struct Teed {
+    exit: ExitInfo,
+    usage: Option<proc::Usage>,
+    /// Everything copied through to our stderr, in order.
+    forwarded: Vec<u8>,
+    /// Lines held back (see `run_teed`).
+    held: Vec<u8>,
+    /// Whether an `artifact` notice went out: Cargo may have started dependents on it.
+    artifact_notice: bool,
+}
+
+/// Runs `cmd` with its stderr copied through to ours as it arrives, returning a copy. With
+/// `hold`, lines that are not JSON messages (Cargo has the compiler print only those; a crash
+/// report is plain text) are held back for the caller to decide about.
+fn run_teed(cmd: &mut Command, hold: bool) -> std::io::Result<Teed> {
     use std::io::{Read, Write};
     cmd.stderr(std::process::Stdio::piped());
-    let (tx, rx) = std::sync::mpsc::channel::<Vec<u8>>();
+    let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, Vec<u8>, bool)>();
     let r = proc::run_with(cmd, true, &mut |child| {
         if let Some(mut from) = child.stderr.take() {
             let tx = tx.clone();
             std::thread::spawn(move || {
-                let (mut buf, mut chunk) = (Vec::new(), [0u8; 16 * 1024]);
+                let (mut forwarded, mut held, mut line, mut chunk) = (Vec::new(), Vec::new(), Vec::new(), [0u8; 16 * 1024]);
+                let mut artifact_notice = false;
                 let mut out = std::io::stderr();
+                let mut emit = |bytes: &[u8], forwarded: &mut Vec<u8>| {
+                    // Forward at once: Cargo starts dependents on the compiler's `artifact` notices.
+                    let _ = out.write_all(bytes).and_then(|_| out.flush());
+                    forwarded.extend_from_slice(bytes);
+                };
                 loop {
                     match from.read(&mut chunk) {
                         Ok(0) => break,
+                        Ok(n) if !hold => emit(&chunk[..n], &mut forwarded),
                         Ok(n) => {
-                            // Forward first: Cargo starts dependents on rustc's `artifact` notices.
-                            let _ = out.write_all(&chunk[..n]).and_then(|_| out.flush());
-                            buf.extend_from_slice(&chunk[..n]);
+                            line.extend_from_slice(&chunk[..n]);
+                            while let Some(end) = line.iter().position(|&b| b == b'\n') {
+                                let rest = line.split_off(end + 1);
+                                if line.first() == Some(&b'{') {
+                                    artifact_notice |= line.windows(ARTIFACT_NOTICE.len()).any(|w| w == ARTIFACT_NOTICE);
+                                    emit(&line, &mut forwarded);
+                                } else {
+                                    held.extend_from_slice(&line);
+                                }
+                                line = rest;
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         Err(_) => break,
                     }
                 }
-                let _ = tx.send(buf);
+                held.extend_from_slice(&line);
+                let _ = tx.send((forwarded, held, artifact_notice));
             });
         }
     });
     let (exit, usage) = r?;
     // A grandchild holding the pipe open must not hang the build.
-    let buf = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
-    Ok((exit, usage, buf))
+    let (forwarded, held, artifact_notice) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
+    Ok(Teed { exit, usage, forwarded, held, artifact_notice })
+}
+
+/// Whether a compiler ended by crashing (an internal compiler error, or a fatal signal other
+/// than one asking it to stop) rather than by reporting errors in the code.
+fn crashed(exit: &ExitInfo) -> bool {
+    if exit.code == Some(101) {
+        return true;
+    }
+    #[cfg(unix)]
+    if let Some(sig) = exit.signal {
+        return matches!(sig, libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGABRT | libc::SIGFPE);
+    }
+    false
+}
+
+/// A unit as Cargo names it: its output directory and file stem (which carries Cargo's unit hash).
+fn unit_identity(args: &[String]) -> String {
+    let name = arg_value(args, "--crate-name").unwrap_or("");
+    let out = arg_value(args, "--out-dir").map(|d| util::path_str(&std::env::current_dir().unwrap_or_default().join(d))).unwrap_or_default();
+    util::digest_parts([out, format!("{}{}", name, codegen_value(args, "extra-filename").unwrap_or(""))])
 }
 
 /// The unit produces something a linker builds: a binary, test, proc-macro or dynamic library.
@@ -534,7 +664,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")) };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
         std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"linker_dir":null,"from_the_future":true}"#).unwrap();

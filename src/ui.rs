@@ -180,6 +180,23 @@ pub fn notice_foreign_out_dir(units: u64) {
     let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
 }
 
+/// Haul started building its compiler driver for this toolchain (see `driver.rs`).
+pub fn notice_driver_build(release: &str) {
+    let r = Renderer::new();
+    let _ = writeln!(
+        std::io::stderr(),
+        "{} building Haul's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)",
+        r.paint("2", "note:"),
+        release
+    );
+}
+
+/// Haul could not start building its compiler driver.
+pub fn notice_driver_unavailable(why: &str) {
+    let r = Renderer::new();
+    let _ = writeln!(std::io::stderr(), "{} Haul's compiler driver cannot be built in the background: {}", r.paint("2", "note:"), why);
+}
+
 /// The summary of a build Haul knows to be fresh without asking Cargo: the build phase of a
 /// `BuildFirst` command whose inputs have not changed since it last succeeded.
 pub fn up_to_date(units: u64, warnings_line: Option<&str>) {

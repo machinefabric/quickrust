@@ -885,6 +885,104 @@ fn main() {
 }
 
 #[test]
+fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
+    let sb = Sandbox::new("cutoff");
+    sb.file("w/Cargo.toml", "[workspace]\nmembers = [\"base\", \"mid\", \"app\"]\nresolver = \"2\"\n");
+    sb.file("w/base/Cargo.toml", "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    let base = sb.file("w/base/src/lib.rs", "pub fn greeting() -> String {\n    format!(\"{}-{}\", \"hello\", 1)\n}\n\npub fn wrap<T: std::fmt::Display>(t: T) -> String {\n    format!(\"<{}>\", t)\n}\n");
+    sb.file("w/mid/Cargo.toml", "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nbase = { path = \"../base\" }\n");
+    sb.file("w/mid/src/lib.rs", "pub fn message() -> String {\n    format!(\"{} {}\", base::greeting(), base::wrap(2))\n}\n");
+    // The binary names only `mid`; `base` reaches it through `mid`.
+    sb.file("w/app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n");
+    sb.file("w/app/src/main.rs", "fn main() {\n    println!(\"{}\", mid::message());\n}\n");
+    let w = sb.dir.join("w");
+    let built = run(sb.haul(&w).args(["driver", "build"]));
+    assert!(built.status.success(), "{}", stderr(&built));
+    let cargo = || {
+        let mut c = sb.cargo(&w);
+        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c
+    };
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello-1 <2>\n");
+    assert!(cache_details(&sb).iter().all(|d| !d.contains("driver_failure")), "{:#?}", cache_details(&sb));
+
+    // A body `mid` cannot observe: `mid` is restored as it was, `base` is compiled, and the
+    // binary, which links `base`'s code, is linked anew.
+    let text = fs::read_to_string(&base).unwrap();
+    fs::write(&base, text.replace("\"hello\"", "\"howdy\"")).unwrap();
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "howdy-1 <2>\n");
+    let results = cache_results(&sb);
+    assert!(results.contains(&("mid".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
+    assert!(results.iter().any(|(n, r)| n == "base" && r != "hit") && results.iter().any(|(n, r)| n == "app" && r != "hit"), "{:#?}", cache_details(&sb));
+
+    // A generic body is compiled into `mid`: `mid` is compiled again.
+    let text = fs::read_to_string(&base).unwrap();
+    fs::write(&base, text.replace("\"<{}>\"", "\"[{}]\"")).unwrap();
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "howdy-1 [2]\n");
+    assert!(cache_results(&sb).iter().any(|(n, r)| n == "mid" && r != "hit"), "{:#?}", cache_details(&sb));
+}
+
+#[test]
+fn a_compiler_driver_that_crashes_never_fails_the_build() {
+    let sb = Sandbox::new("driver-crash");
+    let p = sb.package("p", "p");
+    let built = run(sb.haul(&p).args(["driver", "build"]));
+    assert!(built.status.success(), "{}", stderr(&built));
+    // A driver that fails as an internal compiler error does, wherever Haul looks for this
+    // compiler's driver.
+    let driver = std::path::PathBuf::from(stdout(&built).trim());
+    fs::write(&driver, "#!/bin/sh\necho \"thread 'rustc' panicked at compiler/rustc_middle/src/lib.rs:1:1:\" >&2\necho \"error: the compiler unexpectedly panicked. this is a bug.\" >&2\nexit 101\n").unwrap();
+    make_executable(&driver);
+
+    let cargo = || {
+        let mut c = sb.cargo(&p);
+        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c
+    };
+    let first = ok(cargo().arg("build"));
+    let err = stderr(&first);
+    assert!(err.contains("Haul's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", err);
+    assert!(!err.contains("panicked"), "the driver's report is kept aside, not shown: {}", err);
+    let reports: Vec<_> = fs::read_dir(driver.with_file_name("failed")).unwrap().map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect();
+    assert!(!reports.is_empty() && reports.iter().all(|r| r.contains("panicked")), "{:?}", reports);
+    assert!(cache_details(&sb).iter().any(|d| d.contains("compiled by rustc after Haul's compiler driver failed")), "{:#?}", cache_details(&sb));
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "3\n");
+
+    // The units it failed on are compiled by rustc from then on, without a word.
+    let lib = p.join("src/lib.rs");
+    fs::write(&lib, fs::read_to_string(&lib).unwrap().replace("x + y", "y + x")).unwrap();
+    let again = ok(cargo().arg("build"));
+    assert!(!stderr(&again).contains("compiler driver failed"), "{}", stderr(&again));
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "3\n");
+}
+
+#[test]
+fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
+    let sb = Sandbox::new("driver-background");
+    let p = sb.package("p", "p");
+    let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
+    first.env("HAUL_EARLY_CUTOFF", "auto");
+    let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
+    assert!(screen.contains("building Haul's compiler driver for Rust") && screen.contains("in the background"), "{}", screen);
+    // Built once: a build while it runs, or after, starts no other.
+    let status = || stdout(&ok(sb.haul(&p).args(["driver", "status"])));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    while !status().starts_with("built:") {
+        assert!(std::time::Instant::now() < deadline, "the background build did not finish: {}", status());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let lib = p.join("src/lib.rs");
+    fs::write(&lib, fs::read_to_string(&lib).unwrap().replace("x + y", "y + x")).unwrap();
+    let mut second = sb.cargo_in_terminal(&p, "build").unwrap();
+    second.env("HAUL_EARLY_CUTOFF", "auto");
+    let screen = String::from_utf8_lossy(&run(&mut second).stdout).into_owned();
+    assert!(!screen.contains("compiler driver"), "{}", screen);
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    let compiled: Vec<Value> = fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["kind"] == "compile").collect();
+    assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+}
+
+#[test]
 fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let sb = Sandbox::new("artifacts");
     // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.

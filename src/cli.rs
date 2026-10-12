@@ -448,9 +448,10 @@ fn cmd_driver(raw: &[OsString]) -> CmdResult {
         }
         None | Some("status") => {
             let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &util::path_str(&rustc))?;
-            match crate::driver::find(&vv) {
-                Some(exe) => println!("built: {}", exe.display()),
-                None => println!("not built for {} (expected in {}); `haul driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&vv)?.display()),
+            match (crate::driver::find(&vv), crate::driver::build_failure(&vv)) {
+                (Some(exe), _) => println!("built: {}", exe.display()),
+                (None, Some(why)) => println!("could not be built for {}: {}\n`haul driver build` tries again", vv.lines().next().unwrap_or("this compiler"), why.trim()),
+                (None, None) => println!("not built for {} (expected in {}); `haul driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&vv)?.display()),
             }
             Ok(0)
         }
