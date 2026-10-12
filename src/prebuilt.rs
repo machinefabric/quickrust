@@ -1,16 +1,18 @@
-//! The build phase of `cargo run` / `cargo test` in a terminal, skipped when it is known fresh.
+//! Builds Haul renders in a terminal, skipped when they are known fresh.
 //!
-//! Haul renders such a command in two phases: it builds what the command needs, then runs the
-//! command, which checks freshness itself and runs the program (see `ui::Rendering`). On a build
-//! with nothing to do, the first phase only repeats what the second does. After a successful
-//! build phase Haul records a stamp: every file the build's freshness depends on that Haul can
-//! name, with its size and modification time. The next identical command (same arguments,
-//! directory, environment, Cargo and toolchain) whose stamped files are all unchanged goes
-//! straight to the command.
+//! After a successful build Haul records a stamp: every file the build's freshness depends on
+//! that Haul can name, with its size and modification time — the sources the compiler read,
+//! build scripts' declared inputs (every file of the package for a script that declares none),
+//! manifests, `Cargo.lock`, Cargo configuration, toolchain files and the compiler, the outputs.
+//! The key holds the rest: arguments, directory, environment, Haul's and Cargo's identity. The
+//! next identical command whose stamped files are all unchanged is known fresh.
 //!
-//! Cargo stays the judge: the command re-checks freshness and compiles whatever is stale. A stamp
-//! that misses an input therefore never runs a stale program; that build is only shown in
-//! Cargo's words instead of Haul's.
+//! - `cargo run` / `cargo test` (built first, then run; see `ui::Rendering`): the build phase is
+//!   skipped and the command runs at once. Cargo still checks freshness in it, so a stamp that
+//!   missed an input only means that build is shown in Cargo's words.
+//! - A build alone: Haul's verdict is the answer and Cargo is not started. Given only when Haul
+//!   runs a toolchain's own Cargo, whose identity is in the key (rustup's proxy picks anew on
+//!   every call). A test checks Haul's verdict against Cargo's after every kind of change.
 
 use crate::util;
 use serde_json::{json, Value};
@@ -77,16 +79,45 @@ fn unit_inputs(filename: &Path, base: &Path, out: &mut BTreeSet<PathBuf>) {
     }
 }
 
-/// Paths a build script asked to be rerun for (`cargo::rerun-if-changed`), relative to its package.
+/// What decides whether Cargo reruns a local package's build script: the paths it declared
+/// (`cargo::rerun-if-changed`, a directory meaning everything beneath it), or, when it declared
+/// none, every file of the package.
 fn rerun_if_changed(out_dir: &Path, package_dir: &Path, out: &mut BTreeSet<PathBuf>) {
     // Cargo's classic layout keeps the script's output next to `out/`; the newer one in `run/`.
     let Some(unit) = out_dir.parent() else { return };
     for output in [unit.join("output"), unit.join("run").join("output")] {
         let Ok(text) = fs::read_to_string(&output) else { continue };
         out.insert(output);
+        let mut declared = false;
         for l in text.lines() {
             if let Some(p) = l.strip_prefix("cargo::rerun-if-changed=").or_else(|| l.strip_prefix("cargo:rerun-if-changed=")) {
-                out.insert(package_dir.join(p));
+                declared = true;
+                files_beneath(&package_dir.join(p), out);
+            }
+            declared |= l.starts_with("cargo::rerun-if-env-changed=") || l.starts_with("cargo:rerun-if-env-changed=");
+        }
+        if !declared {
+            files_beneath(package_dir, out);
+        }
+    }
+}
+
+/// `path` itself, or, for a directory, every file beneath it except build directories (they
+/// hold a `CACHEDIR.TAG`) and version control.
+fn files_beneath(path: &Path, out: &mut BTreeSet<PathBuf>) {
+    if !path.is_dir() {
+        out.insert(path.to_path_buf());
+        return;
+    }
+    if path.join("CACHEDIR.TAG").exists() || path.file_name().is_some_and(|n| n == ".git") {
+        return;
+    }
+    for e in fs::read_dir(path).into_iter().flatten().flatten() {
+        let p = e.path();
+        match e.file_type() {
+            Ok(t) if t.is_dir() => files_beneath(&p, out),
+            _ => {
+                out.insert(p);
             }
         }
     }
@@ -98,8 +129,22 @@ fn local_package_dir(package_id: &str) -> Option<PathBuf> {
     Some(PathBuf::from(rest.split('#').next()?))
 }
 
-/// Records the stamp of a successful build phase from its Cargo messages.
-pub fn record(store_dir: &Path, key: &str, messages: &[Value], cwd: &Path, ws_root: Option<&Path>, units: u64, warnings_line: Option<&str>) {
+/// A successful build, as recorded in a stamp.
+pub struct Built<'a> {
+    /// Cargo's messages, compact (see `session::summarize_message`).
+    pub messages: &'a [Value],
+    pub cwd: &'a Path,
+    pub ws_root: Option<&'a Path>,
+    /// The toolchain Cargo that ran it.
+    pub cargo: &'a Path,
+    /// What Haul summarised: units, and the warnings line.
+    pub units: u64,
+    pub warnings_line: Option<&'a str>,
+}
+
+/// Records the stamp of a successful build from its Cargo messages.
+pub fn record(store_dir: &Path, key: &str, built: &Built) {
+    let Built { messages, cwd, ws_root, cargo, units, warnings_line } = *built;
     let immutable: Vec<PathBuf> = util::cargo_home().map(|h| vec![h.join("registry"), h.join("git")]).unwrap_or_default();
     let base = ws_root.unwrap_or(cwd);
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
@@ -130,10 +175,17 @@ pub fn record(store_dir: &Path, key: &str, messages: &[Value], cwd: &Path, ws_ro
         files.insert(root.join("Cargo.lock"));
     }
     // Cargo's configuration: present or not, in every directory it is read from.
+    // And the toolchain: rustup's choice (toolchain files, its settings) and the compiler.
     for dir in cwd.ancestors() {
         files.insert(dir.join(".cargo/config.toml"));
         files.insert(dir.join(".cargo/config"));
+        files.insert(dir.join("rust-toolchain.toml"));
+        files.insert(dir.join("rust-toolchain"));
     }
+    if let Some(rustup) = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| util::home_dir().map(|h| h.join(".rustup"))) {
+        files.insert(rustup.join("settings.toml"));
+    }
+    files.insert(cargo.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX)));
     if let Some(home) = util::cargo_home() {
         files.insert(home.join("config.toml"));
         files.insert(home.join("config"));
@@ -173,7 +225,9 @@ mod tests {
         fs::write(ws.join("target/debug/deps/app-0123"), "binary").unwrap();
         let exe = util::path_str(&ws.join("target/debug/deps/app-0123"));
         let messages = vec![json!({ "reason": "compiler-artifact", "filenames": [exe], "executable": exe, "manifest_path": util::path_str(&ws.join("Cargo.toml")) })];
-        record(&store, "k", &messages, &ws, Some(&ws), 3, Some("⚠ 1 warning"));
+        let cargo = ws.join("bin/cargo");
+        let built = |warnings_line| Built { messages: &messages, cwd: &ws, ws_root: Some(&ws), cargo: &cargo, units: 3, warnings_line };
+        record(&store, "k", &built(Some("⚠ 1 warning")));
         assert_eq!(fresh(&store, "k"), Some((3, Some("⚠ 1 warning".to_string()))));
         assert_eq!(fresh(&store, "another command"), None);
 
@@ -184,17 +238,17 @@ mod tests {
         // A source the unit read.
         edit(&ws.join("src/util.rs"), "pub fn f() {}\n");
         assert_eq!(fresh(&store, "k"), None);
-        record(&store, "k", &messages, &ws, Some(&ws), 3, None);
+        record(&store, "k", &built(None));
         assert!(fresh(&store, "k").is_some());
         // Cargo configuration that did not exist.
         fs::create_dir_all(ws.join(".cargo")).unwrap();
         fs::write(ws.join(".cargo/config.toml"), "[build]\njobs = 1\n").unwrap();
         assert_eq!(fresh(&store, "k"), None);
-        record(&store, "k", &messages, &ws, Some(&ws), 3, None);
+        record(&store, "k", &built(None));
         // The lockfile, and the program itself going away.
         edit(&ws.join("Cargo.lock"), "# changed\n");
         assert_eq!(fresh(&store, "k"), None);
-        record(&store, "k", &messages, &ws, Some(&ws), 3, None);
+        record(&store, "k", &built(None));
         fs::remove_file(ws.join("target/debug/deps/app-0123")).unwrap();
         assert_eq!(fresh(&store, "k"), None);
         fs::remove_dir_all(&base).ok();

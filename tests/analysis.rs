@@ -1193,3 +1193,86 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     let e = run(sb.haul(&p).args(["analyze", "cache", "--sort", "x"]));
     assert!(!e.status.success() && stderr(&e).contains("no list of records"), "{}", stderr(&e));
 }
+
+#[test]
+fn haul_says_up_to_date_only_when_cargo_would_build_nothing() {
+    // The gate for Haul judging freshness itself: after every kind of change, a build Haul calls
+    // up to date must be one Cargo, asked directly, finds entirely fresh.
+    let sb = Sandbox::new("oracle");
+    let ws = sb.dir.join("ws");
+    sb.file("ws/Cargo.toml", "[workspace]\nmembers = [\"app\", \"data\", \"assets\"]\nresolver = \"2\"\n");
+    // A build script that declares nothing: Cargo reruns it when any file of its package changes.
+    sb.file("ws/data/Cargo.toml", "[package]\nname = \"data\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    sb.file("ws/data/build.rs", "fn main() {\n    let text = std::fs::read_to_string(\"data.txt\").unwrap();\n    std::fs::write(std::path::Path::new(&std::env::var(\"OUT_DIR\").unwrap()).join(\"data.rs\"), format!(\"pub const DATA: &str = {:?};\", text.trim())).unwrap();\n}\n");
+    sb.file("ws/data/data.txt", "one\n");
+    sb.file("ws/data/notes.md", "notes\n");
+    sb.file("ws/data/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/data.rs\"));\n");
+    // One that declares a directory.
+    sb.file("ws/assets/Cargo.toml", "[package]\nname = \"assets\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    sb.file("ws/assets/build.rs", "fn main() {\n    println!(\"cargo::rerun-if-changed=files\");\n    let n = std::fs::read_dir(\"files\").unwrap().count();\n    println!(\"cargo::rustc-env=ASSET_COUNT={}\", n);\n}\n");
+    sb.file("ws/assets/files/a.txt", "a\n");
+    sb.file("ws/assets/README.md", "readme\n");
+    sb.file("ws/assets/src/lib.rs", "pub const COUNT: &str = env!(\"ASSET_COUNT\");\n");
+    sb.file("ws/app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndata = { path = \"../data\" }\nassets = { path = \"../assets\" }\n");
+    sb.file("ws/app/src/main.rs", "fn main() {\n    println!(\"{} {} {}\", data::DATA, assets::COUNT, option_env!(\"GREETING\").unwrap_or(\"-\"));\n}\n");
+
+    let Some(_) = sb.cargo_in_terminal(&ws, "build") else {
+        eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
+        return;
+    };
+    let pause = || std::thread::sleep(std::time::Duration::from_millis(20));
+    let edit = |rel: &str, text: &str| {
+        pause();
+        sb.file(&format!("ws/{}", rel), text);
+    };
+    type Change<'a> = (&'a str, Box<dyn Fn() + 'a>, Option<(&'a str, &'a str)>);
+    let changes: Vec<Change> = vec![
+        ("nothing", Box::new(|| {}), None),
+        ("edit a source", Box::new(|| edit("app/src/main.rs", "fn main() {\n    println!(\"{}|{}|{}\", data::DATA, assets::COUNT, option_env!(\"GREETING\").unwrap_or(\"-\"));\n}\n")), None),
+        ("nothing", Box::new(|| {}), None),
+        ("touch a source", Box::new(|| {
+            pause();
+            fs::File::options().write(true).open(ws.join("data/src/lib.rs")).unwrap().set_modified(std::time::SystemTime::now()).unwrap();
+        }), None),
+        ("edit an undeclared build script input", Box::new(|| edit("data/data.txt", "two\n")), None),
+        ("edit another file of that package", Box::new(|| edit("data/notes.md", "more notes\n")), None),
+        ("add a file to a declared directory", Box::new(|| edit("assets/files/b.txt", "b\n")), None),
+        ("edit a file the script did not declare", Box::new(|| edit("assets/README.md", "changed\n")), None),
+        ("set a variable the program reads", Box::new(|| {}), Some(("GREETING", "hi"))),
+        ("nothing, variable still set", Box::new(|| {}), Some(("GREETING", "hi"))),
+        ("add Cargo configuration", Box::new(|| edit(".cargo/config.toml", "[build]\nrustflags = [\"--cfg\", \"oracle_test\"]\n")), None),
+        ("remove it", Box::new(|| {
+            pause();
+            fs::remove_file(ws.join(".cargo/config.toml")).unwrap();
+        }), None),
+        ("change the manifest", Box::new(|| edit("app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ndata = { path = \"../data\" }\nassets = { path = \"../assets\" }\n\n[features]\nextra = []\n")), None),
+        ("delete the program", Box::new(|| {
+            fs::remove_file(ws.join("target/debug/app")).unwrap();
+        }), None),
+        ("nothing", Box::new(|| {}), None),
+    ];
+    ok(sb.cargo(&ws).arg("build"));
+    let mut skipped = Vec::new();
+    for (what, change, var) in &changes {
+        change();
+        let mut haul = sb.cargo_in_terminal(&ws, "build").unwrap();
+        let mut cargo = sb.cargo(&ws);
+        cargo.args(["build", "-v"]);
+        if let Some((k, v)) = var {
+            haul.env(k, v);
+            cargo.env(k, v);
+        }
+        let screen = String::from_utf8_lossy(&run(&mut haul).stdout).into_owned();
+        assert!(screen.contains('✓'), "{}: {}", what, screen);
+        if screen.contains("Up to date") {
+            skipped.push(*what);
+            // Asked through a pipe, where Haul never judges, Cargo must find nothing to do.
+            let verdict = ok(&mut cargo);
+            let said = stderr(&verdict);
+            let work: Vec<&str> = said.lines().map(str::trim_start).filter(|l| l.starts_with("Compiling") || l.starts_with("Running")).collect();
+            assert!(work.is_empty(), "Haul said up to date after `{}`, but Cargo had work: {:?}", what, work);
+        }
+    }
+    // And it does answer when nothing changed: the point of judging at all.
+    assert!(skipped.iter().filter(|w| w.starts_with("nothing")).count() >= 3, "{:?}", skipped);
+}

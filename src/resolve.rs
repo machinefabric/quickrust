@@ -360,6 +360,9 @@ pub struct Upstream {
     pub program: PathBuf,
     /// The program is a concrete toolchain binary, so a leading `+toolchain` must not be forwarded.
     pub strip_toolchain_arg: bool,
+    /// The program is the Cargo of the toolchain this command uses, as resolved for it, and not
+    /// rustup's proxy, which picks a toolchain anew on every call.
+    pub toolchain_cargo: bool,
     pub env: Vec<(String, String)>,
     pub rule: &'static str,
 }
@@ -405,7 +408,7 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
         if !util::is_executable(&p) {
             return Err(format!("{}={} is not an executable file", crate::ENV_REAL_CARGO, p.display()));
         }
-        return Ok(Upstream { program: p, strip_toolchain_arg: false, env: vec![], rule: "explicit HAUL_REAL_CARGO" });
+        return Ok(Upstream { program: p, strip_toolchain_arg: false, toolchain_cargo: false, env: vec![], rule: "explicit HAUL_REAL_CARGO" });
     }
     let configured = cfg.str("compatibility.real-cargo");
     if !configured.is_empty() {
@@ -413,16 +416,16 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
         if !p.is_absolute() || !util::is_executable(&p) || is_self(&p) {
             return Err(format!("compatibility.real-cargo = {:?} (from {}) must be an absolute path to the upstream Cargo binary", configured, cfg.origin("compatibility.real-cargo")));
         }
-        return Ok(Upstream { program: p, strip_toolchain_arg: false, env: vec![], rule: "configured compatibility.real-cargo" });
+        return Ok(Upstream { program: p, strip_toolchain_arg: false, toolchain_cargo: false, env: vec![], rule: "configured compatibility.real-cargo" });
     }
     if let Some(cargo) = path_cargo() {
         // Fast mode: rustup's choice, learned once for these inputs, without the proxy's ~5 ms.
         if cfg.str("mode") == "fast" {
             if let Some((direct, env)) = std::env::current_dir().ok().and_then(|cwd| crate::toolchain_cache::resolve(&cargo, inv.toolchain.as_deref(), &cwd)) {
-                return Ok(Upstream { program: direct, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup's toolchain, resolved once (proxy skipped)" });
+                return Ok(Upstream { program: direct, strip_toolchain_arg: inv.toolchain.is_some(), toolchain_cargo: true, env, rule: "rustup's toolchain, resolved once (proxy skipped)" });
             }
         }
-        return Ok(Upstream { program: cargo, strip_toolchain_arg: false, env: vec![], rule: "first cargo on PATH" });
+        return Ok(Upstream { program: cargo, strip_toolchain_arg: false, toolchain_cargo: false, env: vec![], rule: "first cargo on PATH" });
     }
     // Haul in rustup's proxy slot (machine-wide install): ask rustup directly.
     if let Some(rustup) = util::which("rustup") {
@@ -436,7 +439,7 @@ pub fn resolve_upstream(inv: &Invocation, cfg: &Config) -> Result<Upstream, Stri
                 let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
                 if util::is_executable(&p) && !is_self(&p) {
                     let env = inv.toolchain.iter().map(|t| ("RUSTUP_TOOLCHAIN".to_string(), t.clone())).collect();
-                    return Ok(Upstream { program: p, strip_toolchain_arg: inv.toolchain.is_some(), env, rule: "rustup which cargo" });
+                    return Ok(Upstream { program: p, strip_toolchain_arg: inv.toolchain.is_some(), toolchain_cargo: true, env, rule: "rustup which cargo" });
                 }
             }
             Ok(out) if inv.toolchain.is_some() => {
