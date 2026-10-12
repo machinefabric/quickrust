@@ -721,5 +721,33 @@ fn fast_mode_learns_rustups_toolchain_once_and_skips_the_proxy() {
     assert!(plus.status.success());
     // compat mode keeps the proxy.
     ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
-    assert!(rule(&sb).starts_with("rustup proxy"), "{}", rule(&sb));
+    assert_eq!(rule(&sb), "first cargo on PATH");
 }
+
+#[test]
+fn a_cargo_that_is_not_a_proxy_is_used_directly_and_remembered_as_such() {
+    // A Cargo first on PATH that is not rustup's proxy (a distribution's, say) is what the shell
+    // would run: Haul runs it, and remembers there is no proxy to skip instead of probing again.
+    let sb = Sandbox::new("plain-cargo");
+    let p = sb.package("p", "p");
+    let Ok(out) = std::process::Command::new("rustup").args(["which", "cargo"]).output() else {
+        eprintln!("skipped: no rustup to find a toolchain Cargo with");
+        return;
+    };
+    let real = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let dir = sb.dir.join("plain-bin");
+    fs::create_dir_all(&dir).unwrap();
+    std::os::unix::fs::symlink(&real, dir.join("cargo")).unwrap();
+    let path = std::env::join_paths(std::iter::once(sb.shim_dir.clone()).chain(std::iter::once(dir.clone())).chain(std::env::split_paths(&sb.path_with_shim()).skip(1))).unwrap();
+    for _ in 0..2 {
+        ok(sb.cargo(&p).arg("build").env("PATH", &path).env("RUSTUP_TOOLCHAIN", "stable"));
+        let s = sb.sessions().pop().unwrap();
+        assert_eq!(s["upstream"]["rule"], "first cargo on PATH");
+        assert_eq!(s["upstream"]["path"].as_str(), Some(dir.join("cargo").display().to_string().as_str()));
+    }
+    let learned: Value = serde_json::from_slice(&fs::read(sb.home.join("toolchains.json")).unwrap()).unwrap();
+    let entries: Vec<&Value> = learned.as_object().unwrap().values().collect();
+    assert_eq!(entries.len(), 1, "one probe for one set of inputs: {}", learned);
+    assert_eq!(entries[0]["proxy"], Value::Bool(false));
+}
+
