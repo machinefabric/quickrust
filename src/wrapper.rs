@@ -122,7 +122,7 @@ pub fn main() {
         _ => Err("off".into()),
     };
     if let Ok(j) = &job {
-        if let artifact_cache::Lookup::Hit { stderr, entry } = j.lookup() {
+        if let artifact_cache::Lookup::Hit { stderr, entry, foreign_out_dir } = j.lookup() {
             use std::io::Write;
             let mut err = std::io::stderr().lock();
             let _ = err.write_all(&stderr).and_then(|_| err.flush());
@@ -131,7 +131,7 @@ pub fn main() {
             if let Some(dir) = &event_dir {
                 let _ = std::panic::catch_unwind(|| {
                     let mut ev = build_event(&rustc, &argv, None, false, start_wall, started.elapsed().as_nanos() as u64, exit, None);
-                    ev["cache"] = json!({ "result": "hit", "entry": entry });
+                    ev["cache"] = json!({ "result": "hit", "entry": entry, "foreign_out_dir": foreign_out_dir });
                     if let Ok(bytes) = serde_json::to_vec(&ev) {
                         let _ = util::write_atomic_fast(&dir.join(format!("{:020}-{}.json", start_wall, std::process::id())), &bytes);
                     }

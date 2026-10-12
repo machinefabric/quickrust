@@ -162,6 +162,24 @@ fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHa
     })
 }
 
+/// Once per Haul home: restored crates whose build-script code was compiled under another
+/// target directory name that directory in panic locations and debug information.
+pub fn notice_foreign_out_dir(units: u64) {
+    let marker = util::haul_home().join("notices").join("foreign-out-dir");
+    if marker.exists() {
+        return;
+    }
+    let r = Renderer::new();
+    let _ = writeln!(
+        std::io::stderr(),
+        "{} {} crate{} restored from Haul's cache include code their build script generated in another target directory: panic messages and debug information for that code name that directory. Program behaviour is the same. (Shown once; `mode = \"compat\"` builds everything here.)",
+        r.paint("2", "note:"),
+        units,
+        if units == 1 { "" } else { "s" }
+    );
+    let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
+}
+
 /// The summary of a build Haul knows to be fresh without asking Cargo: the build phase of a
 /// `BuildFirst` command whose inputs have not changed since it last succeeded.
 pub fn up_to_date(units: u64, warnings_line: Option<&str>) {

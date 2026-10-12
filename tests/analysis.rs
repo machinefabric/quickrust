@@ -922,6 +922,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let r = sb.report(&a, "latest");
     assert_eq!((r["metrics"]["units_compiled"].as_u64(), r["metrics"]["units_restored"].as_u64()), (Some(0), Some(3)), "{}", r["metrics"]);
     assert_eq!(r["cache"]["artifacts"]["restored"], 3);
+    assert_eq!(r["cache"]["artifacts"]["restored_with_foreign_out_dir"], 0, "the same target directory: its own OUT_DIR");
     assert!(r["units"].as_array().unwrap().iter().filter(|u| u["kind"] != "build-script-run" && u["freshness"] != "fresh").all(|u| u["freshness"] == "restored"));
 
     // A workspace source that changed is never served from the cache; reverting it is.
@@ -939,6 +940,18 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     ok(cargo(&b).arg("build"));
     assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())));
     assert!(cache_results(&sb).contains(&("app".to_string(), "stored".to_string())));
+    // `greet` includes code its build script generated in checkout a's target directory: the
+    // user is told, and the report counts it.
+    assert!(cache_details(&sb).iter().any(|d| d.starts_with("greet:") && d.contains("foreign_out_dir") && d.contains("/a/target/")), "{:#?}", cache_details(&sb));
+    assert_eq!(sb.report(&b, "latest")["cache"]["artifacts"]["restored_with_foreign_out_dir"], 1);
+    // In a terminal, Haul says so once.
+    let (c, d) = (app("c"), app("d"));
+    if let Some(mut first) = sb.cargo_in_terminal(&c, "build") {
+        let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
+        assert!(screen.contains("note:") && screen.contains("another target directory"), "{}", screen);
+        let screen = String::from_utf8_lossy(&run(&mut sb.cargo_in_terminal(&d, "build").unwrap()).stdout).into_owned();
+        assert!(!screen.contains("another target directory"), "shown once: {}", screen);
+    }
     let fresh = ok(cargo(&b).arg("build"));
     assert!(!stderr(&fresh).contains("Compiling"), "a restored unit must be fresh for Cargo afterwards: {}", stderr(&fresh));
     assert_eq!(stdout(&ok(cargo(&b).args(["run", "-q"]))), "hello from the cache\n");

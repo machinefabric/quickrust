@@ -401,6 +401,8 @@ pub struct Events {
     /// Artifact-cache results by kind (`hit`, `stored`, `miss`, `off`) and the time restores took.
     pub cache_results: HashMap<String, usize>,
     pub restore_ns: u64,
+    /// Restored units whose build-script code was compiled under another `OUT_DIR`.
+    pub foreign_out_dir: usize,
 }
 
 pub fn load_events(dir: &Path, sccache_active: bool, tok: &Tokenizer) -> Events {
@@ -423,6 +425,7 @@ pub fn load_events(dir: &Path, sccache_active: bool, tok: &Tokenizer) -> Events 
             *out.cache_results.entry(r.to_string()).or_default() += 1;
             if r == "hit" {
                 out.restore_ns += ev["dur_ns"].as_u64().unwrap_or(0);
+                out.foreign_out_dir += usize::from(ev["cache"]["foreign_out_dir"].is_string());
             }
         }
         match parse_unit(&ev, sccache_active, tok) {
@@ -737,6 +740,8 @@ fn artifact_cache_summary(mut cache: Value, session: &Value, events: &Events) ->
         "missed": count("miss"),
         "not_cacheable": count("off"),
         "restore_time_ns": events.restore_ns,
+        // Their panic locations and debug information in build-script code name another directory.
+        "restored_with_foreign_out_dir": events.foreign_out_dir,
     });
     cache
 }
