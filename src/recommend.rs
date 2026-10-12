@@ -479,4 +479,115 @@ mod tests {
         assert_eq!(recs[0]["impact"]["avoidable_time_ns"], 1_000_000_000u64);
         assert!(recs[0]["evidence"][1].as_str().unwrap().contains("requested by y"));
     }
+
+    fn rules(r: &Value, index: &Index) -> Vec<String> {
+        generate(r, index).iter().map(|x| x["rule"].as_str().unwrap().to_string()).collect()
+    }
+
+    #[test]
+    fn duplicate_versions_are_reported_only_when_unifiable() {
+        let version = |v: &str, via: Value, ns: Option<u64>| json!({ "version": v, "required_by": via, "observed_compile_ns": ns });
+        let mut r = base();
+        r["duplication"] = json!({ "versions": [{ "name": "rand", "state": "potentially-reducible", "versions": [version("0.8.4", json!(["app", "old"]), Some(1_000_000_000)), version("0.8.5", json!(["app"]), Some(3_000_000_000))] }] });
+        let recs = generate(&r, &Index::empty());
+        assert_eq!(recs[0]["rule"], "duplicate_dependency_versions");
+        assert_eq!(recs[0]["impact"]["avoidable_time_ns"], 1_000_000_000u64, "all but the most expensive version");
+        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("0.8.4 is required via app → old"), "{}", recs[0]["evidence"]);
+        // One version not observed compiling: the saving is not stated.
+        r["duplication"]["versions"][0]["versions"][1]["observed_compile_ns"] = Value::Null;
+        assert_eq!(generate(&r, &Index::empty())[0]["impact"]["kind"], "unknown");
+        // Versions the lockfile cannot unify are not advice.
+        r["duplication"]["versions"][0]["state"] = json!("incompatible");
+        assert!(rules(&r, &Index::empty()).is_empty());
+    }
+
+    #[test]
+    fn a_cache_is_flagged_below_a_thirty_percent_hit_rate_over_twenty_requests() {
+        let mut r = base();
+        r["cache"] = json!({ "hits": 5, "misses": 15, "non_cacheable": 2, "requests": 22, "lookup_time_ns": 1_000_000, "write_time_ns": 2_000_000 });
+        let recs = generate(&r, &Index::empty());
+        assert_eq!(recs[0]["rule"], "cache_low_hit_rate");
+        assert_eq!(recs[0]["title"], "sccache served 5/20 cacheable requests");
+        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("5 hits, 15 misses, 2 non-cacheable out of 22"));
+        // Exactly 30%, and too few requests to judge: nothing.
+        r["cache"] = json!({ "hits": 6, "misses": 14 });
+        assert!(rules(&r, &Index::empty()).is_empty());
+        r["cache"] = json!({ "hits": 0, "misses": 19 });
+        assert!(rules(&r, &Index::empty()).is_empty());
+    }
+
+    #[test]
+    fn a_unit_over_two_seconds_and_thirty_percent_of_the_critical_path_is_a_bottleneck() {
+        let unit = |id: &str, ns: u64, kind: &str| json!({ "unit_id": id, "package": id, "duration_ns": ns, "kind": kind });
+        let mut r = base();
+        r["metrics"] = json!({ "critical_path_ns": 4_000_000_000u64 });
+        r["critical_path_model"] = json!({ "completeness": "observed" });
+        r["critical_path"] = json!([unit("small", 1_000_000_000, "lib"), unit("big", 3_000_000_000, "proc-macro")]);
+        let recs = generate(&r, &Index::empty());
+        assert_eq!(recs[0]["rule"], "critical_path_bottleneck");
+        assert_eq!(recs[0]["title"], "`big` is 75% of the critical path");
+        assert!(recs[0]["evidence"][2].as_str().unwrap().contains("proc-macro"));
+        assert_eq!(recs[0]["confidence"], "medium");
+        // Just under two seconds; and two seconds that are under 30% of the path.
+        r["critical_path"] = json!([unit("big", 1_999_000_000, "lib")]);
+        assert!(rules(&r, &Index::empty()).is_empty());
+        r["metrics"]["critical_path_ns"] = json!(7_000_000_000u64);
+        r["critical_path"] = json!([unit("big", 2_000_000_000, "lib")]);
+        assert!(rules(&r, &Index::empty()).is_empty());
+    }
+
+    #[test]
+    fn recurring_invalidation_needs_six_rebuilds_two_seconds_and_this_run() {
+        let rebuilt = |n: usize, cost_ns: u64| {
+            let mut index = Index::empty();
+            let graph = crate::analyze::Graph { units: Vec::new(), deps: Vec::new(), unresolved_externs: 0 };
+            for i in 0..n {
+                let rebuilds = json!({ "units": [{ "logical_key": "lib a", "reason": "rustflags", "cost_ns": cost_ns, "package": "a", "kind": "lib" }] });
+                index.absorb(&graph, &rebuilds, &format!("run-{}", i), i as u64, "build", true);
+            }
+            index
+        };
+        let mut r = base();
+        r["rebuilds"] = json!({ "summary": { "by_reason": { "rustflags": { "units": 1 } } } });
+        // Five earlier rebuilds plus this run's, costing 2.5 s.
+        let recs = generate(&r, &rebuilt(5, 500_000_000));
+        assert_eq!(recs[0]["rule"], "recurring_invalidation");
+        assert!(recs[0]["evidence"][0].as_str().unwrap().starts_with("6 rebuild(s)"), "{}", recs[0]["evidence"]);
+        assert!(recs[0]["evidence"][1].as_str().unwrap().contains("affected: a"));
+        assert!(recs[0]["evidence"][2].as_str().unwrap().contains("two tools"));
+        assert_eq!(recs[0]["impact"]["avoidable_time_ns"], 2_500_000_000u64);
+        // One rebuild short; under two seconds; not seen in this run.
+        assert!(rules(&r, &rebuilt(4, 600_000_000)).is_empty());
+        assert!(rules(&r, &rebuilt(5, 399_000_000)).is_empty());
+        r["rebuilds"] = json!({ "summary": { "by_reason": { "source": { "units": 1 } } } });
+        assert!(rules(&r, &rebuilt(5, 500_000_000)).is_empty());
+    }
+
+    #[test]
+    fn stale_artifacts_are_reported_from_256_mib() {
+        let mut r = base();
+        r["artifacts"] = json!([{ "root": "/w/target", "allocated_bytes": 1u64 << 30, "gc_plan": { "candidate_bytes": 256u64 << 20, "candidate_groups": 3, "stale_days": 30 } }]);
+        let recs = generate(&r, &Index::empty());
+        assert_eq!(recs[0]["rule"], "stale_artifacts");
+        assert_eq!(recs[0]["impact"]["reclaimable_bytes"], 256u64 << 20);
+        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("3 group(s) are rebuildable and unused for more than 30 days"));
+        r["artifacts"][0]["gc_plan"]["candidate_bytes"] = json!((256u64 << 20) - 1);
+        assert!(rules(&r, &Index::empty()).is_empty());
+    }
+
+    #[test]
+    fn linking_units_over_a_quarter_of_compile_time_suggest_a_linker_experiment() {
+        let mut r = base();
+        r["metrics"] = json!({ "sum_unit_time_ns": 10_000_000_000u64 });
+        r["codegen"] = json!({ "linking": { "linking_unit_time_ns": 2_500_000_000u64, "units": [{ "linker": "platform default" }] } });
+        let recs = generate(&r, &Index::empty());
+        assert_eq!(recs[0]["rule"], "linking_unit_share");
+        assert_eq!(recs[0]["title"], "Units that link take 25% of compile time with the platform default linker");
+        assert_eq!(recs[0]["impact"]["kind"], "unknown", "link time cannot be separated from codegen on stable");
+        // Just under a quarter; and a linker already chosen.
+        r["codegen"]["linking"]["linking_unit_time_ns"] = json!(2_499_000_000u64);
+        assert!(rules(&r, &Index::empty()).is_empty());
+        r["codegen"]["linking"] = json!({ "linking_unit_time_ns": 5_000_000_000u64, "units": [{ "linker": "wild" }] });
+        assert!(rules(&r, &Index::empty()).is_empty());
+    }
 }
