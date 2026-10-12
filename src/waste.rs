@@ -111,7 +111,7 @@ impl Index {
                 }
             }
         }
-        for u in graph.units.iter().filter(|u| u.freshness == "compiled" && u.kind != "build-script-run") {
+        for u in graph.units.iter().filter(|u| u.built() && u.kind != "build-script-run") {
             let entry = json!({
                 "exact_id": u.exact_id, "portable_id": u.portable_id, "stem": u.stem, "out_dir": u.out_dir, "run": run,
                 "wall_ns": wall_ns, "last_used_ns": wall_ns, "dur_ns": u.duration_ns, "bytes": u.output_bytes,
@@ -173,7 +173,7 @@ fn sample(list: &[String], n: usize) -> String {
 /// Classifies why each compiled unit ran, against its last known fingerprint (FR-040.1).
 pub fn rebuilds(graph: &Graph, index: &Index, scripts: &[Value]) -> Value {
     let scripts_ran: HashSet<(&str, &str)> = scripts.iter().filter(|s| s["ran_in_session"] == json!(true)).filter_map(|s| Some((s["package"].as_str()?, s["version"].as_str()?))).collect();
-    let rebuilt: HashSet<usize> = graph.units.iter().enumerate().filter(|(_, u)| u.freshness == "compiled" || u.freshness == "failed").map(|(i, _)| i).collect();
+    let rebuilt: HashSet<usize> = graph.units.iter().enumerate().filter(|(_, u)| u.built() || u.freshness == "failed").map(|(i, _)| i).collect();
     let mut out: Vec<Value> = Vec::new();
     let mut by_reason: BTreeMap<String, (u64, u64)> = BTreeMap::new();
     let mut known = 0u64;
@@ -375,7 +375,7 @@ pub fn duplication(meta: Option<&Metadata>, graph: &Graph, index: &Index) -> Val
             variants.insert(util::vstr(e, "stem"), v);
         }
     }
-    for u in graph.units.iter().filter(|u| u.freshness == "compiled" && u.kind != "build-script-run") {
+    for u in graph.units.iter().filter(|u| u.built() && u.kind != "build-script-run") {
         variants.insert(u.stem.clone(), unit_view(u));
     }
     let mut consumers: HashMap<&str, Vec<String>> = HashMap::new();
@@ -579,7 +579,7 @@ pub fn codegen(graph: &Graph, session: &Value) -> Value {
     let mut groups: BTreeMap<String, (Value, u64, u64, u64, u64)> = BTreeMap::new();
     let mut link_units = Vec::new();
     let mut link_ns = 0u64;
-    for u in graph.units.iter().filter(|u| u.freshness == "compiled" && u.kind != "build-script-run") {
+    for u in graph.units.iter().filter(|u| u.built() && u.kind != "build-script-run") {
         let get = |k: &str, default: &str| u.codegen.get(k).cloned().unwrap_or_else(|| default.to_string());
         let sig = json!({
             "opt_level": get("opt-level", "0"), "debuginfo": get("debuginfo", "0"), "codegen_units": u.codegen.get("codegen-units"),
@@ -620,7 +620,7 @@ pub fn codegen(graph: &Graph, session: &Value) -> Value {
 
 /// The effective incremental decision and whether it conflicts with the cache strategy (FR-090, AC-010).
 pub fn incremental_policy(graph: &Graph, session: &Value) -> Value {
-    let compiled: Vec<&Unit> = graph.units.iter().filter(|u| u.freshness == "compiled" && u.kind != "build-script-run").collect();
+    let compiled: Vec<&Unit> = graph.units.iter().filter(|u| u.built() && u.kind != "build-script-run").collect();
     let inc: Vec<&&Unit> = compiled.iter().filter(|u| u.incremental).collect();
     let sccache = session["policy"]["cache"]["sccache_active"] == json!(true);
     let conflict = sccache && !inc.is_empty();
