@@ -742,7 +742,8 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
         let rebuild = threads_by_unit(&sb);
         assert!(!rebuild.is_empty() && rebuild.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", rebuild);
         // After a clean the library comes from the cache; the binary, which links in a moment and
-        // so is not stored, is compiled again, and the cache remembers it is small.
+        // so is not stored, is compiled again from scratch. Its first compilation, from scratch,
+        // showed it small, and edits since have not changed that: no parallel frontend.
         ok(sb.cargo(&p).arg("clean"));
         ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
         assert_eq!(cache_results(&sb), vec![("p".to_string(), "hit".to_string()), ("p".to_string(), "miss".to_string())], "{:#?}", cache_details(&sb));

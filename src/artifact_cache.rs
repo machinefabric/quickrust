@@ -281,21 +281,29 @@ impl Job {
         self.root.join("m").join(format!("{}.json", self.key1))
     }
 
-    /// Whether this unit compiled quickly before and was not stored for it: a small linked
-    /// workspace output. It is compiled again after every clean; the parallel frontend would
-    /// only add its start-up cost to it.
+    /// Whether this unit compiled quickly from scratch before and was not stored for it: a small
+    /// linked workspace output. It is compiled again after every clean; the parallel frontend
+    /// would only add its start-up cost to it.
     pub fn known_quick(&self) -> bool {
         self.quick_marker().exists()
     }
 
-    /// Records that this unit compiled quickly and was not stored for it.
+    /// Records that this unit compiled quickly from scratch and was not stored for it.
     pub fn remember_quick(&self) -> std::io::Result<()> {
         fs::create_dir_all(self.root.join("q"))?;
         util::write_atomic_fast(&self.quick_marker(), b"")
     }
 
+    /// Withdraws the record: the unit was just compiled from scratch, not quickly.
+    pub fn forget_quick(&self) {
+        let _ = fs::remove_file(self.quick_marker());
+    }
+
+    /// Keyed by the unit as Cargo names it (its output directory and file stem, which carries
+    /// Cargo's unit hash), not by the cache key: a unit stays small across edits of its own
+    /// sources and its dependencies.
     fn quick_marker(&self) -> PathBuf {
-        self.root.join("q").join(&self.key1)
+        self.root.join("q").join(util::digest_parts([util::path_str(&self.out_dir), self.stem.clone()]))
     }
 
     fn entry_dir(&self, key2: &str) -> PathBuf {
