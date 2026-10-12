@@ -805,6 +805,12 @@ fn help_version_and_list_are_pure_passthrough() {
         assert_eq!(a.status.code(), b.status.code(), "{:?}", args);
         assert_eq!(a.stdout, b.stdout, "{:?}", args);
     }
+    // In a terminal, where Haul renders builds: help is Cargo's own, never shown as a build.
+    for args in ["build --help", "check -h", "clippy --help"] {
+        let Some(mut ours) = sb.cargo_in_terminal(&sb.dir, args) else { return };
+        let theirs = run(&mut sb.upstream_in_terminal(&sb.dir, args).unwrap());
+        assert_eq!(String::from_utf8_lossy(&run(&mut ours).stdout), String::from_utf8_lossy(&theirs.stdout), "{}", args);
+    }
 }
 
 #[test]
