@@ -756,13 +756,19 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
         sb.dir.join(rel)
     };
     let (a, b) = (app("a"), app("b"));
+    // These crates compile in milliseconds; by default such workspace units are not stored.
+    let cargo = |dir: &std::path::Path| {
+        let mut c = sb.cargo(dir);
+        c.env("HAUL_CACHE_ARTIFACTS_MIN_WORKSPACE_MS", "0");
+        c
+    };
 
-    let first = ok(sb.cargo(&a).arg("build"));
+    let first = ok(cargo(&a).arg("build"));
     assert!(stderr(&first).contains("unused variable"), "{}", stderr(&first));
     assert_eq!(cache_results(&sb), vec![("app".to_string(), "stored".to_string()), ("build_script_build".to_string(), "stored".to_string()), ("greet".to_string(), "stored".to_string())]);
 
-    ok(sb.cargo(&a).arg("clean"));
-    let again = ok(sb.cargo(&a).args(["run", "-q"]));
+    ok(cargo(&a).arg("clean"));
+    let again = ok(cargo(&a).args(["run", "-q"]));
     assert_eq!(stdout(&again), "hello from the cache\n");
     assert!(stderr(&again).contains("unused variable"), "a cached unit's warnings are replayed: {}", stderr(&again));
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "hit"), "after a clean, the same checkout is restored entirely: {:?}", cache_results(&sb));
@@ -771,23 +777,23 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let main = a.join("src/main.rs");
     let original = fs::read_to_string(&main).unwrap();
     fs::write(&main, original.replace("greet::greet()", "greet::greet().to_uppercase()")).unwrap();
-    assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "HELLO FROM THE CACHE\n");
+    assert_eq!(stdout(&ok(cargo(&a).args(["run", "-q"]))), "HELLO FROM THE CACHE\n");
     assert!(cache_results(&sb).contains(&("app".to_string(), "stored".to_string())));
     fs::write(&main, &original).unwrap();
-    assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "hello from the cache\n");
+    assert_eq!(stdout(&ok(cargo(&a).args(["run", "-q"]))), "hello from the cache\n");
     assert!(cache_results(&sb).contains(&("app".to_string(), "hit".to_string())));
 
     // Another checkout reuses the dependency, never the workspace crate (its debug info names its checkout),
     // and Cargo then considers everything fresh.
-    ok(sb.cargo(&b).arg("build"));
+    ok(cargo(&b).arg("build"));
     assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())));
     assert!(cache_results(&sb).contains(&("app".to_string(), "stored".to_string())));
-    let fresh = ok(sb.cargo(&b).arg("build"));
+    let fresh = ok(cargo(&b).arg("build"));
     assert!(!stderr(&fresh).contains("Compiling"), "a restored unit must be fresh for Cargo afterwards: {}", stderr(&fresh));
-    assert_eq!(stdout(&ok(sb.cargo(&b).args(["run", "-q"]))), "hello from the cache\n");
+    assert_eq!(stdout(&ok(cargo(&b).args(["run", "-q"]))), "hello from the cache\n");
 
     // compat mode never uses the cache.
-    ok(sb.cargo(&a).arg("clean"));
-    ok(sb.cargo(&a).arg("build").env("HAUL_MODE", "compat"));
+    ok(cargo(&a).arg("clean"));
+    ok(cargo(&a).arg("build").env("HAUL_MODE", "compat"));
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "off"), "{:?}", cache_results(&sb));
 }
