@@ -24,6 +24,10 @@ const MANIFEST: &str = include_str!("../driver/Cargo.toml");
 const SOURCES: [(&str, &str); 2] = [("main.rs", include_str!("../driver/src/main.rs")), ("early_link.rs", include_str!("../driver/src/early_link.rs"))];
 /// The binary's name inside its directory.
 const BINARY: &str = "haul-rustc-driver";
+/// Releases whose compiler interface the driver's sources adapt to: the driver is built with
+/// `--cfg haul_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
+/// between releases).
+const INTERFACE_BREAKS: &[u32] = &[99];
 /// Next to where the driver would be: why it could not be built.
 const BUILD_FAILED: &str = "build-failed";
 /// Next to where the driver would be, while a background build runs.
@@ -66,6 +70,12 @@ pub fn record_failure(exe: &Path, unit: &str, report: &[u8]) -> Result<PathBuf, 
     let path = dir.join(unit);
     util::write_atomic_fast(&path, report).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
     Ok(path)
+}
+
+/// The minor version of a compiler's release (`release: 1.99.0`, `1.100.0-nightly`).
+fn release_minor(version_verbose: &str) -> Option<u32> {
+    let release = version_verbose.lines().find_map(|l| l.strip_prefix("release: "))?;
+    release.trim().split('.').nth(1)?.parse().ok()
 }
 
 /// The toolchain directory of a rustup-managed compiler (`…/toolchains/<name>/bin/rustc`).
@@ -172,7 +182,9 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         fs::write(work.join("src").join(name), text).map_err(|e| e.to_string())?;
     }
     let lib = toolchain.join("lib");
-    let rustflags = format!("-L {} -C link-arg=-Wl,-rpath,{} -Zon-broken-pipe=kill", util::path_str(&lib), util::path_str(&lib));
+    let minor = release_minor(&vv).ok_or_else(|| format!("`rustc -vV` of {} names no release", name))?;
+    let cfgs: String = INTERFACE_BREAKS.iter().map(|b| format!(" --check-cfg cfg(haul_rustc_ge_{b}){}", if minor >= *b { format!(" --cfg haul_rustc_ge_{b}") } else { String::new() })).collect();
+    let rustflags = format!("-L {} -C link-arg=-Wl,-rpath,{} -Zon-broken-pipe=kill{}", util::path_str(&lib), util::path_str(&lib), cfgs);
     let out = Command::new(toolchain.join("bin").join(format!("cargo{}", std::env::consts::EXE_SUFFIX)))
         .args(["build", "--release", "--quiet"])
         .current_dir(&work)
@@ -204,4 +216,18 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     fs::copy(&built, &staged).and_then(|_| fs::rename(&staged, &exe)).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&work);
     Ok(exe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_release_names_the_interface_the_driver_adapts_to() {
+        let vv = |release: &str| format!("rustc {release} (abc 2026-09-28)\nbinary: rustc\nrelease: {release}\n");
+        assert_eq!(release_minor(&vv("1.99.0")), Some(99));
+        assert_eq!(release_minor(&vv("1.98.1")), Some(98));
+        assert_eq!(release_minor(&vv("1.100.0-nightly")), Some(100));
+        assert_eq!(release_minor("rustc 1.99.0\n"), None);
+    }
 }

@@ -896,8 +896,9 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     sb.file("w/app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n");
     sb.file("w/app/src/main.rs", "fn main() {\n    println!(\"{}\", mid::message());\n}\n");
     let w = sb.dir.join("w");
-    let built = run(sb.haul(&w).args(["driver", "build"]));
-    assert!(built.status.success(), "{}", stderr(&built));
+    if build_driver(&sb, &w).is_none() {
+        return;
+    }
     // The binary links in a moment; by default such a unit is neither stored nor compiled apart.
     let cargo = || {
         let mut c = sb.cargo(&w);
@@ -983,8 +984,9 @@ fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
         return;
     }
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n\npub fn len(x: &Vec<u8>) -> usize {\n    x.len()\n}\n");
-    let built = run(sb.haul(&p).args(["driver", "build"]));
-    assert!(built.status.success(), "{}", stderr(&built));
+    if build_driver(&sb, &p).is_none() {
+        return;
+    }
     // clippy-driver describes itself exactly as rustc does; it is still clippy that runs.
     let out = ok(sb.cargo(&p).args(["clippy"]).env("HAUL_EARLY_CUTOFF", "auto"));
     assert!(stderr(&out).contains("writing `&Vec` instead of `&[_]`"), "{}", stderr(&out));
@@ -994,11 +996,9 @@ fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
 fn a_compiler_driver_that_crashes_never_fails_the_build() {
     let sb = Sandbox::new("driver-crash");
     let p = sb.package("p", "p");
-    let built = run(sb.haul(&p).args(["driver", "build"]));
-    assert!(built.status.success(), "{}", stderr(&built));
+    let Some(driver) = build_driver(&sb, &p) else { return };
     // A driver that fails as an internal compiler error does, wherever Haul looks for this
     // compiler's driver.
-    let driver = std::path::PathBuf::from(stdout(&built).trim());
     fs::write(&driver, "#!/bin/sh\necho \"thread 'rustc' panicked at compiler/rustc_middle/src/lib.rs:1:1:\" >&2\necho \"error: the compiler unexpectedly panicked. this is a bug.\" >&2\nexit 101\n").unwrap();
     make_executable(&driver);
 
@@ -1036,6 +1036,10 @@ fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     let status = || stdout(&ok(sb.haul(&p).args(["driver", "status"])));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     while !status().starts_with("built:") {
+        if status().contains(NO_RUSTC_DEV) {
+            eprintln!("not run: Haul's compiler driver cannot be built here: {}", status());
+            return;
+        }
         assert!(std::time::Instant::now() < deadline, "the background build did not finish: {}", status());
         std::thread::sleep(std::time::Duration::from_millis(200));
     }

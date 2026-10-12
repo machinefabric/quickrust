@@ -869,9 +869,8 @@ fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     // changed by them, every output must be rustc's, byte for byte.
     let sb = Sandbox::new("driver");
     let ws = sb.workspace("ws");
-    let built = run(sb.haul(&ws).args(["driver", "build"]));
-    assert!(built.status.success(), "{}", stderr(&built));
-    let driver = stdout(&built).trim().to_string();
+    let Some(driver) = build_driver(&sb, &ws) else { return };
+    let driver = driver.to_string_lossy().into_owned();
     let rustc = String::from_utf8(Command::new("rustup").args(["which", "rustc"]).output().unwrap().stdout).unwrap().trim().to_string();
     let outputs = |compiler: &str| -> std::collections::BTreeMap<String, Vec<u8>> {
         let target = ws.join("target");
