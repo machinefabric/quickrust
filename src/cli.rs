@@ -37,8 +37,11 @@ OUTPUT OF A BUILD (stored for every build Haul rendered in a terminal)
 
 ANALYSIS
     haul analyze [SECTION] [--run REF] [--format text|json]
+                 [--filter FIELD=VALUE]… [--sort FIELD[:asc|desc]] [--limit N]
                                      SECTION: timing rebuilds duplication scripts proc-macros
                                               codegen cache storage recommendations worktrees
+                                     filter/sort/limit work on a section's records, e.g.
+                                     `haul analyze timing --filter source=registry --sort duration_ns`
     haul report [--run REF] [--format text|json|html] [-o FILE]
     haul runs [--limit N] [--format text|json]
     haul inspect [--format text|json]        workspace, toolchain and environment fingerprint
@@ -296,8 +299,12 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
     let run = a.opt("--run")?;
+    let view = crate::view::View::parse(a.multi("--filter")?, a.opt("--sort")?, a.number("--limit")?)?;
     let section = a.positional();
     a.finish()?;
+    if !view.is_empty() && matches!(section.as_deref(), None | Some("worktrees")) {
+        return Err("--filter, --sort and --limit apply to the records of one section: `haul analyze <section> …`".into());
+    }
     let ctx = Ctx::load()?;
     if section.as_deref() == Some("worktrees") {
         ctx.finalize_pending()?;
@@ -314,7 +321,10 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
             return Err(format!("unknown analysis section `{}` (available: {}, worktrees)", s, render::SECTIONS[1..].join(", ")));
         }
     }
-    let report = ctx.report(run.as_deref())?;
+    let mut report = ctx.report(run.as_deref())?;
+    if let Some(s) = section.as_deref().filter(|_| !view.is_empty()) {
+        view.apply(&mut report, s)?;
+    }
     if format == "json" {
         let v = match section.as_deref() {
             None => report,
@@ -331,7 +341,7 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
             Some(s) => vec![s],
             None => render::SECTIONS.to_vec(),
         };
-        print!("{}", render::run_text(&report, &sections));
+        print!("{}", render::run_text(&report, &sections, render::Presentation { as_given: !view.is_empty(), limit: view.limit() }));
     }
     Ok(0)
 }
@@ -351,7 +361,7 @@ fn cmd_report(raw: &[OsString]) -> CmdResult {
     let body = match format.as_str() {
         "json" => format!("{}\n", serde_json::to_string_pretty(&exported).unwrap_or_default()),
         "html" => render::html(&exported),
-        _ => render::run_text(&report, render::SECTIONS),
+        _ => render::run_text(&report, render::SECTIONS, render::Presentation::default()),
     };
     match output {
         Some(path) => {

@@ -1150,3 +1150,33 @@ fn compatible_versions_of_one_crate_from_two_sources_are_found_in_a_real_resolut
     assert_eq!(rec["impact"]["kind"], "unknown", "the saving needs both versions observed");
     assert!(rec["verification"].as_str().unwrap().contains("[patch]"), "{}", rec);
 }
+
+#[test]
+fn analyze_filters_sorts_and_limits_a_sections_records() {
+    let sb = Sandbox::new("filters");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    let json_units = |args: &[&str]| -> Vec<Value> {
+        let out = ok(sb.haul(&p).args(["analyze", "timing", "--format", "json"]).args(args));
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["units"].as_array().unwrap().clone()
+    };
+    let all = json_units(&[]);
+    assert!(all.len() >= 2, "{:?}", all);
+    assert!(all.iter().all(|u| !u["artifact_cache"].is_null()), "every compiled unit says what the artifact cache did: {:?}", all);
+    let bins = json_units(&["--filter", "kind=bin"]);
+    assert!(!bins.is_empty() && bins.iter().all(|u| u["kind"] == "bin"), "{:?}", bins);
+    let slowest = json_units(&["--sort", "duration_ns", "--limit", "1"]);
+    let max = all.iter().filter_map(|u| u["duration_ns"].as_u64()).max().unwrap();
+    assert_eq!((slowest.len(), slowest[0]["duration_ns"].as_u64()), (1, Some(max)));
+
+    // Text shows exactly the records asked for, including the ones its default view leaves out.
+    let text = stdout(&ok(sb.haul(&p).args(["analyze", "rebuilds", "--filter", "reason=new", "--limit", "1"])));
+    assert!(text.contains("new") && text.contains("first time this unit is observed"), "{}", text);
+    // Mistakes are named, never silently ignored.
+    let e = run(sb.haul(&p).args(["analyze", "timing", "--filter", "profile=release"]));
+    assert!(!e.status.success() && stderr(&e).contains("no field `profile`"), "{}", stderr(&e));
+    let e = run(sb.haul(&p).args(["analyze", "--limit", "3"]));
+    assert!(!e.status.success() && stderr(&e).contains("one section"), "{}", stderr(&e));
+    let e = run(sb.haul(&p).args(["analyze", "cache", "--sort", "x"]));
+    assert!(!e.status.success() && stderr(&e).contains("no list of records"), "{}", stderr(&e));
+}

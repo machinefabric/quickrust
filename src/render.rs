@@ -95,7 +95,7 @@ pub fn summary(r: &Value, out: &mut String) {
     }
 }
 
-pub fn timing(r: &Value, out: &mut String) {
+pub fn timing(r: &Value, out: &mut String, p: Presentation) {
     let _ = writeln!(out, "Timing");
     let units: Vec<&Value> = r["units"].as_array().into_iter().flatten().filter(|u| u["duration_ns"].is_u64()).collect();
     if units.is_empty() {
@@ -111,18 +111,21 @@ pub fn timing(r: &Value, out: &mut String) {
     table(out, &["ON CRITICAL PATH", "KIND", "DURATION", "STATE", "EDGE"], &rows);
     // Default time view: critical-path impact first, then cost.
     let mut sorted = units.clone();
-    sorted.sort_by_key(|u| (std::cmp::Reverse(u["on_critical_path"] == true), std::cmp::Reverse(u["duration_ns"].as_u64())));
+    if !p.as_given {
+        sorted.sort_by_key(|u| (std::cmp::Reverse(u["on_critical_path"] == true), std::cmp::Reverse(u["duration_ns"].as_u64())));
+    }
     let rows: Vec<Vec<String>> = sorted
         .iter()
-        .take(15)
-        .map(|u| vec![pkg(u), vstr(u, "kind"), vstr(u, "mode"), dur(&u["duration_ns"]), if u["on_critical_path"] == true { "yes".into() } else { "no".into() }, vstr(u, "role"), vstr(u, "cacheability")])
+        .take(p.rows(15))
+        // Haul's artifact cache where it was in play; otherwise sccache's view of the unit.
+        .map(|u| vec![pkg(u), vstr(u, "kind"), vstr(u, "mode"), dur(&u["duration_ns"]), if u["on_critical_path"] == true { "yes".into() } else { "no".into() }, vstr(u, "role"), u["artifact_cache"].as_str().map(str::to_string).unwrap_or_else(|| vstr(u, "cacheability"))])
         .collect();
-    let _ = writeln!(out, "  slowest units ({} of {}):", rows.len(), units.len());
+    let _ = writeln!(out, "  {} ({} of {}):", if p.as_given { "units" } else { "slowest units" }, rows.len(), units.len());
     table(out, &["UNIT", "KIND", "MODE", "DURATION", "CRITICAL", "ROLE", "CACHE"], &rows);
     let _ = writeln!(out, "  peak concurrent compilers: {}   cpu time: {}   peak rss: {}", num(&r["metrics"]["max_concurrent_compilers"]), dur(&r["metrics"]["cpu_time_ns"]), bytes(&r["metrics"]["peak_rss_bytes"]));
 }
 
-pub fn rebuilds(r: &Value, out: &mut String) {
+pub fn rebuilds(r: &Value, out: &mut String, p: Presentation) {
     let _ = writeln!(out, "Rebuild reasons");
     let s = &r["rebuilds"]["summary"];
     let units = r["rebuilds"]["units"].as_array().map(Vec::as_slice).unwrap_or(&[]);
@@ -133,7 +136,8 @@ pub fn rebuilds(r: &Value, out: &mut String) {
     let rows: Vec<Vec<String>> = s["by_reason"].as_object().into_iter().flatten().map(|(k, v)| vec![k.clone(), num(&v["units"]), dur(&v["time_ns"])]).collect();
     table(out, &["REASON", "UNITS", "TIME"], &rows);
     let _ = writeln!(out, "  previously known units rebuilt: {} of {} in the index (ratio {})", num(&s["previously_known"]), num(&s["known_units_in_index"]), num(&s["invalidated_ratio"]));
-    let rows: Vec<Vec<String>> = units.iter().filter(|u| u["reason"] != "new").take(20).map(|u| vec![pkg(u), vstr(u, "kind"), vstr(u, "reason"), dur(&u["cost_ns"]), vstr(u, "confidence"), vstr(u, "detail")]).collect();
+    // By default first-time units are left out: there is nothing to compare them against.
+    let rows: Vec<Vec<String>> = units.iter().filter(|u| p.as_given || u["reason"] != "new").take(p.rows(20)).map(|u| vec![pkg(u), vstr(u, "kind"), vstr(u, "reason"), dur(&u["cost_ns"]), vstr(u, "confidence"), vstr(u, "detail")]).collect();
     if rows.is_empty() {
         let _ = writeln!(out, "  All compiled units were seen for the first time; there is nothing to compare against yet.");
     } else {
@@ -141,7 +145,7 @@ pub fn rebuilds(r: &Value, out: &mut String) {
     }
 }
 
-pub fn duplication(r: &Value, out: &mut String) {
+pub fn duplication(r: &Value, out: &mut String, p: Presentation) {
     let _ = writeln!(out, "Duplication");
     let d = &r["duplication"];
     match d["versions"].as_array() {
@@ -166,7 +170,7 @@ pub fn duplication(r: &Value, out: &mut String) {
         }
         groups => {
             let _ = writeln!(out, "  Build variants (same package built more than once):");
-            for g in groups.iter().take(20) {
+            for g in groups.iter().take(p.rows(20)) {
                 let _ = writeln!(out, "    {}@{} [{}] — {}: {}", vstr(g, "package"), vstr(g, "version"), vstr(g, "kind"), vstr(g, "state"), list(&g["causes"]));
                 for v in g["variants"].as_array().into_iter().flatten() {
                     let _ = writeln!(out, "      {:<6} {:<8} features [{}]  {}  dependents: {}", vstr(v, "mode"), vstr(v, "role"), list(&v["features"]), dur(&v["dur_ns"]), list(&v["dependents"]));
@@ -285,10 +289,16 @@ pub fn inventory(inv: &Value, out: &mut String) {
     }
 }
 
-pub fn storage(r: &Value, out: &mut String) {
+pub fn storage(r: &Value, out: &mut String, p: Presentation) {
     let _ = writeln!(out, "Storage");
     match r["artifacts"].as_array() {
-        Some(a) if !a.is_empty() => a.iter().for_each(|inv| inventory(inv, out)),
+        Some(a) if !a.is_empty() => a.iter().for_each(|inv| {
+            inventory(inv, out);
+            // Filtered, sorted or limited: the candidates are what was asked for.
+            if p.as_given || p.limit.is_some() {
+                candidates(inv, p.rows(25), out);
+            }
+        }),
         _ => {
             let _ = writeln!(out, "  Unavailable: {}", why(r, "artifacts").unwrap_or_else(|| "no inventory was taken".into()));
         }
@@ -308,13 +318,17 @@ pub fn gc_plan(inv: &Value, out: &mut String) {
     if let Some(b) = p["size_budget"].as_object() {
         let _ = writeln!(out, "  size budget {}: currently {}, {} after the plan — {}", bytes(&b["target_bytes"]), bytes(&b["current_bytes"]), bytes(&b["after_plan_bytes"]), if b["met_by_plan"] == true { "met" } else { "NOT met by stale output alone" });
     }
-    let rows: Vec<Vec<String>> = p["candidates"].as_array().into_iter().flatten().take(25).map(|c| vec![vstr(c, "group"), vstr(c, "category"), bytes(&c["allocated_bytes"]), format!("{}d", num(&c["age_days"])), vstr(c, "reason")]).collect();
+    candidates(inv, 25, out);
+    let _ = writeln!(out, "  Nothing was deleted. This release plans only; `cargo clean` is unchanged.");
+}
+
+fn candidates(inv: &Value, rows: usize, out: &mut String) {
+    let rows: Vec<Vec<String>> = inv["gc_plan"]["candidates"].as_array().into_iter().flatten().take(rows).map(|c| vec![vstr(c, "group"), vstr(c, "category"), bytes(&c["allocated_bytes"]), format!("{}d", num(&c["age_days"])), vstr(c, "reason")]).collect();
     if rows.is_empty() {
         let _ = writeln!(out, "  No candidates: nothing is both rebuildable and stale.");
     } else {
         table(out, &["CANDIDATE", "CATEGORY", "ALLOCATED", "AGE", "WHY"], &rows);
     }
-    let _ = writeln!(out, "  Nothing was deleted. This release plans only; `cargo clean` is unchanged.");
 }
 
 pub fn recommendations(recs: &Value, out: &mut String) {
@@ -356,7 +370,21 @@ pub fn recommendations(recs: &Value, out: &mut String) {
     }
 }
 
-pub fn run_text(r: &Value, sections: &[&str]) -> String {
+/// How a section's records are shown. By default each section orders and trims them its own
+/// way; after `--filter` / `--sort` they come as given, and `--limit` sets how many.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Presentation {
+    pub as_given: bool,
+    pub limit: Option<usize>,
+}
+
+impl Presentation {
+    fn rows(&self, default: usize) -> usize {
+        self.limit.unwrap_or(if self.as_given { usize::MAX } else { default })
+    }
+}
+
+pub fn run_text(r: &Value, sections: &[&str], p: Presentation) -> String {
     let mut out = String::new();
     for (i, s) in sections.iter().enumerate() {
         if i > 0 {
@@ -364,14 +392,14 @@ pub fn run_text(r: &Value, sections: &[&str]) -> String {
         }
         match *s {
             "summary" => summary(r, &mut out),
-            "timing" => timing(r, &mut out),
-            "rebuilds" => rebuilds(r, &mut out),
-            "duplication" => duplication(r, &mut out),
+            "timing" => timing(r, &mut out, p),
+            "rebuilds" => rebuilds(r, &mut out, p),
+            "duplication" => duplication(r, &mut out, p),
             "scripts" => scripts(r, &mut out),
             "proc-macros" => proc_macros(r, &mut out),
             "codegen" => codegen(r, &mut out),
             "cache" => cache(r, &mut out),
-            "storage" => storage(r, &mut out),
+            "storage" => storage(r, &mut out, p),
             "recommendations" => recommendations(&r["recommendations"], &mut out),
             _ => {}
         }
@@ -632,7 +660,7 @@ tbody th{{font-weight:600}}pre{{white-space:pre-wrap;background:#f3f3f3;padding:
     html_table(&mut o, "Why each unit was compiled", &["Unit", "Reason", "Cost", "Confidence", "Detail", "Evidence"], &rows, "Nothing was rebuilt.");
 
     for (title, section) in [("Duplication", "duplication"), ("Build scripts", "scripts"), ("Procedural macros", "proc-macros"), ("Codegen and linking", "codegen"), ("Compiler cache", "cache"), ("Storage", "storage")] {
-        let _ = writeln!(o, "<h2>{}</h2><pre>{}</pre>", title, esc(&run_text(r, &[section])));
+        let _ = writeln!(o, "<h2>{}</h2><pre>{}</pre>", title, esc(&run_text(r, &[section], Presentation::default())));
     }
 
     o.push_str("<h2>Recommendations</h2>\n");
@@ -682,18 +710,18 @@ mod tests {
     fn empty_sections_distinguish_nothing_found_from_unavailable() {
         // UX-006.
         let none = json!({ "build_scripts": [], "unavailable": {} });
-        assert!(run_text(&none, &["scripts"]).contains("No build script was involved"));
+        assert!(run_text(&none, &["scripts"], Presentation::default()).contains("No build script was involved"));
         let unavailable = json!({ "build_scripts": [], "unavailable": { "units": "rustc-level observation was not active for this session" } });
-        assert!(run_text(&unavailable, &["scripts"]).contains("Unavailable: rustc-level observation was not active"));
+        assert!(run_text(&unavailable, &["scripts"], Presentation::default()).contains("Unavailable: rustc-level observation was not active"));
         let pm = json!({ "proc_macros": { "units": [], "unavailable": { "execution_time_ns": "not exposed" } }, "unavailable": {} });
-        let text = run_text(&pm, &["proc-macros"]);
+        let text = run_text(&pm, &["proc-macros"], Presentation::default());
         assert!(text.contains("No proc-macro crate") && text.contains("Unavailable: not exposed"));
     }
 
     #[test]
     fn hit_rate_is_never_shown_without_its_request_count() {
         let r = json!({ "cache": { "hits": 80, "misses": 20, "non_cacheable": 3, "requests": 110, "state": "local", "non_cacheable_reasons": {}, "units": {} } });
-        assert!(run_text(&r, &["cache"]).contains("80/100 cacheable requests (80%)"));
+        assert!(run_text(&r, &["cache"], Presentation::default()).contains("80/100 cacheable requests (80%)"));
     }
 
     #[test]

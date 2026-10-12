@@ -74,6 +74,9 @@ pub struct Unit {
     pub linker: Option<String>,
     /// sccache disposition class, by sccache's documented rules; `n/a` without sccache.
     pub cacheability: String,
+    /// What Haul's artifact cache did with the unit: `hit`, `stored`, `miss` (compiled, not
+    /// stored) or `off` (not considered); none for a unit Haul did not compile (fresh).
+    pub artifact_cache: Option<String>,
     pub on_critical_path: bool,
     pub fingerprint: Fingerprint,
     pub exact_id: String,
@@ -304,6 +307,7 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
         (true, _) => "compiled",
     }
     .into();
+    u.artifact_cache = ev["cache"]["result"].as_str().map(str::to_string);
     u.start_wall_ns = ev["start_wall_ns"].as_u64();
     u.duration_ns = ev["dur_ns"].as_u64();
     u.rmeta_ready_ns = ev["rmeta_ready_ns"].as_u64();
