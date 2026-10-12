@@ -1,0 +1,40 @@
+thread 'rustc' panicked at /rustc-dev/48a229ceaefd4985c50990b14116b6d856af0985/compiler/rustc_ast_lowering/src/lib.rs:646:13:
+DefId(0:367 ~ textwrap[27ce]::word_splitters::split_words::{opaque#0}::'a) does not appear in children of DefId(0:43 ~ textwrap[27ce]::word_splitters::split_words)
+stack backtrace:
+   0:     0x767adfec00bb - <std[6c98fd8553dbae28]::backtrace::Backtrace>::create
+   1:     0x767adfec0005 - <std[6c98fd8553dbae28]::backtrace::Backtrace>::force_capture
+   2:     0x767adeebbce5 - std[6c98fd8553dbae28]::panicking::update_hook::<alloc[12e961f32105355]::boxed::Box<rustc_driver_impl[7c7a30f131ac6633]::install_ice_hook::{closure#1}>>::{closure#0}
+   3:     0x767adfed3ea2 - std[6c98fd8553dbae28]::panicking::panic_with_hook
+   4:     0x767adfeb57b2 - std[6c98fd8553dbae28]::panicking::panic_handler::{closure#0}
+   5:     0x767adfea9c89 - std[6c98fd8553dbae28]::sys::backtrace::__rust_end_short_backtrace::<std[6c98fd8553dbae28]::panicking::panic_handler::{closure#0}, !>
+   6:     0x767adfeb711d - __rustc[100742bb89c490cb]::rust_begin_unwind
+   7:     0x767add02b02c - core[c0acaeba6ab4c2e0]::panicking::panic_fmt
+   8:     0x767ae0b8cf4c - rustc_ast_lowering[f86d9b98319df343]::lower_to_hir
+   9:     0x767ae0b86d91 - rustc_query_impl[93753e9a5b789b34]::query_impl::lower_to_hir::invoke_provider_fn::__rust_begin_short_backtrace
+  10:     0x767ae0b82c4a - rustc_query_impl[93753e9a5b789b34]::execution::try_execute_query::<rustc_data_structures[c038d4a67d5123e]::vec_cache::VecCache<rustc_span[b8203aa248aaa837]::def_id::LocalDefId, rustc_middle[1df509376204f648]::query::erase::ErasedData<[u8; 16usize]>, rustc_middle[1df509376204f648]::dep_graph::graph::DepNodeIndex>, false>
+  11:     0x767ae0b82985 - rustc_query_impl[93753e9a5b789b34]::query_impl::lower_to_hir::execute_query_non_incr::__rust_end_short_backtrace
+  12:     0x767ae0b8246e - rustc_query_impl[93753e9a5b789b34]::query_impl::hir_owner::invoke_provider_fn::__rust_begin_short_backtrace
+  13:     0x767ae0b818d2 - rustc_query_impl[93753e9a5b789b34]::execution::try_execute_query::<rustc_data_structures[c038d4a67d5123e]::vec_cache::VecCache<rustc_span[b8203aa248aaa837]::def_id::LocalDefId, rustc_middle[1df509376204f648]::query::erase::ErasedData<[u8; 32usize]>, rustc_middle[1df509376204f648]::dep_graph::graph::DepNodeIndex>, false>
+  14:     0x767ae0b81608 - rustc_query_impl[93753e9a5b789b34]::query_impl::hir_owner::execute_query_non_incr::__rust_end_short_backtrace
+  15:     0x5788abdc5aec - <unknown>
+  16:     0x767ae15199e8 - rustc_query_impl[93753e9a5b789b34]::query_impl::crate_hash::invoke_provider_fn::__rust_begin_short_backtrace
+  17:     0x767ae1518ead - rustc_query_impl[93753e9a5b789b34]::execution::try_execute_query::<rustc_data_structures[c038d4a67d5123e]::vec_cache::VecCache<rustc_span[b8203aa248aaa837]::def_id::CrateNum, rustc_middle[1df509376204f648]::query::erase::ErasedData<[u8; 16usize]>, rustc_middle[1df509376204f648]::dep_graph::graph::DepNodeIndex>, false>
+  18:     0x767ae1518a83 - rustc_query_impl[93753e9a5b789b34]::query_impl::crate_hash::execute_query_non_incr::__rust_end_short_backtrace
+  19:     0x5788abdc797a - <unknown>
+  20:     0x767ae1750add - rustc_interface[f52ff661d028375d]::interface::run_compiler::<(), rustc_driver_impl[7c7a30f131ac6633]::run_compiler::{closure#0}>::{closure#1}
+  21:     0x767ae17c4e7a - std[6c98fd8553dbae28]::sys::backtrace::__rust_begin_short_backtrace::<rustc_interface[f52ff661d028375d]::util::run_in_thread_with_globals<rustc_interface[f52ff661d028375d]::util::run_in_thread_pool_with_globals<rustc_interface[f52ff661d028375d]::interface::run_compiler<(), rustc_driver_impl[7c7a30f131ac6633]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>
+  22:     0x767ae17c4c2d - <std[6c98fd8553dbae28]::thread::lifecycle::spawn_unchecked<rustc_interface[f52ff661d028375d]::util::run_in_thread_with_globals<rustc_interface[f52ff661d028375d]::util::run_in_thread_pool_with_globals<rustc_interface[f52ff661d028375d]::interface::run_compiler<(), rustc_driver_impl[7c7a30f131ac6633]::run_compiler::{closure#0}>::{closure#1}, ()>::{closure#0}, ()>::{closure#0}::{closure#0}, ()>::{closure#1} as core[c0acaeba6ab4c2e0]::ops::function::FnOnce<()>>::call_once::{shim:vtable#0}
+  23:     0x767ae17c2a0e - <std[6c98fd8553dbae28]::sys::thread::unix::Thread>::new::thread_start
+  24:     0x767adb2a71f5 - <unknown>
+  25:     0x767adb3278ec - <unknown>
+  26:                0x0 - <unknown>
+
+
+rustc version: 1.98.1 (48a229cea 2026-09-01)
+platform: x86_64-unknown-linux-gnu
+
+query stack during panic:
+#0 [lower_to_hir] lowering HIR for `word_splitters::split_words::{opaque#0}::'a`
+#1 [hir_owner] getting owner for `word_splitters::split_words::{opaque#0}::'a`
+#2 [crate_hash] looking up the hash a crate
+end of query stack
