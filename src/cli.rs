@@ -1196,25 +1196,44 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         return Ok(0);
     }
     let hc = &v["haul_cache"];
+    let now = util::now_wall_ns();
     match hc["usage"].as_object().filter(|u| u["counted"] != json!(false)) {
         Some(u) => {
-            println!("Haul's cache: {} ({}), counted {}", u["total_bytes"].as_u64().map(human_bytes).unwrap_or_default(), haul_cache.display(), u["scanned_ns"].as_u64().map(util::iso8601).unwrap_or_default());
+            let total = u["total_bytes"].as_u64().unwrap_or(0);
+            println!("Haul's cache: {} · counted {} · {}", human_bytes(total), u["scanned_ns"].as_u64().map(|t| util::human_ago(t, now)).unwrap_or_default(), haul_cache.display());
+            let mut kinds_sum = 0;
             for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {
+                kinds_sum += k["bytes"].as_u64().unwrap_or(0);
                 println!("  {:<24} {:>10}  {}", kind, k["bytes"].as_u64().map(human_bytes).unwrap_or_default(), k["count"]);
+            }
+            // Build directories hold hard links into the artifact cache: one file, two kinds.
+            if kinds_sum > total {
+                println!("  {:<24} {:>10}  in files two kinds share (hard links), counted once in the total", "shared", human_bytes(kinds_sum - total));
             }
             if u["unmet"] == json!(true) {
                 println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
             }
         }
-        None => println!("Haul's cache: not counted yet ({}); `haul gc --dry-run` counts it", haul_cache.display()),
+        None => println!("Haul's cache: not counted yet · {} · `haul gc --dry-run` counts it", haul_cache.display()),
     }
     if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
-        println!("  {:<24} at most {} (cache.max-size = {}); keeps {} of the disk free (cache.min-free = {}); {} free now", "bounds", human_bytes(m), ctx.cfg.str("cache.max-size"), human_bytes(f), ctx.cfg.str("cache.min-free"), human_bytes(free));
+        // A size setting reads back in bytes; `auto` and a share of the disk as written.
+        let setting = |key: &str| {
+            let v = ctx.cfg.str(key);
+            v.parse::<u64>().map(human_bytes).unwrap_or_else(|_| v.to_string())
+        };
+        println!("  {:<24} at most {} (cache.max-size = {}) · keeps {} of the disk free (cache.min-free = {}) · {} free now", "bounds", human_bytes(m), setting("cache.max-size"), human_bytes(f), setting("cache.min-free"), human_bytes(free));
     }
     for c in hc["recent_collections"].as_array().into_iter().flatten() {
-        println!("  {:<24} {}: {} → {}, {} removed", "collected", vstr(c, "at"), c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
+        let at = util::parse_iso8601(&vstr(c, "at")).map(|t| util::human_ago(t, now)).unwrap_or_else(|| vstr(c, "at"));
+        println!("  {:<24} {} · {} → {} · {} removed", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
     }
     println!();
+    // A compiler cache (sccache) besides Haul's own: what it is and what it did.
+    if state == "disabled" && existing.is_none() {
+        println!("Compiler cache: none (cache.provider = {}, {}); Haul's artifact cache keeps what Haul builds", provider, ctx.cfg.origin("cache.provider"));
+        return Ok(0);
+    }
     println!("Compiler cache: {}", state);
     println!("  policy            cache.provider = {} ({}), cache.fail = {}", provider, ctx.cfg.origin("cache.provider"), ctx.cfg.str("cache.fail"));
     match &existing {

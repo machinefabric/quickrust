@@ -40,6 +40,45 @@ pub fn iso8601(wall_ns: u64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60, ms)
 }
 
+/// The instant an `iso8601` timestamp names (`2026-10-12T21:58:09.007Z`), as wall-clock
+/// nanoseconds.
+pub fn parse_iso8601(s: &str) -> Option<u64> {
+    let (date, time) = s.strip_suffix('Z')?.split_once('T')?;
+    let mut d = date.split('-').map(|p| p.parse::<i64>().ok());
+    let (y, m, day) = (d.next()??, d.next()??, d.next()??);
+    let (hms, ms) = time.split_once('.').unwrap_or((time, "0"));
+    let mut t = hms.split(':').map(|p| p.parse::<i64>().ok());
+    let (hh, mm, ss) = (t.next()??, t.next()??, t.next()??);
+    let ms: i64 = ms.parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&day) || hh > 23 || mm > 59 || ss > 60 || d.next().is_some() || t.next().is_some() {
+        return None;
+    }
+    // Days-from-civil (Howard Hinnant's algorithm), the inverse of `iso8601`'s.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let secs = days * 86_400 + hh * 3_600 + mm * 60 + ss;
+    u64::try_from(secs).ok().map(|s| s * 1_000_000_000 + ms as u64 * 1_000_000)
+}
+
+/// How long ago `then` (wall-clock nanoseconds) was, as people say it: `just now`,
+/// `40 seconds ago`, `3 minutes ago`, `2 hours ago`, `5 days ago`.
+pub fn human_ago(then: u64, now: u64) -> String {
+    let s = now.saturating_sub(then) / 1_000_000_000;
+    let (n, unit) = match s {
+        0..=9 => return "just now".to_string(),
+        10..=59 => (s, "second"),
+        60..=3_599 => (s / 60, "minute"),
+        3_600..=86_399 => (s / 3_600, "hour"),
+        _ => (s / 86_400, "day"),
+    };
+    format!("{} {}{} ago", n, unit, if n == 1 { "" } else { "s" })
+}
+
 fn random_u64() -> u64 {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
@@ -618,6 +657,25 @@ pub fn vpath<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn timestamps_read_back_and_read_as_people_say_them() {
+        for ns in [0u64, 1_791_798_758_123_000_000, 951_782_400_000_000_000, 4_102_444_799_999_000_000] {
+            assert_eq!(parse_iso8601(&iso8601(ns)), Some(ns), "{}", iso8601(ns));
+        }
+        assert_eq!(parse_iso8601("2026-10-12T21:58:09.007Z"), Some(1_791_842_289_007_000_000));
+        for bad in ["2026-10-12 21:58:09Z", "2026-13-01T00:00:00Z", "2026-10-12T21:58:09", "x"] {
+            assert_eq!(parse_iso8601(bad), None, "{}", bad);
+        }
+        let s = 1_000_000_000u64;
+        let now = 1_000_000 * s;
+        assert_eq!(human_ago(now - 3 * s, now), "just now");
+        assert_eq!(human_ago(now - 40 * s, now), "40 seconds ago");
+        assert_eq!(human_ago(now - 60 * s, now), "1 minute ago");
+        assert_eq!(human_ago(now - 7_300 * s, now), "2 hours ago");
+        assert_eq!(human_ago(now - 5 * 86_400 * s, now), "5 days ago");
+        assert_eq!(human_ago(now + s, now), "just now", "a clock that moved back");
+    }
 
     #[test]
     fn verbatim_windows_paths_are_written_as_people_write_them() {
