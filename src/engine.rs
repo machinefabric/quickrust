@@ -188,25 +188,40 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, program, env })
 }
 
-/// The dynamic library path variable the toolchain's programs find their libraries by.
-pub const LIBRARY_PATH: &str = if cfg!(target_os = "macos") { "DYLD_FALLBACK_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" };
+/// The variable the toolchain's programs find their shared libraries by: the dynamic library
+/// path on Unix; `PATH` on Windows, where a program's DLLs are looked for.
+pub const LIBRARY_PATH: &str = if cfg!(windows) {
+    "PATH"
+} else if cfg!(target_os = "macos") {
+    "DYLD_FALLBACK_LIBRARY_PATH"
+} else {
+    "LD_LIBRARY_PATH"
+};
 
-/// A toolchain program (`<toolchain>/bin/<program>`) run directly: its toolchain's `lib` comes
-/// first on the dynamic library path. An inherited path (rustup puts its toolchain's `lib` there
-/// for everything it runs, `cargo test` included) could otherwise hand it another toolchain's
-/// `librustc_driver` of the same release, and with it that toolchain as its sysroot.
+/// Where the shared libraries of the toolchain in `dir` are (`librustc_driver`, LLVM): its `lib`
+/// on Unix; on Windows its `bin`, beside its programs.
+pub fn library_dir(dir: &Path) -> PathBuf {
+    dir.join(if cfg!(windows) { "bin" } else { "lib" })
+}
+
+/// A toolchain program (`<toolchain>/bin/<program>`), or a program linked against the toolchain's
+/// libraries (Haul's compiler driver), run directly: the toolchain's libraries come first on
+/// `LIBRARY_PATH`. An inherited path (rustup puts its toolchain's `lib` there for everything it
+/// runs, `cargo test` included) could otherwise hand it another toolchain's `librustc_driver` of
+/// the same release, and with it that toolchain as its sysroot.
 pub fn toolchain_program(program: &Path) -> Command {
     let mut cmd = Command::new(program);
-    if !cfg!(windows) {
-        if let Some(lib) = program.parent().and_then(Path::parent).map(|d| d.join("lib")) {
-            let mut libs = vec![lib.clone()];
-            libs.extend(std::env::var_os(LIBRARY_PATH).iter().flat_map(std::env::split_paths).filter(|d| *d != lib));
-            if let Ok(joined) = std::env::join_paths(libs) {
-                cmd.env(LIBRARY_PATH, joined);
-            }
-        }
+    if let Some(lib) = program.parent().and_then(Path::parent).map(library_dir) {
+        cmd.env(LIBRARY_PATH, libraries_first(&lib));
     }
     cmd
+}
+
+/// `LIBRARY_PATH` as inherited, with `lib` first.
+fn libraries_first(lib: &Path) -> OsString {
+    let mut libs = vec![lib.to_path_buf()];
+    libs.extend(std::env::var_os(LIBRARY_PATH).iter().flat_map(std::env::split_paths).filter(|d| d != lib));
+    std::env::join_paths(libs).unwrap_or_else(|_| lib.as_os_str().to_os_string())
 }
 
 /// The environment of commands run with toolchain `tc` (see the module notes).
@@ -238,6 +253,7 @@ fn environment(tc: &Toolchain) -> Vec<(String, String)> {
     if let Ok(joined) = std::env::join_paths(path) {
         env.push(("PATH".to_string(), joined.to_string_lossy().into_owned()));
     }
+    // On Windows `LIBRARY_PATH` is `PATH`, which has the toolchain's `bin` (its DLLs) already.
     if !cfg!(windows) {
         let var = LIBRARY_PATH;
         let previous_lib = std::env::var_os(ENV_ENGINE).map(|e| PathBuf::from(e).join("lib"));

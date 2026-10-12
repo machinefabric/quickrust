@@ -92,10 +92,12 @@ jobs:
         shell: bash
         run: |
           set -eux
-          export HAUL_HOME="$RUNNER_TEMP/haul-home"
-          target/release/haul.exe setup --no-modify-path
-          export PATH="$HAUL_HOME/bin:/usr/bin:/c/Windows/system32:/c/Windows"
-          test "$(command -v cargo)" = "$(cygpath -u "$HAUL_HOME")/bin/cargo"
+          export HAUL_HOME="$(cygpath -w "$RUNNER_TEMP/haul-home")"
+          target/release/haul.exe setup --no-modify-path 2>&1 | tee setup.log
+          if grep -q "compiler driver cannot be built" setup.log; then exit 1; fi
+          bin="$(cygpath -u "$HAUL_HOME")/bin"
+          export PATH="$bin:/usr/bin:/c/Windows/system32:/c/Windows"
+          test "$(command -v cargo)" = "$bin/cargo"
           cd "$RUNNER_TEMP"
           cargo new --vcs none hello
           cd hello
@@ -103,4 +105,5 @@ jobs:
           test ! -e target
           test "$(cargo run)" = "Hello, world!"
           cargo test
+          haul driver status | grep "^built:"
           haul doctor
