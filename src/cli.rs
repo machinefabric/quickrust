@@ -23,12 +23,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const HELP: &str = "\
-haul — drop-in Cargo replacement: orchestration, observation and policy around upstream Cargo
+haul — Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output
+that Haul manages
 
 USAGE
-    haul <cargo-command> [args…]     run a Cargo command through Haul (same syntax as cargo)
-    haul upstream <args…>            run upstream Cargo directly: no policy, no instrumentation
-    cargo <args…>                    the same as the first form (`haul setup` puts Haul's cargo first on PATH)
+    cargo <args…>                    any Cargo command, through Haul (`haul setup` makes `cargo` Haul)
+    haul <cargo-command> [args…]     the same
+    haul upstream <args…>            the toolchain's own Cargo as it is: no Haul settings, nothing recorded
+
+PROGRAMS (built through Haul's cache, installed into ~/.haul/bin)
+    haul install <CRATE>[@VERSION]… [--git URL [--branch B | --tag T | --rev R] | --path DIR]
+                 [--locked] [--force] [--features F] [--bin NAME]… [--root DIR] [--profile P] [--target T]
+    haul install --list
+    haul uninstall <CRATE>… [--bin NAME]… [--root DIR]
 
 OUTPUT OF A BUILD (stored for every build Haul rendered in a terminal)
     haul warnings [--run REF] [--crate NAME] [--lint LINT]
