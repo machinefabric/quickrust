@@ -441,6 +441,11 @@ pub fn create_private_dir(path: &Path) -> io::Result<()> {
     }
 }
 
+/// `p` with the home directory written `~`, as a user reads paths.
+pub fn tilde(p: &Path) -> String {
+    home_dir().and_then(|h| p.strip_prefix(&h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| p.display().to_string())
+}
+
 pub fn human_bytes(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = b as f64;

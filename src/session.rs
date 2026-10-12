@@ -42,11 +42,14 @@ pub struct Spec {
     /// A private artifact cache (benchmarks and experiments, whose repetitions must not reuse
     /// each other's results); the shared one in `HAUL_HOME` otherwise.
     pub artifact_cache: Option<PathBuf>,
+    /// The build is a step of a command that reports its own result (`haul install`): a rendered
+    /// build that succeeds says nothing of its own (its progress, warnings and failure show).
+    pub step: bool,
 }
 
 impl Spec {
     pub fn new(args: Vec<OsString>, mode: Mode) -> Spec {
-        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None, stdout_to_stderr: false, artifact_cache: None }
+        Spec { args, mode, env: Vec::new(), scenario: None, force_finalize: false, cwd: None, stdout_to_stderr: false, artifact_cache: None, step: false }
     }
 }
 
@@ -595,7 +598,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
                     }
                 } else if render {
                     if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
-                        live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_)), inv.alias_of.as_deref().or(inv.command.as_deref()).unwrap_or("")));
+                        live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_)), inv.alias_of.as_deref().or(inv.command.as_deref()).unwrap_or(""), spec.step));
                     }
                 } else if let Some(out) = child.stdout.take() {
                     let tx = tx.clone();
@@ -656,17 +659,37 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         // Cargo replays the warnings of fresh units, which Haul has just summarised: they are
         // allowed here (display only: units stay fresh; Cargo versions without the setting
         // ignore it and replay them). `cargo run`'s "Finished … Running …" would repeat what
-        // Haul reported; a test run's lines name the test binaries, and `--quiet` would change
-        // libtest's output too.
+        // Haul reported (`--quiet` leaves the program's output alone). A test run's `--quiet`
+        // would change libtest's output too: its terminal is relayed instead (see `relay`).
         let quiet_warnings = ["--config".to_string(), "build.warnings=\"allow\"".to_string()];
         let mut second = with_overlays(&spec.args, &inv, &[fast.args.clone(), quiet_warnings.to_vec()].concat());
         if how == crate::ui::Prebuild::Runner {
             second = crate::ui::with_arg(second, "--quiet");
         }
         let again = Instant::now();
-        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute Cargo {}: {}", engine.program.display(), e))?;
+        let mut cmd = command(&second);
+        #[cfg(unix)]
+        let relay = match how {
+            crate::ui::Prebuild::NoRun => {
+                use std::io::IsTerminal;
+                let relay = crate::relay::Relay::open(std::io::stdout().is_terminal()).map_err(|e| format!("cannot open a terminal for the test run: {}", e))?;
+                relay.attach(&mut cmd).map_err(|e| format!("cannot open a terminal for the test run: {}", e))?;
+                Some(relay.start(crate::ui::color()))
+            }
+            crate::ui::Prebuild::Runner => None,
+        };
+        let ran = proc::run(&mut cmd, true);
+        drop(cmd);
+        #[cfg(unix)]
+        let totals = relay.map(|r| r.finish());
+        let (e, _) = ran.map_err(|e| format!("could not execute Cargo {}: {}", engine.program.display(), e))?;
         exit = e;
-        duration_ns += again.elapsed().as_nanos() as u64;
+        let took = again.elapsed().as_nanos() as u64;
+        duration_ns += took;
+        #[cfg(unix)]
+        if let Some(t) = totals {
+            crate::ui::tests_done(&t, exit, took);
+        }
     }
     if let Some(l) = &lock {
         let _ = std::fs::remove_file(l);

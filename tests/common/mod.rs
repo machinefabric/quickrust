@@ -260,7 +260,7 @@ impl Drop for Sandbox {
 }
 
 /// What a terminal shows after `bytes`: a carriage return starts the line over, `ESC[2K` clears
-/// it, colours are dropped. Lines end with `\n`; the line the cursor is on is the last.
+/// it, colours and character-set choices are dropped. Lines end with `\n`; the line the cursor is on is the last.
 pub fn screen(bytes: &[u8]) -> String {
     let text = String::from_utf8_lossy(bytes);
     let mut lines: Vec<String> = vec![String::new()];
@@ -272,6 +272,12 @@ pub fn screen(bytes: &[u8]) -> String {
             '\r' if chars.peek() == Some(&'\n') => {}
             '\r' => lines.last_mut().unwrap().clear(),
             '\x1b' => {
+                // A character set chosen (`ESC ( B`, which terminfo's colour reset sends).
+                if matches!(chars.peek(), Some('(' | ')')) {
+                    chars.next();
+                    chars.next();
+                    continue;
+                }
                 // A CSI sequence: ESC [ params final.
                 if chars.peek() == Some(&'[') {
                     chars.next();

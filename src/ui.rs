@@ -97,6 +97,40 @@ pub fn prebuild(how: Prebuild, haul: &Path, target: &str) -> (Vec<String>, Vec<S
     }
 }
 
+/// The closing line of a test run whose terminal Haul relayed (see `relay`): libtest's counts,
+/// added up over every test program.
+#[cfg(unix)]
+pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
+    let r = Renderer::new();
+    let dot = r.paint("2", " · ");
+    let counts: Vec<String> = [(t.failed, "failed"), (t.passed, "passed"), (t.ignored, "ignored"), (t.measured, "measured"), (t.filtered, "filtered out")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+    let line = if exit.signal.is_some() {
+        format!("{} after {}", r.paint("1;33", "■ Interrupted"), human_dur(ns))
+    } else if t.programs == 0 {
+        // Programs that are not libtest's (a custom harness): their own output says it all.
+        if exit.success() {
+            return;
+        }
+        format!("{} after {}", r.paint("1;31", "✗ Tests failed"), human_dur(ns))
+    } else if exit.success() {
+        format!("{} {}{}{}", r.paint("1;32", "✓"), counts.join(&dot), dot, human_dur(ns))
+    } else {
+        let what = if t.failed > 0 { counts.join(&dot) } else { [vec!["a test program failed".to_string()], counts].concat().join(&dot) };
+        format!("{} {}{}{}", r.paint("1;31", "✗"), what, dot, human_dur(ns))
+    };
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "{}", line);
+    let _ = err.flush();
+}
+
+/// A size as Cargo prints it (`645.0KiB`, `242B`) as Haul prints sizes (`645.0 KiB`, `242 B`).
+fn cargo_size(s: &str) -> String {
+    match s.find(|c: char| c.is_ascii_alphabetic()) {
+        Some(i) if i > 0 && s[..i].chars().all(|c| c.is_ascii_digit() || c == '.') => format!("{} {}", &s[..i], &s[i..]),
+        _ => s.to_string(),
+    }
+}
+
 pub fn color() -> bool {
     if std::env::var_os("NO_COLOR").map(|v| !v.is_empty()).unwrap_or(false) {
         return false;
@@ -455,11 +489,11 @@ pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
 /// Starts rendering the output of a spawned Cargo. `prebuild`: the build of a `BuildFirst`
 /// command, whose "Running" and "Executable" lines name programs it does not run.
 /// `command`: the Cargo command (or what an alias expands to), which names the result.
-pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static, prebuild: bool, command: &str) -> Live {
+pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static, prebuild: bool, command: &str, step: bool) -> Live {
     let (tx, rx) = channel();
     let readers = vec![reader(stdout, tx.clone(), true), reader(stderr, tx.clone(), false)];
     let done = Done::of(command);
-    let render = std::thread::spawn(move || Renderer { prebuild, done, ..Renderer::new() }.run(rx));
+    let render = std::thread::spawn(move || Renderer { prebuild, done, step, ..Renderer::new() }.run(rx));
     Live { tx, readers, render }
 }
 
@@ -527,6 +561,8 @@ struct Renderer {
     prebuild: bool,
     /// What the summary says the command did.
     done: Done,
+    /// A step of a command that reports the result (`session::Spec::step`).
+    step: bool,
     color: bool,
     width: usize,
     status_shown: bool,
@@ -600,7 +636,7 @@ impl Activity {
                 if let Some((n, more)) = rest.split_once(' ') {
                     if n.parse::<u64>().is_ok() && (more.starts_with("crates") || more.starts_with("crate ")) {
                         self.downloading = None;
-                        let size = more.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(b, _)| b).unwrap_or("");
+                        let size = more.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(b, _)| cargo_size(b)).unwrap_or_default();
                         // Cargo 1.99 adds `(largest was `encoding_rs` at 1.3MiB)` after the duration.
                         let took = more.split_once(" in ").map(|(_, t)| t.split(' ').next().unwrap_or("")).unwrap_or("");
                         return Some(format!("{} {}{}{}", n, if n == "1" { "crate" } else { "crates" }, if size.is_empty() { String::new() } else { format!(" · {}", size) }, if took.is_empty() { String::new() } else { format!(" · {}", took) }));
@@ -871,6 +907,11 @@ impl Renderer {
                     Line::Status { verb, .. } => verb,
                     _ => "",
                 };
+                // `Removed 125 files, 75.8MiB total`
+                let rest = match (verb, rest.strip_suffix(" total").and_then(|r| r.split_once(", "))) {
+                    ("Removed", Some((files, size))) => format!("{}{}{}", files, self.paint("2", " · "), cargo_size(size)),
+                    _ => rest.to_string(),
+                };
                 Some(format!("{} {} {}", paint_mark(self, "1;32", "✓"), verb, rest))
             }
             Line::Status { verb: v @ ("Packaging" | "Verifying" | "Uploading" | "Waiting" | "Vendoring" | "Archiving" | "Compiling" | "Checking" | "Documenting" | "Finished" | "Fresh" | "Blocking" | "Downloaded" | "Generated"), rest } => {
@@ -966,11 +1007,14 @@ impl Renderer {
         }
         self.clear_status(err);
         let dot = self.paint("2", " · ");
-        if exit.success() {
+        if exit.success() && self.step {
+            // Part of a command that reports the result.
+        } else if exit.success() {
             let mut s = format!("{} {}", self.paint("1;32", &format!("✓ {}", self.done.word())), human_dur(wall_ns));
-            s.push_str(&format!("{}{} compiled{}{} fresh", dot, self.compiled, dot, self.fresh));
-            if cache_hits > 0 {
-                s.push_str(&format!("{}{} restored from Haul's cache", dot, cache_hits));
+            for (n, what) in [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from Haul's cache")] {
+                if n > 0 {
+                    s.push_str(&format!("{}{} {}", dot, n, what));
+                }
             }
             let _ = writeln!(err, "{}", s);
             for g in &self.activity.generated {
@@ -1098,6 +1142,8 @@ pub fn show_log(lines: &[Value], raw: bool) {
     }
 }
 
+/// `s` without terminal control sequences: colours and other CSI sequences, and character-set
+/// choices (`ESC ( B`, which terminfo's colour reset sends).
 pub fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
@@ -1109,6 +1155,9 @@ pub fn strip_ansi(s: &str) -> String {
                     break;
                 }
             }
+        } else if c == '\x1b' && matches!(chars.peek(), Some('(' | ')')) {
+            chars.next();
+            chars.next();
         } else {
             out.push(c);
         }
@@ -1159,7 +1208,7 @@ mod tests {
     #[test]
     fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
         assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "✓ Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
-        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files, 75.8MiB total\n");
+        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files · 75.8 MiB\n");
         let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
         assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\n✗ cargo update failed after 920ms\n");
     }
@@ -1177,7 +1226,7 @@ mod tests {
         ren.on_stderr(&mut sink, "  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)");
         ren.on_stderr(&mut sink, "    Building [>         ] 0/54: memchr");
         assert_eq!(ren.activity.status(), None);
-        assert_eq!(String::from_utf8(sink).unwrap(), "↓ Downloaded 25 crates · 4.4MiB · 0.32s\n");
+        assert_eq!(String::from_utf8(sink).unwrap(), "↓ Downloaded 25 crates · 4.4 MiB · 0.32s\n");
         // Nor by a command that does not build.
         assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "✓ Lockfile up to date · 920ms\n");
     }
@@ -1197,7 +1246,7 @@ mod tests {
         ren.on_stderr(&mut sink, "    Building [==>      ] 2/16: syn, quote");
         assert_eq!(ren.activity.progress, Some((2, 16)));
         let text = String::from_utf8(sink).unwrap();
-        assert_eq!(text, "↓ Downloaded 4 crates · 645.0KiB · 0.16s\n");
+        assert_eq!(text, "↓ Downloaded 4 crates · 645.0 KiB · 0.16s\n");
     }
 
     #[test]
