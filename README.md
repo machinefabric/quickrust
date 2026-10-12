@@ -130,9 +130,15 @@ haul errors                         # the errors again
 haul log [--raw]                    # everything, in order
 ```
 
+`cargo run`, `cargo test` and `cargo bench` get the same build output, and then the
+program, the tests or the benchmarks run with the terminal to themselves: Haul first builds
+exactly what the command needs (`test --no-run`; for `run`, Cargo's own selection of the
+binary, with a runner that does not run it), then runs the command, which finds everything
+fresh. Their output is never touched, and the warnings Cargo would replay are not repeated.
+
 Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
-are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format`,
-`cargo run` and `cargo test` (other than `--no-run`) get Cargo's output untouched.
+are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and
+`cargo test --doc` get Cargo's output untouched.
 `output = "cargo"` (or `HAUL_OUTPUT=cargo`) turns it off; compat mode leaves the terminal
 to Cargo unless you set `output = "haul"`.
 

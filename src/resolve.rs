@@ -83,8 +83,13 @@ pub struct Invocation {
     pub manifest_path: Option<PathBuf>,
     pub target_dir: Option<PathBuf>,
     pub targets: Vec<String>,
-    /// Raw values of `--config` arguments, in order.
+    /// Raw values of the `--config` arguments Cargo applies, in order. Cargo keeps those before
+    /// the subcommand or, when there are any after it, only those after it.
     pub configs: Vec<String>,
+    /// Whether the applied `--config` arguments are those after the subcommand.
+    pub configs_after_command: bool,
+    /// Position of the subcommand in the arguments.
+    pub command_index: Option<usize>,
     /// `-C <dir>` global option.
     pub chdir: Option<PathBuf>,
     pub json_messages: bool,
@@ -110,6 +115,8 @@ pub fn classify(args: &[OsString]) -> Invocation {
         target_dir: None,
         targets: Vec::new(),
         configs: Vec::new(),
+        configs_after_command: false,
+        command_index: None,
         chdir: None,
         json_messages: false,
         release: false,
@@ -144,6 +151,8 @@ pub fn classify(args: &[OsString]) -> Invocation {
         inv.family = family_of(&cmd);
         inv.command = Some(cmd);
     }
+    inv.command_index = cmd_index;
+    let mut configs: Vec<(usize, String)> = Vec::new();
     for i in 0..args.len() {
         let a = args[i].to_string_lossy();
         if a == "--" {
@@ -156,7 +165,7 @@ pub fn classify(args: &[OsString]) -> Invocation {
         } else if let Some(v) = flag_value(args, i, "--target") {
             inv.targets.push(v);
         } else if let Some(v) = flag_value(args, i, "--config") {
-            inv.configs.push(v);
+            configs.push((i, v));
         } else if let Some(v) = flag_value(args, i, "--message-format") {
             inv.json_messages |= v.split(',').any(|p| p.starts_with("json"));
         } else if a == "--release" || a == "-r" {
@@ -165,6 +174,9 @@ pub fn classify(args: &[OsString]) -> Invocation {
             inv.release |= v == "release";
         }
     }
+    let after = |i: usize| cmd_index.is_some_and(|ci| i > ci);
+    inv.configs_after_command = configs.iter().any(|(i, _)| after(*i));
+    inv.configs = configs.into_iter().filter(|(i, _)| after(*i) == inv.configs_after_command).map(|(_, v)| v).collect();
     inv
 }
 
@@ -495,6 +507,10 @@ mod tests {
         assert_eq!(inv.command.as_deref(), Some("test"));
         assert_eq!(inv.family, Family::Test);
         assert_eq!(inv.configs, vec!["a=1"]);
+        assert!(!inv.configs_after_command);
+        // A `--config` after the subcommand makes Cargo drop those before it.
+        let inv = classify(&os(&["--config", "a=1", "build", "--config", "b=2", "--config=c=3"]));
+        assert_eq!((inv.configs, inv.configs_after_command, inv.command_index), (vec!["b=2".to_string(), "c=3".to_string()], true, Some(2)));
     }
 
     #[test]

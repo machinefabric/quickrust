@@ -222,6 +222,11 @@ pub fn main() {
         crate::toolchain_cache::report_environment();
     }
     let command = args.first().map(|a| util::lossy(a)).unwrap_or_default();
+    // The runner Haul sets while it builds what `cargo run` needs: the program is run afterwards,
+    // by `cargo run` itself.
+    if command == crate::ui::NOOP_RUNNER {
+        std::process::exit(0);
+    }
     let rest = if args.is_empty() { &args[..] } else { &args[1..] };
     let result: CmdResult = match command.as_str() {
         "" | "help" | "--help" | "-h" => {

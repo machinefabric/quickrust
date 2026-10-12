@@ -18,7 +18,7 @@ What fast mode does, and the settings that control it:
 | Artifact cache | `cache.artifacts` = `on` \| `off`; `cache.artifacts-max-size` (`10GiB`); `cache.artifacts-min-link-ms` (`300`) | Dependencies are shared across all checkouts; workspace units within the same checkout (their debug information names it). Linked workspace outputs that built faster than the threshold are not stored. Least recently used entries are evicted above the size. Off behind a user rustc wrapper. |
 | Linker | `fast.linker` = `auto` \| `off` | Linux with glibc: when `wild` is on `PATH` (or in Cargo's bin directory), host builds of binaries, tests, proc-macros and dynamic libraries link with it instead of rustc's bundled LLD. A `-C linker`, linker-selecting link arguments or linker features from the user (Cargo configuration, `RUSTFLAGS`) win. `~/.haul/linker/ld` links to the wild in use. |
 | rustup's proxy skipped | — | rustup's toolchain choice is learned once per set of inputs and the toolchain's Cargo is called directly with the variables rustup would set. |
-| Build output | `output` = `haul` \| `cargo` | In a terminal: status line, errors in full, warnings counted, everything stored (`haul warnings`, `haul errors`, `haul log`). compat mode defaults to `cargo`. |
+| Build output | `output` = `haul` \| `cargo` | In a terminal: status line, errors in full, warnings counted, everything stored (`haul warnings`, `haul errors`, `haul log`). `run`, `test` and `bench` build first (rendered), then run the command with the terminal inherited. compat mode defaults to `cargo`. |
 
 ## Where state lives
 

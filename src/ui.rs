@@ -16,6 +16,7 @@ use crate::util::{self, human_dur};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
+use std::path::Path;
 use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread::JoinHandle;
@@ -26,19 +27,68 @@ pub const OUTPUT_FILE: &str = "cargo-output.jsonl";
 const MAX_STORED_LINES: usize = 200_000;
 
 /// Whether Haul renders this invocation's output.
-pub fn wanted(inv: &Invocation, args: &[OsString], cfg: &Config) -> bool {
+/// How Haul presents a command's output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rendering {
+    /// Cargo's output reaches the terminal unchanged.
+    Off,
+    /// The command only builds: Haul renders all of it.
+    Build,
+    /// The command builds, then runs programs whose own output is the point (`cargo run`,
+    /// `cargo test`): Haul first builds exactly what the command needs and renders that, then
+    /// runs the command itself, which finds everything fresh, with the real terminal.
+    BuildFirst(Prebuild),
+}
+
+/// How the build of a `BuildFirst` command is obtained from the command itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Prebuild {
+    /// `cargo test` and `cargo bench`: the same command with `--no-run`.
+    NoRun,
+    /// `cargo run`: the same command, with a runner that does not run the program.
+    Runner,
+}
+
+pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering {
     // compat mode leaves the terminal to Cargo unless the user asked for Haul's output explicitly.
     let setting = if cfg.str("mode") == "compat" && cfg.origin("output") == "default" { "cargo" } else { cfg.str("output") };
-    if setting != "haul" || !std::io::stderr().is_terminal() {
-        return false;
+    if setting != "haul" || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
+        return Rendering::Off;
     }
-    // Commands whose own output is the point (programs run by `cargo run` / `cargo test`) keep a
-    // real terminal: they are left to Cargo. `test --no-run` only builds.
-    let builds_only = matches!(inv.family, Family::Build | Family::Check | Family::Clippy) || (inv.family == Family::Test && args.iter().any(|a| a == "--no-run"));
-    let user_chose = args.iter().map(|a| a.to_string_lossy()).take_while(|a| a != "--").any(|a| {
-        a.starts_with("--message-format") || a == "-v" || a == "-vv" || a == "--verbose" || a == "-q" || a == "--quiet" || a.starts_with("--color")
-    });
-    builds_only && !user_chose && inv.alias_of.is_none()
+    let own: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).take_while(|a| a != "--").collect();
+    let has = |flag: &str| own.iter().any(|a| a == flag);
+    let user_chose = own.iter().any(|a| a.starts_with("--message-format") || a == "-v" || a == "-vv" || a == "--verbose" || a == "-q" || a == "--quiet" || a.starts_with("--color"));
+    if user_chose {
+        return Rendering::Off;
+    }
+    match inv.family {
+        Family::Build | Family::Check | Family::Clippy => Rendering::Build,
+        Family::Test | Family::Bench if has("--no-run") => Rendering::Build,
+        // Doc tests are built while they run; there is nothing to build first.
+        Family::Test | Family::Bench if has("--doc") => Rendering::Off,
+        Family::Test | Family::Bench => Rendering::BuildFirst(Prebuild::NoRun),
+        // One target, named as a triple: the do-nothing runner is set for exactly it.
+        Family::Run if inv.targets.len() <= 1 && inv.targets.iter().all(|t| !t.ends_with(".json")) => Rendering::BuildFirst(Prebuild::Runner),
+        _ => Rendering::Off,
+    }
+}
+
+/// The internal argument under which the Haul binary is the do-nothing runner.
+pub const NOOP_RUNNER: &str = "__haul-noop-runner";
+
+/// What turns a `BuildFirst` command into the build it needs: arguments for the command, and
+/// `--config` settings (as `--config`, `KEY=VALUE` pairs). `target` is the triple the program
+/// is built for.
+pub fn prebuild(how: Prebuild, haul: &Path, target: &str) -> (Vec<String>, Vec<String>) {
+    match how {
+        Prebuild::NoRun => (vec!["--no-run".into()], Vec::new()),
+        Prebuild::Runner => {
+            // For the triple itself: a runner set for the triple takes precedence over any
+            // `cfg(...)` one the user configured, which must not run the program here.
+            let runner = serde_json::to_string(&[util::path_str(haul), NOOP_RUNNER.to_string()]).unwrap_or_default();
+            (Vec::new(), vec!["--config".into(), format!("target.{}.runner={}", target, runner)])
+        }
+    }
 }
 
 pub fn color() -> bool {
@@ -108,11 +158,12 @@ fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHa
     })
 }
 
-/// Starts rendering the output of a spawned Cargo.
-pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static) -> Live {
+/// Starts rendering the output of a spawned Cargo. `prebuild`: the build of a `BuildFirst`
+/// command, whose "Running" and "Executable" lines name programs it does not run.
+pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static, prebuild: bool) -> Live {
     let (tx, rx) = channel();
     let readers = vec![reader(stdout, tx.clone(), true), reader(stderr, tx.clone(), false)];
-    let render = std::thread::spawn(move || Renderer::new().run(rx));
+    let render = std::thread::spawn(move || Renderer { prebuild, ..Renderer::new() }.run(rx));
     Live { tx, readers, render }
 }
 
@@ -141,6 +192,7 @@ impl Live {
 
 #[derive(Default)]
 struct Renderer {
+    prebuild: bool,
     color: bool,
     width: usize,
     status_shown: bool,
@@ -289,6 +341,7 @@ impl Renderer {
                 }
             }
             "Fresh" | "Finished" | "Building" | "Blocking" => {}
+            "Running" | "Executable" if self.prebuild => {}
             _ if t.starts_with("warning: `") && t.contains(" generated ") => {}
             _ if t.starts_with("error: could not compile `") => {}
             _ if t.is_empty() => {}
