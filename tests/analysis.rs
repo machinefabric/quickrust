@@ -898,12 +898,14 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     let w = sb.dir.join("w");
     let built = run(sb.haul(&w).args(["driver", "build"]));
     assert!(built.status.success(), "{}", stderr(&built));
+    // The binary links in a moment; by default such a unit is neither stored nor compiled apart.
     let cargo = || {
         let mut c = sb.cargo(&w);
-        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c.env("HAUL_EARLY_CUTOFF", "auto").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
         c
     };
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello-1 <2>\n");
+    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
     assert!(cache_details(&sb).iter().all(|d| !d.contains("driver_failure")), "{:#?}", cache_details(&sb));
 
     // A body `mid` cannot observe: `mid` is restored as it was, `base` is compiled, and the
@@ -913,6 +915,8 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "howdy-1 <2>\n");
     let results = cache_results(&sb);
     assert!(results.contains(&("mid".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
+    // Its own objects unchanged (same sources, same interfaces below), the binary is only linked again.
+    assert_eq!(links(&sb), vec![("app".to_string(), "relinked".to_string())], "{:#?}", cache_details(&sb));
     assert!(results.iter().any(|(n, r)| n == "base" && r != "hit") && results.iter().any(|(n, r)| n == "app" && r != "hit"), "{:#?}", cache_details(&sb));
 
     // A generic body is compiled into `mid`: `mid` is compiled again.
@@ -920,6 +924,37 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     fs::write(&base, text.replace("\"<{}>\"", "\"[{}]\"")).unwrap();
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "howdy-1 [2]\n");
     assert!(cache_results(&sb).iter().any(|(n, r)| n == "mid" && r != "hit"), "{:#?}", cache_details(&sb));
+    // `mid`'s interface changed, which the binary's own code is compiled against.
+    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
+
+    // Kept objects are linked only as they were written: one changed since, and the binary is
+    // compiled again rather than linked from it.
+    let kept = fs::read_dir(w.join("target/debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".haul-objects")).expect("the binary's objects are kept");
+    let object = fs::read_dir(&kept).unwrap().next().unwrap().unwrap().path();
+    let mut bytes = fs::read(&object).unwrap();
+    bytes.push(0);
+    fs::write(&object, bytes).unwrap();
+    let text = fs::read_to_string(&base).unwrap();
+    fs::write(&base, text.replace("\"howdy\"", "\"hiya!\"")).unwrap();
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hiya!-1 [2]\n");
+    assert_eq!(links(&sb), vec![("app".to_string(), "compiled apart".to_string())], "{:#?}", cache_details(&sb));
+}
+
+/// The latest instrumented run's units compiled apart from linking or linked again: (crate, how).
+fn links(sb: &Sandbox) -> Vec<(String, String)> {
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    let mut out: Vec<(String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())
+        .unwrap()
+        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+        .filter(|ev| ev["kind"] == "compile" && ev["link"].is_string())
+        .map(|ev| {
+            let args: Vec<&str> = ev["args"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+            let name = args.iter().position(|a| *a == "--crate-name").map(|i| args[i + 1].to_string()).unwrap_or_default();
+            (name, ev["link"].as_str().unwrap().to_string())
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 #[test]

@@ -62,6 +62,10 @@ pub struct Job {
     /// Produces a linked output (binary, test executable, proc-macro).
     links: bool,
     cwd: PathBuf,
+    /// For a binary or test executable whose code Haul can link again on its own: the level-1
+    /// key of what its own object code depends on (its dependencies' interfaces, not what they
+    /// link), under which the objects of its last compilation are relinked (see `relink`).
+    compile_key1: Option<String>,
 }
 
 pub enum Lookup {
@@ -193,6 +197,36 @@ fn link_identity(root: &Path, path: &Path, seen: &mut std::collections::HashMap<
     Some(id)
 }
 
+/// The object files in `out_dir` that the `.rlink` at `rlink` names (rustc writes their full
+/// paths into it): `<stem>.<…>.rcgu.o`.
+fn linked_objects(rlink: &Path, out_dir: &Path, stem: &str) -> Result<Vec<String>, String> {
+    let bytes = fs::read(rlink).map_err(|e| format!("{} is unreadable: {}", rlink.display(), e))?;
+    let prefix = format!("{}/{}.", util::path_str(out_dir), stem);
+    let (mut found, mut named) = (std::collections::BTreeSet::new(), 0);
+    let mut at = 0;
+    while let Some(i) = find(&bytes[at..], prefix.as_bytes()).map(|i| i + at) {
+        // A path ends where rustc's string encoding does (its sentinel byte is not ASCII).
+        let rest = &bytes[i + prefix.len()..];
+        let len = rest.iter().position(|b| !(b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')).unwrap_or(rest.len());
+        let tail = String::from_utf8_lossy(&rest[..len]);
+        if let Some(name) = tail.strip_suffix(".rcgu.o").map(|t| format!("{}.{}.rcgu.o", stem, t)) {
+            found.insert(name);
+            named += 1;
+        }
+        at = i + prefix.len();
+    }
+    // Every object it names must be one of these: one elsewhere could change unseen.
+    let all = bytes.windows(b".rcgu.o".len()).filter(|w| *w == b".rcgu.o").count();
+    if found.is_empty() || all != named {
+        return Err(format!("{} names object files other than this unit's in its output directory", rlink.display()));
+    }
+    Ok(found.into_iter().collect())
+}
+
+fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
 /// Outputs another unit can name in `--extern`, whose hashes are kept with a cache entry.
 fn is_linkable(name: &str) -> bool {
     [".rlib", ".rmeta", ".so", ".dylib", ".dll"].iter().any(|e| name.ends_with(e))
@@ -230,17 +264,20 @@ impl MirInlining {
     }
 }
 
-/// The interface hash of the crate whose metadata is at `rmeta`, as Haul's compiler driver
-/// recorded it next to the metadata (`lib<crate><extra>.haul-svh`), when that metadata carries
-/// it. The metadata is what dependents compile against, so the record counts only if the
-/// metadata's own root names the same crate hash: a record left by an earlier compilation, or a
-/// metadata file written by another compiler since, is not this crate's interface.
-fn interface_identity(rmeta: &Path) -> Option<String> {
+/// The interface hash of the crate whose metadata is at `artifact` (its `.rmeta`, or its `.rlib`
+/// through the metadata written beside it), as Haul's compiler driver recorded it next to the
+/// metadata (`lib<crate><extra>.haul-svh`), when that metadata carries it. The metadata is what
+/// dependents compile against, so the record counts only if the metadata's own root names the
+/// same crate hash: a record left by an earlier compilation, or a metadata file written by
+/// another compiler since, is not this crate's interface.
+fn interface_identity(artifact: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
-    let stem = rmeta.file_name()?.to_str()?.strip_suffix(".rmeta")?;
-    let svh = u128::from_str_radix(fs::read_to_string(rmeta.with_file_name(format!("{}.haul-svh", stem))).ok()?.trim(), 16).ok()?;
+    let name = artifact.file_name()?.to_str()?;
+    let stem = name.strip_suffix(".rmeta").or_else(|| name.strip_suffix(".rlib"))?;
+    let rmeta = artifact.with_file_name(format!("{}.rmeta", stem));
+    let svh = u128::from_str_radix(fs::read_to_string(artifact.with_file_name(format!("{}.haul-svh", stem))).ok()?.trim(), 16).ok()?;
     // `rust\0\0\0` and the format version, then the root's position (64-bit little-endian).
-    let mut f = fs::File::open(rmeta).ok()?;
+    let mut f = fs::File::open(&rmeta).ok()?;
     let mut head = [0u8; 16];
     f.read_exact(&mut head).ok()?;
     if &head[..7] != b"rust\0\0\0" {
@@ -387,26 +424,46 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
     // The artifact each dependency resolves to: identical inputs, identical output. A unit that
     // links compiles the dependencies' code into its output, and the code of everything they
     // were compiled against: it is keyed by what it links.
+    // A binary's own object code depends on what it compiles against, like any unit's: Haul's
+    // driver compiles it apart from linking, so that the objects can be linked again alone.
+    let executable = test || types.iter().any(|t| t == "bin");
+    let mut compile_key: Option<Vec<String>> = (executable && driver.is_some() && !mir.inlines(incremental)).then(|| {
+        let mut k = key.clone();
+        k.push("stage=objects".into());
+        k
+    });
     let mut seen = std::collections::HashMap::new();
     for v in externs {
         match v.split_once('=') {
-            Some((name, path)) if links => match link_identity(&root, Path::new(path), &mut seen) {
-                Some(id) => key.push(format!("--extern={}=link:{}", name, id)),
-                None => return Err(format!("what dependency {} links was not recorded", path)),
-            },
             Some((name, path)) => {
                 // Nor may a unit inline their MIR: it would carry spans whose expansions the
                 // interface hash identifies by kind, not by number (see `driver/`).
                 let interface = if driver.is_some() && !mir.inlines(incremental) { interface_identity(Path::new(path)) } else { None };
-                match interface {
-                    Some(svh) => key.push(format!("--extern={}=svh:{}", name, svh)),
-                    None => key.push(format!("--extern={}=sha:{}", name, content_hash(&root, Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?)),
+                let compiled_against = match interface {
+                    Some(svh) => format!("--extern={}=svh:{}", name, svh),
+                    None => format!("--extern={}=sha:{}", name, content_hash(&root, Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?),
+                };
+                if links {
+                    match link_identity(&root, Path::new(path), &mut seen) {
+                        Some(id) => key.push(format!("--extern={}=link:{}", name, id)),
+                        None => return Err(format!("what dependency {} links was not recorded", path)),
+                    }
+                    if let Some(k) = compile_key.as_mut() {
+                        k.push(compiled_against);
+                    }
+                } else {
+                    key.push(compiled_against);
                 }
             }
-            None => key.push(format!("--extern={}", v)),
+            None => {
+                key.push(format!("--extern={}", v));
+                if let Some(k) = compile_key.as_mut() {
+                    k.push(format!("--extern={}", v));
+                }
+            }
         }
     }
-    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, links, cwd })
+    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, links, cwd, compile_key1: compile_key.map(util::digest_parts) })
 }
 
 /// Level 2: the values of the variables rustc read, and for workspace units the content of
@@ -539,13 +596,15 @@ impl Job {
     }
 
     /// Stores the outputs of a successful compilation that started at `start_wall_ns`.
-    pub fn store(&self, stderr: &[u8], start_wall_ns: u64) -> Result<(), String> {
+    /// What the compilation that started at `start_wall_ns` read, from its dep-info: the
+    /// variables (`# env-dep:`), and for a workspace unit its input files (relative to the
+    /// workspace root, or below OUT_DIR).
+    fn read_inputs(&self, start_wall_ns: u64) -> Result<(Vec<String>, Vec<String>), String> {
         let dep_info = self.out_dir.join(format!("{}.d", self.stem));
         let text = fs::read_to_string(&dep_info).map_err(|e| format!("no dep-info: {}", e))?;
         let mut names: Vec<String> = text.lines().filter_map(|l| l.strip_prefix("# env-dep:")).map(|r| r.split_once('=').map(|(n, _)| n).unwrap_or(r).to_string()).collect();
         names.sort();
         names.dedup();
-        // Inputs of a workspace unit, as rustc listed them (relative to the workspace root, or below OUT_DIR).
         let mut inputs = Vec::new();
         if self.local {
             let rule = text.lines().find(|l| !l.starts_with('#') && l.contains(": ")).ok_or("dep-info lists no inputs")?;
@@ -564,6 +623,84 @@ impl Job {
             inputs.sort();
             inputs.dedup();
         }
+        Ok((names, inputs))
+    }
+
+    /// Whether this unit's code can be linked again on its own (see `relink`).
+    pub fn relinkable(&self) -> bool {
+        self.compile_key1.is_some()
+    }
+
+    /// Where the compilation of a unit compiled apart from linking leaves its `.rlink`.
+    pub fn rlink_path(&self) -> PathBuf {
+        self.out_dir.join(format!("{}.rlink", self.stem))
+    }
+
+    fn relink_marker(&self) -> PathBuf {
+        self.out_dir.join(format!("{}.haul-relink", self.stem))
+    }
+
+    fn kept_objects(&self) -> PathBuf {
+        self.out_dir.join(format!("{}.haul-objects", self.stem))
+    }
+
+    /// Keeps the objects of this unit's compilation (rustc's `-Zno-link`), which started at
+    /// `start_wall_ns`, for later relinks: linking deletes them, so they are hard-linked aside
+    /// (`<stem>.haul-objects/`), and recorded with what they were compiled from (the level-2
+    /// key of `compile_key1`) and each file's identity, so that `prepare_relink` uses them only
+    /// as they were written. Called between compiling and linking.
+    pub fn keep_objects(&self, start_wall_ns: u64) -> Result<(), String> {
+        let key1 = self.compile_key1.as_ref().ok_or("not compiled apart from linking")?;
+        let (names, inputs) = self.read_inputs(start_wall_ns)?;
+        let key2 = level2(key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
+        let rlink = self.rlink_path();
+        let objects = linked_objects(&rlink, &self.out_dir, &self.stem)?;
+        let kept = self.kept_objects();
+        let _ = fs::remove_file(self.relink_marker());
+        let _ = fs::remove_dir_all(&kept);
+        fs::create_dir_all(&kept).map_err(|e| format!("cannot create {}: {}", kept.display(), e))?;
+        let identity = |p: &Path| fs::metadata(p).map(|md| content_identity(&md, p)).map_err(|e| format!("{} is unreadable: {}", p.display(), e));
+        let mut files = vec![json!([format!("{}.rlink", self.stem), identity(&rlink)?])];
+        for o in &objects {
+            fs::hard_link(self.out_dir.join(o), kept.join(o)).map_err(|e| format!("cannot keep {}: {}", o, e))?;
+            files.push(json!([o, identity(&kept.join(o))?]));
+        }
+        fs::create_dir_all(self.root.join("m")).map_err(|e| e.to_string())?;
+        util::write_json_fast(&self.root.join("m").join(format!("{}.json", key1)), &json!({ "env_deps": names, "inputs": inputs })).map_err(|e| e.to_string())?;
+        util::write_json_fast(&self.relink_marker(), &json!({ "key2": key2, "files": files })).map_err(|e| e.to_string())
+    }
+
+    /// The `.rlink` to link this unit from, when the objects of its last compilation are what
+    /// compiling it now would produce (compiled from the same sources against the same
+    /// dependency interfaces, every file as it was written), with the objects back where it
+    /// names them.
+    pub fn prepare_relink(&self) -> Option<PathBuf> {
+        let key1 = self.compile_key1.as_ref()?;
+        let m = util::read_json(&self.root.join("m").join(format!("{}.json", key1)))?;
+        let list = |k: &str| -> Vec<String> { m[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
+        let key2 = level2(key1, &list("env_deps"), &list("inputs"), &self.cwd)?;
+        let marker = util::read_json(&self.relink_marker())?;
+        if marker["key2"].as_str() != Some(key2.as_str()) {
+            return None;
+        }
+        let files: Vec<(String, String)> = marker["files"].as_array()?.iter().map(|f| Some((f[0].as_str()?.to_string(), f[1].as_str()?.to_string()))).collect::<Option<_>>()?;
+        let (rlink, objects) = files.split_first()?;
+        let kept = self.kept_objects();
+        for (name, recorded) in std::iter::once((self.out_dir.join(&rlink.0), &rlink.1)).chain(objects.iter().map(|(n, r)| (kept.join(n), r))) {
+            if content_identity(&fs::metadata(&name).ok()?, &name) != *recorded {
+                return None;
+            }
+        }
+        for (name, _) in objects {
+            let at = self.out_dir.join(name);
+            let _ = fs::remove_file(&at);
+            fs::hard_link(kept.join(name), &at).ok()?;
+        }
+        Some(self.rlink_path())
+    }
+
+    pub fn store(&self, stderr: &[u8], start_wall_ns: u64) -> Result<(), String> {
+        let (names, inputs) = self.read_inputs(start_wall_ns)?;
         let key2 = level2(&self.key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
         let dir = self.entry_dir(&key2);
         // The manifest always describes the latest compilation (its input list is what later
@@ -685,6 +822,33 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_objects_to_relink_are_exactly_those_the_rlink_names() {
+        let dir = std::env::temp_dir().join(format!("haul-rlink-{}", util::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        // rustc encodes a path as its length, its bytes and a sentinel byte that is not ASCII.
+        let path = |name: &str| {
+            let p = format!("{}/{}", util::path_str(&dir), name);
+            let mut b = vec![p.len() as u8];
+            b.extend_from_slice(p.as_bytes());
+            b.push(0xc1);
+            b
+        };
+        let mut rlink = b"RLINK\0".to_vec();
+        for name in ["app-1a.cgu0.s1.rcgu.o", "app-1a.cgu1.s1.rcgu.o", "app-1a.cgu0.s1.rcgu.o"] {
+            rlink.extend(path(name));
+        }
+        fs::write(dir.join("app-1a.rlink"), &rlink).unwrap();
+        assert_eq!(linked_objects(&dir.join("app-1a.rlink"), &dir, "app-1a").unwrap(), vec!["app-1a.cgu0.s1.rcgu.o".to_string(), "app-1a.cgu1.s1.rcgu.o".to_string()]);
+        // An object anywhere else could change unseen: such an rlink is not relinked.
+        rlink.extend(b"\x20/elsewhere/other.cgu.rcgu.o\xc1");
+        fs::write(dir.join("app-1a.rlink"), &rlink).unwrap();
+        assert!(linked_objects(&dir.join("app-1a.rlink"), &dir, "app-1a").is_err());
+        fs::write(dir.join("app-1a.rlink"), b"no objects").unwrap();
+        assert!(linked_objects(&dir.join("app-1a.rlink"), &dir, "app-1a").is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn mir_inlining_is_decided_as_rustc_decides_it() {

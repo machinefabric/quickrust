@@ -181,7 +181,8 @@ fn outputs(target: &Path) -> BTreeMap<String, PathBuf> {
     out
 }
 
-/// What the latest build in a Haul home did per unit: (crate name, cache result).
+/// What the latest build in a Haul home did per unit: (crate name, cache result, or `relinked`
+/// for a unit linked again from its kept objects).
 fn unit_results(home: &Path) -> Vec<(String, String)> {
     let runs: Vec<PathBuf> = fs::read_dir(home.join("workspaces")).into_iter().flatten().flatten().flat_map(|ws| fs::read_dir(ws.path().join("events")).into_iter().flatten().flatten().map(|e| e.path())).collect();
     let Some(latest) = runs.into_iter().max_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok()) else { return Vec::new() };
@@ -194,7 +195,8 @@ fn unit_results(home: &Path) -> Vec<(String, String)> {
         .map(|ev| {
             let args: Vec<&str> = ev["args"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
             let name = args.iter().position(|a| *a == "--crate-name").and_then(|i| args.get(i + 1)).unwrap_or(&"?").to_string();
-            (name, ev["cache"]["result"].as_str().unwrap_or("").to_string())
+            let result = if ev["link"] == "relinked" { "relinked" } else { ev["cache"]["result"].as_str().unwrap_or("") };
+            (name, result.to_string())
         })
         .collect();
     out.sort();
@@ -254,7 +256,8 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             }
             let units = unit_results(&home_a);
             let restored: Vec<&str> = units.iter().filter(|(_, r)| r == "hit").map(|(n, _)| n.as_str()).collect();
-            let compiled: Vec<&str> = units.iter().filter(|(_, r)| r != "hit").map(|(n, _)| n.as_str()).collect();
+            let relinked: Vec<&str> = units.iter().filter(|(_, r)| r == "relinked").map(|(n, _)| n.as_str()).collect();
+            let compiled: Vec<&str> = units.iter().filter(|(_, r)| r != "hit" && r != "relinked").map(|(n, _)| n.as_str()).collect();
             // B: the same source from nothing, at the same path.
             fs::rename(&target, &target_a).unwrap_or_else(|e| fail(&e.to_string()));
             let home_b = fresh_home("home-b");
@@ -282,11 +285,12 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             all_pass &= pass;
             done += 1;
             println!("  {} {}", if pass { "SAME" } else { "DIFFERENT" }, label);
-            println!("      restored {} · compiled {} · {} outputs compared", if restored.is_empty() { "none".to_string() } else { restored.join(", ") }, compiled.join(", "), b_out.len());
+            let listed = |v: &[&str]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
+            println!("      restored {} · relinked {} · compiled {} · {} outputs compared", listed(&restored), listed(&relinked), compiled.join(", "), b_out.len());
             for d in differ.iter().take(10) {
                 println!("      differs: {}", d);
             }
-            rows.push(json!({ "file": edit.file, "line": edit.line, "from": edit.from, "to": edit.to, "restored": restored, "compiled": compiled, "outputs": b_out.len(), "differ": differ }));
+            rows.push(json!({ "file": edit.file, "line": edit.line, "from": edit.from, "to": edit.to, "restored": restored, "relinked": relinked, "compiled": compiled, "outputs": b_out.len(), "differ": differ }));
         }
         if done < edits {
             fail(&format!("[{}] only {} of {} edits compiled ({} did not)", w.name, done, edits, skipped));

@@ -180,9 +180,44 @@ pub fn main() {
             bootstrap = true;
         }
     }
+    // Relinking (fast mode, with Haul's driver): a binary or test executable is compiled apart
+    // from linking (rustc's `-Zno-link`, then `-Zlink-only`), its objects kept. When a later
+    // build finds it compiled from the same sources against the same dependency interfaces (an
+    // edit below it was cut off, and only what it links changed), it is only linked again: for
+    // a large binary a fraction of compiling it (ripgrep's: ~100 ms of ~350 ms). Not for a unit
+    // the cache saw compile quickly, where the second process would cost more than it saves.
+    let input = input_index(&lossy);
+    let split_up = matches!((&driver, &job, unlock, input), (Some(_), Ok(j), Some(_), Some(_)) if j.relinkable() && !j.known_quick());
+    if split_up {
+        bootstrap = true;
+    }
     if bootstrap {
         argv.extend(unlock.unwrap_or_default().iter().map(OsString::from));
     }
+    // The command that links the unit from the `.rlink` its compilation left.
+    let split: Option<Vec<OsString>> = match (split_up, &job, input) {
+        (true, Ok(j), Some(i)) => {
+            let mut a = argv.clone();
+            a[i] = j.rlink_path().into_os_string();
+            a.push("-Zlink-only".into());
+            Some(a)
+        }
+        _ => None,
+    };
+    let relink: Option<PathBuf> = match (&split, &job) {
+        (Some(_), Ok(j)) => j.prepare_relink(),
+        _ => None,
+    };
+    // Why the objects of a compilation apart from linking could not be kept, if they could not.
+    let not_kept: std::cell::RefCell<Option<String>> = std::cell::RefCell::new(None);
+    let keep = || {
+        if let Ok(j) = &job {
+            if let Err(e) = j.keep_objects(start_wall) {
+                *not_kept.borrow_mut() = Some(e);
+            }
+        }
+    };
+    let mut relinked: Option<bool> = None;
 
     let mut captured: Option<Vec<u8>> = None;
     let direct = |rustc: &OsString, argv: &[OsString], driver: &Option<PathBuf>| {
@@ -221,12 +256,32 @@ pub fn main() {
         // A cacheable miss, or a compilation by Haul's driver: the compiler's stderr streams
         // through and is kept for replay; under the driver, text that is not one of the JSON
         // messages Cargo reads (a crash report) waits until the driver has succeeded.
-        None if job.is_ok() || driver.is_some() => run_teed(&mut direct(&rustc, &argv, &driver), driver.is_some()).map(|t| {
-            let teed = (t.exit, t.usage);
-            captured = Some(t.forwarded);
-            held = Some((t.held, t.artifact_notice));
-            teed
-        }),
+        None if job.is_ok() || driver.is_some() => {
+            let hold = if driver.is_some() { Hold::Text } else { Hold::Nothing };
+            let run = |args: &[OsString], hold: Hold| run_teed(&mut direct(&rustc, args, &driver), hold);
+            let ran = match (&split, &relink) {
+                // Linked again from its last compilation's objects; a failure (they were changed
+                // after all) is not shown, and the unit is compiled after all.
+                (Some(link_only), Some(_)) => match run(link_only, Hold::All) {
+                    Ok(t) if t.exit.success() => {
+                        use std::io::Write;
+                        let _ = std::io::stderr().write_all(&t.held).and_then(|_| std::io::stderr().flush());
+                        relinked = Some(true);
+                        Ok(Teed { forwarded: t.held, held: Vec::new(), ..t })
+                    }
+                    _ => compile_apart(&run, &argv, link_only, hold, &keep),
+                },
+                (Some(link_only), None) => compile_apart(&run, &argv, link_only, hold, &keep),
+                (None, _) => run(&argv, hold),
+            };
+            ran.map(|t| {
+                relinked.get_or_insert(false);
+                let teed = (t.exit, t.usage);
+                captured = Some(t.forwarded);
+                held = Some((t.held, t.artifact_notice));
+                teed
+            })
+        }
         None => proc::run(&mut direct(&rustc, &argv, &None), true),
     };
     let (mut exit, mut usage) = match result {
@@ -250,7 +305,7 @@ pub fn main() {
             driver_failure = Some(report.unwrap_or_default());
             driver = None;
             let rerun = match &job {
-                Ok(_) => run_teed(&mut direct(&rustc, &argv, &None), false).map(|t| {
+                Ok(_) => run_teed(&mut direct(&rustc, &argv, &None), Hold::Nothing).map(|t| {
                     captured = Some(t.forwarded);
                     (t.exit, t.usage)
                 }),
@@ -272,6 +327,7 @@ pub fn main() {
         }
     }
     let dur_ns = started.elapsed().as_nanos() as u64;
+    let not_kept = not_kept.into_inner();
 
     // What the rlib was compiled against, for the units that will link it; best effort, as
     // storing: a unit whose dependency went unrecorded is compiled rather than restored.
@@ -318,6 +374,13 @@ pub fn main() {
             if let Some(report) = &driver_failure {
                 ev["driver_failure"] = json!(util::path_str(report));
             }
+            if let (Some(_), Some(r), None) = (&split, relinked, &driver_failure) {
+                ev["link"] = json!(match (r, not_kept.as_deref()) {
+                    (true, _) => "relinked".to_string(),
+                    (false, None) => "compiled apart".to_string(),
+                    (false, Some(why)) => format!("compiled apart; objects not kept: {}", why),
+                });
+            }
             if let Ok(bytes) = serde_json::to_vec(&ev) {
                 let name = format!("{:020}-{}.json", start_wall, std::process::id());
                 let _ = util::write_atomic_fast(&dir.join(name), &bytes);
@@ -342,10 +405,20 @@ struct Teed {
     artifact_notice: bool,
 }
 
-/// Runs `cmd` with its stderr copied through to ours as it arrives, returning a copy. With
-/// `hold`, lines that are not JSON messages (Cargo has the compiler print only those; a crash
-/// report is plain text) are held back for the caller to decide about.
-fn run_teed(cmd: &mut Command, hold: bool) -> std::io::Result<Teed> {
+/// What `run_teed` holds back from our stderr for the caller to decide about.
+#[derive(Clone, Copy, PartialEq)]
+enum Hold {
+    Nothing,
+    /// Lines that are not JSON messages: Cargo has the compiler print only those; a crash report
+    /// is plain text.
+    Text,
+    /// Everything: an attempt whose failure is not to be seen.
+    All,
+}
+
+/// Runs `cmd` with its stderr copied through to ours as it arrives (except what `hold` holds
+/// back), returning a copy.
+fn run_teed(cmd: &mut Command, hold: Hold) -> std::io::Result<Teed> {
     use std::io::{Read, Write};
     cmd.stderr(std::process::Stdio::piped());
     let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, Vec<u8>, bool)>();
@@ -364,7 +437,8 @@ fn run_teed(cmd: &mut Command, hold: bool) -> std::io::Result<Teed> {
                 loop {
                     match from.read(&mut chunk) {
                         Ok(0) => break,
-                        Ok(n) if !hold => emit(&chunk[..n], &mut forwarded),
+                        Ok(n) if hold == Hold::Nothing => emit(&chunk[..n], &mut forwarded),
+                        Ok(n) if hold == Hold::All => held.extend_from_slice(&chunk[..n]),
                         Ok(n) => {
                             line.extend_from_slice(&chunk[..n]);
                             while let Some(end) = line.iter().position(|&b| b == b'\n') {
@@ -383,6 +457,9 @@ fn run_teed(cmd: &mut Command, hold: bool) -> std::io::Result<Teed> {
                     }
                 }
                 held.extend_from_slice(&line);
+                if hold == Hold::All {
+                    artifact_notice = held.windows(ARTIFACT_NOTICE.len()).any(|w| w == ARTIFACT_NOTICE);
+                }
                 let _ = tx.send((forwarded, held, artifact_notice));
             });
         }
@@ -391,6 +468,52 @@ fn run_teed(cmd: &mut Command, hold: bool) -> std::io::Result<Teed> {
     // A grandchild holding the pipe open must not hang the build.
     let (forwarded, held, artifact_notice) = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
     Ok(Teed { exit, usage, forwarded, held, artifact_notice })
+}
+
+/// Compiles a unit apart from linking it: `-Zno-link` (objects and the `.rlink` naming them
+/// stay in the output directory), `keep` (linking deletes the objects), then `link_only` links
+/// it. One account of both.
+fn compile_apart(run: &dyn Fn(&[OsString], Hold) -> std::io::Result<Teed>, argv: &[OsString], link_only: &[OsString], hold: Hold, keep: &dyn Fn()) -> std::io::Result<Teed> {
+    let mut no_link = argv.to_vec();
+    no_link.push("-Zno-link".into());
+    let compiled = run(&no_link, hold)?;
+    if !compiled.exit.success() {
+        return Ok(compiled);
+    }
+    keep();
+    let linked = run(link_only, hold)?;
+    let usage = match (compiled.usage, linked.usage) {
+        (Some(a), Some(b)) => Some(proc::Usage { user_ns: a.user_ns + b.user_ns, sys_ns: a.sys_ns + b.sys_ns, max_rss_bytes: a.max_rss_bytes.max(b.max_rss_bytes) }),
+        (a, b) => a.or(b),
+    };
+    let mut forwarded = compiled.forwarded;
+    forwarded.extend_from_slice(&linked.forwarded);
+    let mut held = compiled.held;
+    held.extend_from_slice(&linked.held);
+    Ok(Teed { exit: linked.exit, usage, forwarded, held, artifact_notice: compiled.artifact_notice || linked.artifact_notice })
+}
+
+/// The position of the source file rustc compiles among `args`: its one argument that is
+/// neither an option nor an option's value.
+fn input_index(args: &[String]) -> Option<usize> {
+    const TAKES_VALUE: &[&str] = &[
+        "--crate-name", "--crate-type", "--edition", "--emit", "--out-dir", "-o", "-L", "-l", "--extern", "-C", "--codegen", "-Z", "--cfg", "--check-cfg", "--cap-lints", "--target", "--error-format", "--json", "--diagnostic-width",
+        "--print", "-W", "-A", "-D", "-F", "--warn", "--allow", "--deny", "--forbid", "--force-warn", "--remap-path-prefix", "--explain", "--sysroot", "--color", "--env-set",
+    ];
+    let mut found = None;
+    let mut i = 0;
+    while i < args.len() {
+        let a = args[i].as_str();
+        if TAKES_VALUE.contains(&a) {
+            i += 2;
+            continue;
+        }
+        if !a.starts_with('-') && found.replace(i).is_some() {
+            return None;
+        }
+        i += 1;
+    }
+    found
 }
 
 /// Whether a compiler ended by crashing (an internal compiler error, or a fatal signal other
@@ -653,6 +776,16 @@ fn read_inputs(dep_info: &Path, cwd: &Path, out_dir_env: Option<&str>, artifact_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_input_is_the_one_argument_that_is_no_option_and_no_value() {
+        let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let cargo = args("--crate-name app --edition=2021 src/main.rs --error-format=json --crate-type bin --emit=dep-info,link -C debuginfo=2 --cfg feature=\"x\" --check-cfg cfg(test) -C metadata=1a --out-dir target/debug/deps -L dependency=target/debug/deps --extern mid=target/debug/deps/libmid.rlib");
+        assert_eq!(input_index(&cargo), Some(3));
+        // Two candidates, or none (stdin): not told apart, not compiled apart from linking.
+        assert_eq!(input_index(&args("--crate-name app a.rs b.rs")), None);
+        assert_eq!(input_index(&args("--crate-name app -")), None);
+    }
 
     #[test]
     fn depinfo_paths_with_spaces() {
