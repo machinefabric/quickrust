@@ -151,11 +151,13 @@ pub fn main() {
     // binaries: 50-66 ms → 79-122 ms). Build scripts also run rustc through this wrapper to
     // probe the compiler; those must see it exactly as it is. Decided after the cache lookup,
     // which is keyed without it.
+    // Compiled from scratch: nothing incremental to build on. Only such a compilation tells how
+    // long the unit takes: an incremental rebuild of a large one can be quick.
+    let from_scratch = codegen_value(&lossy, "incremental").is_none() || !compiled_here_before(&lossy);
     if let (Some(n), None, Some(_)) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner, unlock) {
         if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
-            let incremental = codegen_value(&lossy, "incremental").is_some();
             let quick = job.as_ref().map(|j| j.known_quick()).unwrap_or(false);
-            if (!incremental || !compiled_here_before(&lossy)) && !quick {
+            if from_scratch && !quick {
                 argv.push(format!("-Zthreads={}", n).into());
             }
             // RUSTC_BOOTSTRAP is part of an incremental session's identity: a rebuild without it
@@ -215,10 +217,18 @@ pub fn main() {
         // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
         // critical path a clean rebuild waits on.
         (Ok(j), Some(_)) if exit.success() && j.is_local() && j.links() && settings.as_ref().map(|s| dur_ns < s.min_link_store_ns).unwrap_or(false) => {
-            let _ = j.remember_quick();
+            if from_scratch {
+                let _ = j.remember_quick();
+            }
             json!({ "result": "miss", "not_stored": "quick to link" })
         }
-        (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
+        (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // Compiled from scratch and not quick: whatever an earlier compilation suggested.
+            if from_scratch {
+                j.forget_quick();
+            }
+            j.store(buf, start_wall)
+        })) {
             Ok(Ok(())) => json!({ "result": "stored" }),
             Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
             Err(_) => json!({ "result": "miss", "not_stored": "internal error" }),
