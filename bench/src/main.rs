@@ -376,10 +376,17 @@ fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> 
 }
 
 /// Git revision and dirtiness of the Haul checkout; a record without them is worthless.
+/// The benchmark's own records: appended by the runs themselves, they say nothing about the
+/// code under measurement.
+const RECORDS: [&str; 4] = ["benchmarks/speed-index.jsonl", "benchmarks/speed-index-quick.jsonl", "benchmarks/verify.jsonl", "benchmarks/PROGRESS.md"];
+
+/// The Haul revision, and whether the checkout differs from it anywhere but in the records.
 fn provenance(repo: &Path) -> (String, bool) {
     let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the Haul revision in {} (git rev-parse failed)", repo.display())));
     let status = capture(repo, "git", &["status", "--porcelain"]).unwrap_or_else(|| fail(&format!("cannot read the state of {} (git status failed)", repo.display())));
-    (rev, !status.is_empty())
+    // Porcelain lines are `XY path`, where X may be a space (trimmed off the first line).
+    let dirty = status.lines().any(|l| !l.trim_start().split_once(' ').is_some_and(|(_, path)| RECORDS.contains(&path.trim())));
+    (rev, dirty)
 }
 
 /// `haul-bench verify`: the correctness gate (see verify.rs).
