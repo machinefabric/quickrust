@@ -212,12 +212,19 @@ struct RunResult {
     summary: Option<Value>,
 }
 
-fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario: &Value, root: &Path, skip: &[PathBuf]) -> Result<RunResult, String> {
+/// The artifact cache of a benchmark build directory: emptied with it before every cold
+/// repetition, so a "clean" build is cold, and never shared between baseline and candidate.
+fn private_cache(bench_dir: &Path) -> PathBuf {
+    bench_dir.join(".haul-artifacts")
+}
+
+fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario: &Value, root: &Path, skip: &[PathBuf], bench_dir: &Path) -> Result<RunResult, String> {
     let before = discover::source_snapshot(root, skip);
     let mut spec = Spec::new(args.to_vec(), Mode::Explicit);
     spec.env = env.to_vec();
     spec.scenario = Some(scenario.clone());
     spec.force_finalize = true;
+    spec.artifact_cache = Some(private_cache(bench_dir));
     spec.stdout_to_stderr = true;
     let done = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -344,7 +351,7 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
             edit_counter += 1;
             m.apply(edit_counter)?;
         }
-        let r = one_run(opts, &args, &env, &label(phase, i), &root, &skip)?;
+        let r = one_run(opts, &args, &env, &label(phase, i), &root, &skip, &bench_dir)?;
         let valid = r.record["valid"] == json!(true);
         if !valid && phase != "measured" {
             failure = Some(format!("{} run failed: {}", phase, util::vstr(&r.record, "invalid_reason")));
@@ -467,6 +474,7 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
                 spec.env.push((var.into(), util::vstr(&candidate, "build_directory")));
             }
             spec.scenario = Some(json!({ "name": "verification", "experiment": exp.name }));
+            spec.artifact_cache = Some(private_cache(Path::new(&util::vstr(&candidate, "build_directory"))));
             spec.stdout_to_stderr = true;
             let out = session::execute(&spec)?;
             json!({ "performed": true, "passed": out.exit.success(), "exit_code": out.exit.code, "command": verify_args.iter().map(|a| util::lossy(a)).collect::<Vec<_>>() })
