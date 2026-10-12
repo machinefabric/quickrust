@@ -735,6 +735,18 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     assert!(yielded[0]["because"].as_str().unwrap().contains("Cargo.toml"), "{}", yielded[0]);
 }
 
+/// Every compile of the latest instrumented run with its cache result and the reason recorded
+/// for it, for assertion messages.
+fn cache_details(sb: &Sandbox) -> Vec<String> {
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    fs::read_dir(s["events_dir"].as_str().unwrap())
+        .unwrap()
+        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+        .filter(|ev| ev["kind"] == "compile")
+        .map(|ev| format!("{}: {}", ev["args"].as_array().unwrap().iter().skip_while(|a| *a != "--crate-name").nth(1).and_then(Value::as_str).unwrap_or("?"), ev["cache"]))
+        .collect()
+}
+
 /// Events of the latest instrumented run: (crate name, cache result).
 fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
@@ -780,7 +792,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
 
     let first = ok(cargo(&a).arg("build"));
     assert!(stderr(&first).contains("unused variable"), "{}", stderr(&first));
-    assert_eq!(cache_results(&sb), vec![("app".to_string(), "stored".to_string()), ("build_script_build".to_string(), "stored".to_string()), ("greet".to_string(), "stored".to_string())]);
+    assert_eq!(cache_results(&sb), vec![("app".to_string(), "stored".to_string()), ("build_script_build".to_string(), "stored".to_string()), ("greet".to_string(), "stored".to_string())], "{:#?}", cache_details(&sb));
 
     ok(cargo(&a).arg("clean"));
     let again = ok(cargo(&a).args(["run", "-q"]));
@@ -878,7 +890,7 @@ fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
             (kind, e["cache"]["result"].as_str().unwrap_or("").to_string(), e["cache"]["not_stored"].as_str().unwrap_or("").to_string())
         })
         .collect();
-    assert!(results.iter().any(|(k, r, _)| k == "lib" && r == "stored"), "{:?}", results);
+    assert!(results.iter().any(|(k, r, _)| k == "lib" && r == "stored"), "{:#?}", cache_details(&sb));
     assert!(results.iter().any(|(k, r, why)| k == "bin" && r == "miss" && why == "quick to link"), "{:?}", results);
 }
 
