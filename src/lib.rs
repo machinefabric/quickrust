@@ -18,6 +18,7 @@ pub mod recommend;
 pub mod remedy;
 pub mod render;
 pub mod resolve;
+pub mod rustc_info;
 pub mod session;
 pub mod store;
 pub mod toolchain_cache;

@@ -684,6 +684,28 @@ fn stale_session_filesystem_facts_are_marked_unavailable() {
 }
 
 #[test]
+fn fast_mode_keeps_stable_rejecting_unstable_features() {
+    // Fast mode unlocks `-Z` flags on a stable compiler with RUSTC_BOOTSTRAP, which on its own
+    // would also accept `#![feature]`: code that upstream Cargo rejects must stay rejected.
+    let sb = Sandbox::new("features");
+    let p = sb.package("p", "p");
+    let gated = "#![feature(never_type)]\npub fn add(x: u32, y: u32) -> u32 { x + y }\npub fn never() -> Option<!> { None }\n";
+    fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
+    // An incremental rebuild (compiled here before) and a first compilation (after a clean).
+    ok(sb.cargo(&p).arg("build"));
+    fs::write(p.join("src/lib.rs"), gated).unwrap();
+    let rebuild = sb.cargo(&p).arg("build").output().unwrap();
+    ok(sb.cargo(&p).arg("clean"));
+    let first = sb.cargo(&p).arg("build").output().unwrap();
+    let upstream = sb.upstream(&p).arg("build").output().unwrap();
+    assert!(!upstream.status.success(), "the stable toolchain under test accepted #![feature]: {}", stderr(&upstream));
+    for (what, haul) in [("an incremental rebuild", rebuild), ("a first compilation", first)] {
+        assert!(!haul.status.success(), "fast mode accepted #![feature] on a stable compiler in {}: {}", what, stderr(&haul));
+        assert!(stderr(&haul).contains("feature"), "{}", stderr(&haul));
+    }
+}
+
+#[test]
 fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     let sb = Sandbox::new("fast");
     let p = sb.package("p", "p");
@@ -695,7 +717,8 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     let applied: Vec<&str> = r["policy"]["fast"]["applied"].as_array().unwrap().iter().map(|a| a["key"].as_str().unwrap()).collect();
     assert!(applied.contains(&"profile.dev.debug") && applied.contains(&"profile.dev.package.\"*\".debug"), "{:?}", applied);
     // The parallel frontend (on machines with at least four cores) reaches units compiled from
-    // scratch, never incremental ones: it slows incremental rebuilds of small crates down.
+    // scratch, including a workspace unit's first compilation in a target directory, never an
+    // incremental rebuild: it slows those down on small crates.
     if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) >= 4 {
         assert!(applied.contains(&"rustc -Zthreads"), "{:?}", applied);
         let threads_by_unit = |sb: &Sandbox| -> Vec<(bool, bool)> {
@@ -710,8 +733,12 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
                 })
                 .collect()
         };
-        let dev = threads_by_unit(&sb);
-        assert!(!dev.is_empty() && dev.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", dev);
+        let first = threads_by_unit(&sb);
+        assert!(!first.is_empty() && first.iter().all(|(incremental, threads)| *incremental && *threads), "{:?}", first);
+        fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
+        ok(sb.cargo(&p).arg("build"));
+        let rebuild = threads_by_unit(&sb);
+        assert!(!rebuild.is_empty() && rebuild.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", rebuild);
         ok(sb.cargo(&p).args(["build", "--release"]));
         let release = threads_by_unit(&sb);
         assert!(!release.is_empty() && release.iter().all(|(incremental, threads)| !*incremental && *threads), "{:?}", release);

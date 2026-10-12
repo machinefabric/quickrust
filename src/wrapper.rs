@@ -10,6 +10,7 @@
 //! compiler's result (NFR-020).
 
 use crate::artifact_cache;
+use crate::rustc_info;
 use crate::proc::{self, ExitInfo};
 use crate::util;
 use serde::{Deserialize, Serialize};
@@ -76,24 +77,50 @@ pub fn main() {
         }
     };
     let cache_root = settings.as_ref().and_then(|s| s.artifact_cache.clone());
+    // The compiler's account of itself, for the cache key and the levers' channel check; only
+    // asked in a Haul session without a user wrapper, where either applies.
+    let compiler: Result<String, String> = match (&settings, &inner, rustc.to_str()) {
+        (Some(_), None, Some(r)) => rustc_info::version_verbose(&util::haul_home().join("rustc"), r),
+        (Some(_), None, None) => Err("the compiler's path is not UTF-8".into()),
+        _ => Err("off".into()),
+    };
+    // The levers below need `-Z` flags. On a stable or beta compiler they unlock them with
+    // RUSTC_BOOTSTRAP, which would also accept `#![feature]`; `-Zallow-features=` keeps stable's
+    // rejection of it. No lever applies when the user decides about RUSTC_BOOTSTRAP themselves
+    // (also through Cargo's `[env]`, which the session cannot see), nor for a compiler that
+    // cannot describe itself: rustc then reports its own trouble.
+    let unlock: Option<&[&str]> = match compiler.as_deref().ok().and_then(rustc_info::is_unstable_channel) {
+        _ if std::env::var_os("RUSTC_BOOTSTRAP").is_some() => None,
+        Some(true) => Some(&[]),
+        Some(false) => Some(&["-Zallow-features="]),
+        None => None,
+    };
 
     // Fast mode: rustc's parallel frontend for the units Cargo schedules that are compiled from
-    // scratch (dependencies, release and CI builds). Measured on ripgrep: it makes incremental
-    // rebuilds of small crates 2-3x slower, and switching it on and off between incremental
-    // compilations discards rustc's incremental session. Build scripts also run rustc through
-    // this wrapper to probe the compiler; those must see it exactly as it is.
+    // scratch: dependencies, release and CI builds, and the first compilation of a workspace
+    // unit in a target directory, which has no incremental session yet (measured: Haul's own
+    // lib 2.7 s → 1.5 s). An incremental rebuild is not: the parallel frontend makes those 2-3x
+    // slower on small crates, and turning it on for a session made without it discards the
+    // session. Turning it off after the first compilation is free: the session it leaves serves
+    // the next edit as well as one made without it. Build scripts also run rustc through this
+    // wrapper to probe the compiler; those must see it exactly as it is.
     let mut bootstrap = false;
     let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
-    if let (Some(n), None) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner) {
-        if is_cargo_unit(&lossy) && codegen_value(&lossy, "incremental").is_none() && !lossy.iter().any(|a| a.contains("threads=")) {
-            argv.push(format!("-Zthreads={}", n).into());
+    if let (Some(n), None, Some(_)) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner, unlock) {
+        if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
+            let incremental = codegen_value(&lossy, "incremental").is_some();
+            if !incremental || !compiled_here_before(&lossy) {
+                argv.push(format!("-Zthreads={}", n).into());
+            }
+            // RUSTC_BOOTSTRAP is part of an incremental session's identity: a rebuild without it
+            // would discard the session the first, parallel compilation left.
             bootstrap = true;
         }
     }
     // Fast mode: link with wild instead of rustc's bundled LLD (measured: relinking ripgrep
     // 22% faster, a small binary 34%). Only for host builds, and only when no linker was chosen
     // by the user (a `-C linker`, link arguments selecting one, or linker features).
-    if let (Some(dir), None) = (settings.as_ref().and_then(|s| s.linker_dir.clone()), &inner) {
+    if let (Some(dir), None, Some(_)) = (settings.as_ref().and_then(|s| s.linker_dir.clone()), &inner, unlock) {
         if is_cargo_unit(&lossy) && links_output(&lossy) && arg_value(&lossy, "--target").is_none() && !chooses_linker(&lossy) {
             for a in ["-Zunstable-options", "-Clink-self-contained=-linker", "-Clinker-features=-lld"] {
                 argv.push(a.into());
@@ -103,13 +130,18 @@ pub fn main() {
         }
     }
 
+    if bootstrap {
+        argv.extend(unlock.unwrap_or_default().iter().map(OsString::from));
+    }
+
     let start_wall = util::now_wall_ns();
     let started = Instant::now();
 
     // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
     let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
-    let job = match (&inner, &event_dir, &args_utf8, rustc.to_str()) {
-        (None, Some(_), Some(args), Some(r)) => artifact_cache::prepare(cache_root.as_deref(), r, args),
+    let job = match (&inner, &event_dir, &args_utf8, &compiler) {
+        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, args),
+        (None, Some(_), Some(_), Err(e)) if cache_root.is_some() => Err(e.clone()),
         _ => Err("off".into()),
     };
     if let Ok(j) = &job {
@@ -270,6 +302,14 @@ fn arg_value<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+/// Whether this unit was compiled in its output directory before: its dep-info is there.
+/// (Cargo passes rustc the target's shared incremental directory; the unit's own session
+/// directory inside it is named by a hash only rustc computes.)
+fn compiled_here_before(args: &[String]) -> bool {
+    let (Some(name), Some(out)) = (arg_value(args, "--crate-name"), arg_value(args, "--out-dir")) else { return false };
+    Path::new(out).join(format!("{}{}.d", name, codegen_value(args, "extra-filename").unwrap_or(""))).is_file()
 }
 
 fn codegen_value<'a>(args: &'a [String], key: &str) -> Option<&'a str> {

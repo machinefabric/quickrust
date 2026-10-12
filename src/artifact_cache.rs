@@ -67,29 +67,6 @@ fn value_of<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Option<&'a str
     a.strip_prefix(flag).map(|r| r.strip_prefix('=').unwrap_or(r))
 }
 
-/// What compiler this is, by its own account (`rustc -vV`: release, commit, LLVM, host).
-/// Cargo may name it by path or by bare name through PATH, and it may be rustup's proxy,
-/// which is the same file for every toolchain; so the answer is remembered per binary
-/// identity *and* the variables that make rustup pick a toolchain.
-fn rustc_identity(root: &Path, rustc: &str) -> Result<String, String> {
-    let path = if rustc.contains(std::path::MAIN_SEPARATOR) || rustc.contains('/') { PathBuf::from(rustc) } else { util::which(rustc).ok_or_else(|| format!("{} is not on PATH", rustc))? };
-    let md = fs::metadata(&path).map_err(|e| format!("cannot inspect {}: {}", path.display(), e))?;
-    let env = |k: &str| std::env::var(k).unwrap_or_default();
-    let memo = root.join("rustc").join(util::digest_parts([util::path_str(&util::canon(&path)), md.len().to_string(), util::mtime_ns(&md).to_string(), env("RUSTUP_TOOLCHAIN"), env("RUSTUP_HOME")]));
-    if let Ok(id) = fs::read_to_string(&memo) {
-        if !id.is_empty() {
-            return Ok(id);
-        }
-    }
-    let out = std::process::Command::new(&path).arg("-vV").stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {} -vV: {}", path.display(), e))?;
-    if !out.status.success() {
-        return Err(format!("{} -vV failed", path.display()));
-    }
-    let id = util::sha256_hex(&out.stdout);
-    fs::create_dir_all(root.join("rustc")).and_then(|_| util::write_atomic_fast(&memo, id.as_bytes())).map_err(|e| e.to_string())?;
-    Ok(id)
-}
-
 /// Identity of a file's current content, without reading it: a rewrite changes its modification
 /// time and usually its inode, as Cargo's own fingerprints assume.
 fn content_identity(md: &fs::Metadata, path: &Path) -> String {
@@ -157,12 +134,13 @@ fn tree_digest(root: &Path) -> Option<String> {
 }
 
 /// Prepares a lookup, or says why this compilation is not cached.
-pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job, String> {
+/// `compiler` is the compiler's own account of itself (`rustc -vV`, see `rustc_info`).
+pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<Job, String> {
     let root = root.ok_or("the artifact cache is off")?.to_path_buf();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
     let local = !crate::wrapper::is_external_source(Path::new(&manifest_dir));
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let mut key = vec![FORMAT.to_string(), format!("rustc={}", rustc_identity(&root, rustc)?)];
+    let mut key = vec![FORMAT.to_string(), format!("rustc={}", util::sha256_hex(compiler.as_bytes()))];
     if local {
         // Workspace units carry the checkout's absolute path in their debug information: they are
         // reused within the same checkout (after a clean, across branch switches, in CI with a
@@ -499,20 +477,6 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn rustc_is_identified_by_its_own_account_whatever_it_is_called() {
-        let root = std::env::temp_dir().join(format!("haul-rustc-id-{}", util::new_id()));
-        fs::create_dir_all(&root).unwrap();
-        // By bare name through PATH, as Cargo may pass it, and by absolute path: the same compiler.
-        let by_name = rustc_identity(&root, "rustc").unwrap();
-        let path = util::which("rustc").unwrap();
-        assert_eq!(rustc_identity(&root, &util::path_str(&path)).unwrap(), by_name);
-        let out = std::process::Command::new(&path).arg("-vV").output().unwrap();
-        assert_eq!(by_name, util::sha256_hex(&out.stdout));
-        assert!(rustc_identity(&root, "no-such-compiler-xyz").unwrap_err().contains("not on PATH"));
-        fs::remove_dir_all(&root).ok();
-    }
 
     #[test]
     fn remembered_hashes_follow_the_file_content() {
