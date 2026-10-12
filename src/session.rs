@@ -191,6 +191,8 @@ struct Plan {
     policy: Value,
     sccache: Option<String>,
     warnings: Vec<String>,
+    /// Parallel-frontend threads the wrapper applies to Cargo's units (fast mode).
+    frontend_threads: Option<u32>,
 }
 
 /// Decides wrapper composition and cache/incremental policy for one session.
@@ -205,6 +207,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         policy: json!(null),
         sccache: None,
         warnings: Vec::new(),
+        frontend_threads: None,
     };
     let wants = cfg.bool("measurement.enabled") && (inv.family.builds() || (inv.family == Family::External && cfg.str("compatibility.unknown-command") == "instrument"));
     let wrapper = wrapper_binary();
@@ -327,11 +330,15 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     // configured, which may be a cache with rules of its own.
                     let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
                     p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
-                    if artifacts {
-                        p.env_set.push((crate::artifact_cache::ENV_CACHE_DIR.into(), path_str(&util::haul_home().join("cache").join("artifacts"))));
-                    } else {
-                        p.env_remove.push(crate::artifact_cache::ENV_CACHE_DIR.into());
-                    }
+                    // The parallel frontend: not behind a user wrapper, and not when the user decides
+                    // about RUSTC_BOOTSTRAP themselves.
+                    let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads"))? } else { None };
+                    p.frontend_threads = threads;
+                    let wrapper_config = json!({
+                        "artifact_cache": if artifacts { Some(path_str(&util::haul_home().join("cache").join("artifacts"))) } else { None },
+                        "frontend_threads": threads,
+                    });
+                    let _ = util::write_atomic_fast(&dir.join(crate::WRAPPER_CONFIG), &serde_json::to_vec(&wrapper_config).unwrap_or_default());
                     p.events_dir = Some(dir);
                 }
             }
@@ -442,6 +449,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     user_keys.extend(resolve::env_profile_keys());
     let fast = crate::fast::overlays(&inv, cfg.str("mode"), &user_keys);
     plan.policy["fast"] = fast.record;
+    if let (Some(n), Some(applied)) = (plan.frontend_threads, plan.policy["fast"]["applied"].as_array_mut()) {
+        applied.push(json!({ "key": "rustc -Zthreads", "value": n.to_string(), "why": "rustc's parallel frontend works inside the large crates on a build's critical path; applied by the wrapper to Cargo's units only, never to compiler probes run by build scripts" }));
+    }
 
     let mut cmd = upstream_command(&up, &with_overlays(&spec.args, &inv, &fast.args), &inv);
     cmd.current_dir(&cwd);

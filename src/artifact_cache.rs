@@ -28,7 +28,6 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const ENV_CACHE_DIR: &str = "HAUL_CACHE_DIR";
 const FORMAT: &str = "haul-artifact-cache-1";
 
 /// One cacheable compilation, prepared before rustc runs.
@@ -83,8 +82,8 @@ fn tree_digest(root: &Path) -> Option<String> {
 }
 
 /// Prepares a lookup, or says why this compilation is not cached.
-pub fn prepare(rustc: &str, args: &[String]) -> Result<Job, String> {
-    let root = std::env::var_os(ENV_CACHE_DIR).filter(|v| !v.is_empty()).map(PathBuf::from).ok_or("the artifact cache is off")?;
+pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job, String> {
+    let root = root.ok_or("the artifact cache is off")?.to_path_buf();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
     let local = !crate::wrapper::is_external_source(Path::new(&manifest_dir));
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;

@@ -56,6 +56,7 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.local-dev", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy on developer machines" },
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
+    Key { name: "fast.frontend-threads", kind: Kind::Str, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-max-size", kind: Kind::Str, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
@@ -78,7 +79,6 @@ const RESERVED_ENV: &[&str] = &[
     crate::ENV_EXEC_GUARD,
     crate::ENV_REAL_CARGO,
     crate::ENV_HOME,
-    crate::artifact_cache::ENV_CACHE_DIR,
 ];
 
 #[derive(Debug, Clone)]
@@ -150,6 +150,17 @@ pub fn find_repo_config(start: &Path) -> Option<PathBuf> {
         dir = d.parent();
     }
     None
+}
+
+/// Threads for rustc's parallel frontend under `fast.frontend-threads`; `None` when off.
+pub fn frontend_threads(setting: &str) -> Result<Option<u32>, String> {
+    let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
+    match setting {
+        "off" | "0" | "1" => Ok(None),
+        // More than eight threads gained little in measurements; fewer than four cores gain nothing.
+        "auto" => Ok((cores >= 4).then(|| cores.min(8))),
+        n => n.parse::<u32>().map(|n| (n > 1).then_some(n)).map_err(|_| format!("invalid value {:?} for `fast.frontend-threads`: expected auto, off or a number", n)),
+    }
 }
 
 impl Config {
