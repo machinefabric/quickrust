@@ -39,6 +39,8 @@ pub struct Job {
     out_dir_env: Option<String>,
     /// A workspace unit: its sources can change, so level 2 also hashes every input file.
     local: bool,
+    /// Produces a linked output (binary, test executable, proc-macro).
+    links: bool,
     cwd: PathBuf,
 }
 
@@ -166,7 +168,8 @@ pub fn prepare(root: Option<&Path>, rustc: &str, args: &[String]) -> Result<Job,
     if let Some(o) = &out_dir_env {
         key.push(format!("OUT_DIR=sha:{}", tree_digest(Path::new(o)).ok_or("OUT_DIR is unreadable")?));
     }
-    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, cwd })
+    let links = test || types.iter().any(|t| matches!(t.as_str(), "bin" | "proc-macro"));
+    Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, links, cwd })
 }
 
 /// Level 2: the values of the variables rustc read, and for workspace units the content of
@@ -209,6 +212,11 @@ impl Job {
     /// A workspace unit (sources can change), as opposed to a dependency.
     pub fn is_local(&self) -> bool {
         self.local
+    }
+
+    /// Produces a linked output: binary, test executable or proc-macro.
+    pub fn links(&self) -> bool {
+        self.links
     }
 
     fn manifest(&self) -> PathBuf {

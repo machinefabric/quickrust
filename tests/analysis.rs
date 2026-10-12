@@ -771,10 +771,10 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
         sb.dir.join(rel)
     };
     let (a, b) = (app("a"), app("b"));
-    // These crates compile in milliseconds; by default such workspace units are not stored.
+    // The binary links in milliseconds; by default such linked workspace outputs are not stored.
     let cargo = |dir: &std::path::Path| {
         let mut c = sb.cargo(dir);
-        c.env("HAUL_CACHE_ARTIFACTS_MIN_WORKSPACE_MS", "0");
+        c.env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
         c
     };
 
@@ -853,5 +853,27 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("\x1b["), "{}", screen);
     assert!(stdout(&ok(sb.haul(&p).arg("warnings"))).contains("unused variable: `unused`"));
+}
+
+#[test]
+fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
+    // Copying a freshly linked binary on every edit costs about what restoring it saves; a library
+    // is cheap to store and sits on the path a clean rebuild waits for.
+    let sb = Sandbox::new("store-rule");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    let results: Vec<(String, String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())
+        .unwrap()
+        .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+        .filter(|e| e["kind"] == "compile")
+        .map(|e| {
+            let args: Vec<&str> = e["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+            let kind = args.iter().position(|a| *a == "--crate-type").map(|i| args[i + 1].to_string()).unwrap_or_default();
+            (kind, e["cache"]["result"].as_str().unwrap_or("").to_string(), e["cache"]["not_stored"].as_str().unwrap_or("").to_string())
+        })
+        .collect();
+    assert!(results.iter().any(|(k, r, _)| k == "lib" && r == "stored"), "{:?}", results);
+    assert!(results.iter().any(|(k, r, why)| k == "bin" && r == "miss" && why == "quick to link"), "{:?}", results);
 }
 

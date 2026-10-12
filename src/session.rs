@@ -323,7 +323,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 let settings = crate::wrapper::Settings {
                     artifact_cache: artifacts.then(|| util::haul_home().join("cache").join("artifacts")),
                     frontend_threads: threads,
-                    min_workspace_store_ns: cfg.int("cache.artifacts-min-workspace-ms") * 1_000_000,
+                    min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
                 if util::create_private_dir(&dir).and_then(|_| settings.write(&dir)).is_ok() {
