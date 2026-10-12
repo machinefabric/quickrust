@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      # The suites skip what is missing; installing it makes them run: `+toolchain` tests need
+      # a second toolchain, the cross-check test needs the wasm32 target.
+      - name: Toolchains
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy
+          rustup toolchain install nightly --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain stable
+          rustup default stable
+      - name: Clippy
+        run: cargo clippy --all-targets --workspace -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  windows:
+    name: check (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy
+      # The integration suites are Unix-only today (Windows card on the project board).
+      - name: Check
+        run: cargo clippy --all-targets --workspace -- -D warnings
