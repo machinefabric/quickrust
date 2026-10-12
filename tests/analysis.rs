@@ -736,9 +736,17 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
         let first = threads_by_unit(&sb);
         assert!(!first.is_empty() && first.iter().all(|(incremental, threads)| *incremental && *threads), "{:?}", first);
         fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
-        ok(sb.cargo(&p).arg("build"));
+        // The binary counts as quick to link however busy the machine is.
+        let quick = "600000";
+        ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
         let rebuild = threads_by_unit(&sb);
         assert!(!rebuild.is_empty() && rebuild.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", rebuild);
+        // After a clean the library comes from the cache; the binary, which links in a moment and
+        // so is not stored, is compiled again, and the cache remembers it is small.
+        ok(sb.cargo(&p).arg("clean"));
+        ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
+        assert_eq!(cache_results(&sb), vec![("p".to_string(), "hit".to_string()), ("p".to_string(), "miss".to_string())], "{:#?}", cache_details(&sb));
+        assert_eq!(threads_by_unit(&sb), vec![(true, false), (true, false)], "{:#?}", cache_details(&sb));
         ok(sb.cargo(&p).args(["build", "--release"]));
         let release = threads_by_unit(&sb);
         assert!(!release.is_empty() && release.iter().all(|(incremental, threads)| !*incremental && *threads), "{:?}", release);
@@ -983,7 +991,8 @@ fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
     // is cheap to store and sits on the path a clean rebuild waits for.
     let sb = Sandbox::new("store-rule");
     let p = sb.package("p", "p");
-    ok(sb.cargo(&p).arg("build"));
+    // A threshold no compilation here reaches, however busy the machine: the rule, not its speed.
+    ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "600000"));
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
     let results: Vec<(String, String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())
         .unwrap()
