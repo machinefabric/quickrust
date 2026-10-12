@@ -91,6 +91,13 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
 /// returns `bin/haul`.
 fn install_binaries(bin: &Path) -> Result<PathBuf, String> {
     let (me, _) = crate::resolve::self_identity();
+    install_from(bin, &me)
+}
+
+/// Copies the Haul binary `haul` and the rustc wrapper next to it into `bin` (unless they are
+/// there already); returns `bin/haul`.
+fn install_from(bin: &Path, me: &Path) -> Result<PathBuf, String> {
+    let me = me.to_path_buf();
     let wrapper = util::exe_candidates(me.parent().unwrap_or(Path::new(".")), "haul-rustc-wrapper").into_iter().find(|p| util::is_executable(p)).ok_or_else(|| format!("haul-rustc-wrapper is not next to {}; Haul is installed with it", me.display()))?;
     let target = util::exe_candidates(bin, "haul").remove(0);
     for (from, to) in [(&me, target.clone()), (&wrapper, util::exe_candidates(bin, "haul-rustc-wrapper").remove(0))] {
@@ -315,6 +322,74 @@ fn without_setup_lines(text: &str, source_line: &str) -> Option<String> {
         }
     }
     found.then(|| lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| format!("{}\n", l)).collect())
+}
+
+/// The release Haul's binaries are published for, on this machine: Linux gets the static (musl)
+/// build, which runs on any distribution.
+pub fn release_target() -> Option<&'static str> {
+    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
+        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
+        _ => return None,
+    })
+}
+
+/// A self-update's outcome: the version before and the one now (equal when Haul was current).
+pub struct Updated {
+    pub from: String,
+    pub to: String,
+}
+
+/// `haul self update`: the latest release from `server` (`self.update-url`: where the release's
+/// `version.txt`, `haul-<target>.tar.gz` and its `.sha256` are), verified, checked to run and to
+/// be the version it says, and installed into Haul's `bin` in place of the running one.
+pub fn self_update(server: &str) -> Result<Updated, String> {
+    let bin = engine::bin_dir();
+    let installed = util::exe_candidates(&bin, "haul").remove(0);
+    if !installed.is_file() {
+        return Err(format!("Haul is not set up ({} does not exist): `haul setup` installs it, then `haul self update` keeps it current", installed.display()));
+    }
+    let target = release_target().ok_or("Haul publishes no release for this platform; build it from source")?;
+    let server = server.trim_end_matches('/');
+    let client = crate::net::Client::new();
+    let latest = String::from_utf8_lossy(&client.get_bytes(&format!("{}/version.txt", server), &[]).map_err(|e| e.to_string())?).trim().to_string();
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let newer = match (semver::Version::parse(&latest), semver::Version::parse(&current)) {
+        (Ok(l), Ok(c)) => l > c,
+        (Err(e), _) => return Err(format!("{}/version.txt is not a version ({:?}: {})", server, latest, e)),
+        (_, Err(e)) => return Err(format!("this Haul's version {:?} is not a version: {}", current, e)),
+    };
+    if !newer {
+        return Ok(Updated { from: current.clone(), to: current });
+    }
+    let name = format!("haul-{}", target);
+    let sum = String::from_utf8_lossy(&client.get_bytes(&format!("{}/{}.tar.gz.sha256", server, name), &[]).map_err(|e| e.to_string())?).split_whitespace().next().unwrap_or("").to_string();
+    let work = util::cache_dir().join("tmp").join(format!("self-update-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    let out = (|| {
+        let archive = work.join(format!("{}.tar.gz", name));
+        client.download(&format!("{}/{}.tar.gz", server, name), &archive, &sum, &mut |_, _| {}).map_err(|e| e.to_string())?;
+        let unpacked = work.join("haul");
+        crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, &name, &unpacked, 1 << 30).map_err(|e| e.to_string())?;
+        let new = util::exe_candidates(&unpacked, "haul").remove(0);
+        // It must run, and be the release it was published as.
+        let says = std::process::Command::new(&new).arg("--version").output().map_err(|e| format!("the downloaded Haul does not run: {}", e))?;
+        let says = String::from_utf8_lossy(&says.stdout).trim().to_string();
+        if says != format!("haul {}", latest) {
+            return Err(format!("the downloaded Haul says {:?}, not haul {}", says, latest));
+        }
+        let haul = install_from(&bin, &new)?;
+        link_proxies(&bin, &haul)?;
+        let mut record = util::read_json(&record_path()).unwrap_or_else(|| json!({ "format": 1 }));
+        record["version"] = json!(latest);
+        util::write_json(&record_path(), &record).map_err(|e| e.to_string())?;
+        Ok(Updated { from: current.clone(), to: latest.clone() })
+    })();
+    let _ = fs::remove_dir_all(&work);
+    out
 }
 
 /// What `doctor` reports: whether Haul is set up, and whether its `bin` comes first on `PATH`.

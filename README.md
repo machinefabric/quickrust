@@ -29,10 +29,19 @@ behind it is [docs/report.md](docs/report.md).
 ## Install
 
 ```bash
+curl -fsSL https://github.com/jowharshamshiri/haul/releases/latest/download/install.sh | sh
+# Windows: irm https://github.com/jowharshamshiri/haul/releases/latest/download/install.ps1 | iex
+```
+
+The script downloads the release for your machine (Linux builds are static and run on any
+distribution), checks it against its published checksum and runs `haul setup`: Haul into
+`~/.haul/bin`, first on PATH (`cargo`, `rustc`, `rustfmt`, … are Haul), credentials and
+registries imported once from `~/.cargo`, stable Rust installed. `haul self update` installs
+newer releases; `haul doctor` shows what Haul uses and whether anything is wrong. From source:
+
+```bash
 cargo build --release --locked  # builds `haul` and `haul-rustc-wrapper`
-target/release/haul setup       # installs Haul for you: ~/.haul/bin first on PATH (cargo, rustc, rustfmt, …
-                                # are Haul), credentials and registries imported once from ~/.cargo, stable Rust
-haul doctor                     # shows what Haul uses and whether anything is wrong
+target/release/haul setup
 ```
 
 Haul installs the toolchains it builds with into `~/.haul/toolchains` on first use (from

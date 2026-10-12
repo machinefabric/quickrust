@@ -74,6 +74,7 @@ const KEYS: &[Key] = &[
     Key { name: "ci.budget-policy", kind: Kind::Str, default: ".haul/budgets.toml", env: None, help: "budget file, relative to the workspace root" },
     Key { name: "ci.baseline", kind: Kind::Str, default: "main", env: None, help: "default baseline name for budget evaluation" },
     Key { name: "ci.enforce-on-build", kind: Kind::Bool, default: "false", env: None, help: "evaluate budgets after ordinary build commands and fail on violations" },
+    Key { name: "self.update-url", kind: Kind::Str, default: "https://github.com/jowharshamshiri/haul/releases/latest/download", env: Some("HAUL_UPDATE_URL"), help: "where `haul self update` finds Haul's latest release (version.txt, haul-<target>.tar.gz and its .sha256)" },
     Key { name: "toolchain.auto-update", kind: Kind::Enum(&["background", "off"]), default: "background", env: Some("HAUL_TOOLCHAIN_AUTO_UPDATE"), help: "once a day after a build, check in the background whether the channel it used (stable, beta, nightly, 1.xx) has a newer release, and install it for the next build; never in CI" },
     Key { name: "toolchain.dist-server", kind: Kind::Str, default: "https://static.rust-lang.org", env: Some("HAUL_DIST_SERVER"), help: "where Haul downloads Rust releases from (a mirror of static.rust-lang.org)" },
     Key { name: "security.persist-environment", kind: Kind::Enum(&["allowlist", "none"]), default: "allowlist", env: None, help: "which environment values may be persisted in run records" },

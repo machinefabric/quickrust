@@ -97,6 +97,7 @@ INSTALLATION
                                      install Haul for this user: ~/.haul/bin first on PATH (cargo, rustc,
                                      rustfmt, … are Haul), credentials and registries imported once from
                                      ~/.cargo, the stable toolchain installed
+    haul self update                 install Haul's latest release in place of this one
     haul self uninstall --yes        remove ~/.haul and the PATH lines
 
 RUN REFERENCES
@@ -1423,6 +1424,19 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
     let yes = a.flag("--yes");
     a.finish()?;
     match action.as_deref() {
+        Some("update") => {
+            let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+            let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+            let mut phase = crate::ui::Phase::start();
+            phase.status("Looking for a newer Haul", true);
+            let u = crate::setup::self_update(cfg.str("self.update-url"))?;
+            if u.from == u.to {
+                phase.finish(true, &format!("Haul {} is the latest", u.to));
+            } else {
+                phase.finish(true, &format!("Haul {} installed (was {})", u.to, u.from));
+            }
+            Ok(0)
+        }
         Some("uninstall") if !yes => Err(format!("`haul self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `haul setup` added", util::haul_home().display())),
         Some("uninstall") => {
             for r in crate::setup::uninstall()? {
@@ -1430,7 +1444,7 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
             }
             Ok(0)
         }
-        Some(other) => Err(format!("unknown `haul self` action `{}` (uninstall)", other)),
-        None => Err("`haul self` needs an action: uninstall".into()),
+        Some(other) => Err(format!("unknown `haul self` action `{}` (update, uninstall)", other)),
+        None => Err("`haul self` needs an action: update, uninstall".into()),
     }
 }

@@ -20,6 +20,17 @@ What fast mode does, and the settings that control it:
 | Linker | `fast.linker` = `auto` \| `off` | Linux with glibc: when `wild` is in `~/.haul/bin` or on `PATH`, host builds of binaries, tests, proc-macros and dynamic libraries link with it instead of rustc's bundled LLD. A `-C linker`, linker-selecting link arguments or linker features from the user (Cargo configuration, `RUSTFLAGS`) win. `~/.haul/linker/ld` links to the wild in use. |
 | Output | `output` = `haul` \| `cargo` | In a terminal, Haul presents every command. Builds (`build`, `check`, `clippy`, `doc`, and the build phase of `run`, `test`, `bench`): one status line with Cargo's own progress (units done of all, crates being downloaded, a lock waited for), errors in full, warnings counted, one line for the downloads, a summary (and where `doc` put the documentation); a full disk is diagnosed. Commands that do not build (`update`, `add`, `remove`, `fetch`, `new`, `init`, `generate-lockfile`, `clean`, `package`, `publish`, `vendor`): what changed in the lockfile or manifest as `↑ + −` lines, a status line while Cargo works, one result line; their stdout and stdin stay the terminal's. Lines Haul does not recognise are shown as Cargo printed them, and everything is stored (`haul warnings`, `haul errors`, `haul log`). `-v`, `-q`, `--message-format`, `--color`, a pipe, or compat mode leave Cargo's output untouched. |
 
+## Releases and updates
+
+A tag `v<version>` (the version in `version.txt`) runs `.github/workflows/release.yml`: Haul is
+built for x86_64 and aarch64 Linux (static, musl), x86_64 and aarch64 macOS and x86_64 Windows,
+each archive (`haul-<target>.tar.gz`, with `haul` and `haul-rustc-wrapper`) checked to report
+the release's version, and a draft release is created with the archives, their `.sha256`,
+`version.txt`, `install.sh` and `install.ps1`. Publishing the draft is done by hand. `haul self
+update` reads the latest published release (`self.update-url`, `HAUL_UPDATE_URL`): when its
+`version.txt` is newer, it downloads the archive for this machine, checks its checksum, checks
+that the new binary runs and reports that version, and installs it into `~/.haul/bin`.
+
 ## Toolchains
 
 Haul installs every toolchain it uses (see [migration.md](migration.md#which-toolchain-runs) for how one
