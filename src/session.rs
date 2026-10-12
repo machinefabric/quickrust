@@ -140,6 +140,8 @@ pub(crate) fn summarize_message(line: &[u8]) -> Option<Value> {
             "fresh": v["fresh"],
             "features": v["features"],
             "filenames": v["filenames"],
+            "executable": v["executable"],
+            "manifest_path": v["manifest_path"],
             "opt_level": v["profile"]["opt_level"],
             "test": v["profile"]["test"],
         })),
@@ -582,24 +584,38 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let lock = store::register_active(&id, ws_root.as_deref(), &cwd);
     let overhead_pre = preflight.elapsed().as_nanos() as u64;
 
+    // The build phase of a `BuildFirst` command is skipped when its stamp shows nothing it
+    // depends on changed (see prebuilt.rs); the command itself still checks freshness.
+    let prebuilt_key = (matches!(rendering, Rendering::BuildFirst(_)) && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &up.program, &up.env));
+    let known_fresh = prebuilt_key.as_deref().and_then(|k| crate::prebuilt::fresh(&store.dir, k));
+
     let started_wall = util::now_wall_ns();
     let started = Instant::now();
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Value>>();
     let mut live: Option<crate::ui::Live> = None;
-    let run = proc::run_with(&mut cmd, true, &mut |child| {
-        if render {
-            if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
-                live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_))));
-            }
-        } else if let Some(out) = child.stdout.take() {
-            let tx = tx.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(pump_json(out, 200_000));
-            });
+    let (mut exit, mut duration_ns) = match &known_fresh {
+        Some((units, warnings_line)) => {
+            crate::ui::up_to_date(*units, warnings_line.as_deref());
+            (ExitInfo { code: Some(0), signal: None }, 0)
         }
-    });
-    let mut duration_ns = started.elapsed().as_nanos() as u64;
-    let (mut exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+        None => {
+            let run = proc::run_with(&mut cmd, true, &mut |child| {
+                if render {
+                    if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
+                        live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_))));
+                    }
+                } else if let Some(out) = child.stdout.take() {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(pump_json(out, 200_000));
+                    });
+                }
+            });
+            let duration_ns = started.elapsed().as_nanos() as u64;
+            let (exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+            (exit, duration_ns)
+        }
+    };
     // Drain the pipe; a lingering grandchild holding it open must not hang us.
     let mut messages = if tee { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { None };
     if let Some(live) = live {
@@ -612,6 +628,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
                 text.push('\n');
             }
             let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
+        }
+        if let (Some(key), true) = (&prebuilt_key, exit.success()) {
+            crate::prebuilt::record(&store.dir, key, &fin.messages, &cwd, ws_root.as_deref(), fin.units, fin.warnings_line.as_deref());
         }
         messages = Some(fin.messages);
     }

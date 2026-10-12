@@ -13,6 +13,7 @@ pub mod config;
 pub mod discover;
 pub mod fast;
 pub mod inventory;
+pub mod prebuilt;
 pub mod proc;
 pub mod recommend;
 pub mod remedy;

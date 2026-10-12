@@ -139,6 +139,10 @@ pub struct Finished {
     pub messages: Vec<Value>,
     /// Every line, in order, as `{"s": "out"|"err", "l": line}`.
     pub log: Vec<Value>,
+    /// Units the build compiled or found fresh.
+    pub units: u64,
+    /// The warnings line of the summary, as printed.
+    pub warnings_line: Option<String>,
 }
 
 pub struct Live {
@@ -156,6 +160,18 @@ fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHa
             }
         }
     })
+}
+
+/// The summary of a build Haul knows to be fresh without asking Cargo: the build phase of a
+/// `BuildFirst` command whose inputs have not changed since it last succeeded.
+pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
+    let r = Renderer::new();
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "{}{}{} fresh", r.paint("1;32", "✓ Up to date"), r.paint("2", " · "), units);
+    if let Some(w) = warnings_line {
+        let _ = writeln!(err, "{}", w);
+    }
+    let _ = err.flush();
 }
 
 /// Starts rendering the output of a spawned Cargo. `prebuild`: the build of a `BuildFirst`
@@ -184,7 +200,7 @@ impl Live {
             Err(_) => {
                 // Cargo's result stands; what was lost is said, not hidden.
                 eprintln!("haul: internal error: the output renderer failed; Cargo's result stands, but this run's output was not stored");
-                Finished { messages: Vec::new(), log: Vec::new() }
+                Finished { messages: Vec::new(), log: Vec::new(), units: 0, warnings_line: None }
             }
         }
     }
@@ -372,13 +388,20 @@ impl Renderer {
             }
             let _ = writeln!(err, "{}", s);
         }
+        if let Some(line) = self.warnings_line() {
+            let _ = writeln!(err, "{}", line);
+        }
+        let _ = err.flush();
+    }
+
+    fn warnings_line(&self) -> Option<String> {
         if self.warning_total > 0 {
+            let dot = self.paint("2", " · ");
             let mut lints: Vec<(&String, &u64)> = self.warnings.iter().collect();
             lints.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
             let shown: Vec<String> = lints.iter().take(3).map(|(k, n)| format!("{} ×{}", k, n)).collect();
             let more = if lints.len() > 3 { format!(", +{} more", lints.len() - 3) } else { String::new() };
-            let _ = writeln!(
-                err,
+            return Some(format!(
                 "{} {} warning{} in {}: {}{}{}`haul warnings` to show them",
                 self.paint("1;33", "⚠"),
                 self.warning_total,
@@ -387,9 +410,9 @@ impl Renderer {
                 shown.join(", "),
                 more,
                 dot
-            );
+            ));
         }
-        let _ = err.flush();
+        None
     }
 
     fn run(mut self, rx: Receiver<Ev>) -> Finished {
@@ -411,7 +434,8 @@ impl Renderer {
             }
             self.draw_status(&mut err, false);
         }
-        Finished { messages: self.messages, log: self.log }
+        let warnings_line = self.warnings_line();
+        Finished { units: self.compiled + self.fresh, warnings_line, messages: self.messages, log: self.log }
     }
 
     fn store(&mut self, stream: &str, line: String) {
