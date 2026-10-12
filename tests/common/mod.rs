@@ -82,11 +82,20 @@ impl Sandbox {
     /// `cargo ARGS` through the shim, run inside a pseudo-terminal (util-linux `script`), as a
     /// developer at a terminal would. `None` where `script` is not available.
     pub fn cargo_in_terminal(&self, cwd: &Path, args: &str) -> Option<Command> {
+        self.in_terminal(cwd, args, &self.path_with_shim())
+    }
+
+    /// The same with the real Cargo and no Haul on PATH: the oracle for terminal behaviour.
+    pub fn upstream_in_terminal(&self, cwd: &Path, args: &str) -> Option<Command> {
+        self.in_terminal(cwd, args, &self.upstream_path)
+    }
+
+    fn in_terminal(&self, cwd: &Path, args: &str, path: &OsString) -> Option<Command> {
         if !cfg!(target_os = "linux") || Command::new("script").arg("--version").output().is_err() {
             return None;
         }
         let mut c = self.base(Path::new("script"), cwd);
-        c.env("PATH", self.path_with_shim()).env("COLUMNS", "120").env("TERM", "xterm");
+        c.env("PATH", path).env("COLUMNS", "120").env("TERM", "xterm");
         c.args(["-qec", &format!("cargo {}", args), "/dev/null"]);
         Some(c)
     }
