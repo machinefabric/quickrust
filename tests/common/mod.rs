@@ -7,6 +7,8 @@
 
 #![allow(dead_code)]
 
+pub mod registry;
+
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};

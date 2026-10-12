@@ -8,7 +8,11 @@
 //! 1. what nothing can use any more, whatever the space: build directories of workspaces that are
 //!    gone, drivers of toolchains that are gone, stale downloads and memos, leftovers;
 //! 2. while the cache is above its size or the disk below its free space, build directories and
-//!    artifact entries, least recently used first.
+//!    artifact entries, least recently used first;
+//! 3. crates and git checkouts downloaded into Haul's Cargo home: Cargo removes them itself
+//!    (`cargo -Zgc clean gc`, which knows when each was last used and waits for builds reading
+//!    them), unused for its usual ages at every collection, and down to what the bounds leave
+//!    when they are still exceeded. They come last: they need the network to come back.
 //!
 //! Nothing used in the last 15 minutes is removed, nor a build directory a command holds (its
 //! lock) or Cargo is building in (Cargo's locks). A removal renames the thing away first, so
@@ -102,6 +106,8 @@ pub enum Kind {
     Download,
     Memo,
     Leftover,
+    /// Haul's Cargo home's registry and git downloads (removed by Cargo, see `cargo_gc`).
+    Registry,
 }
 
 impl Kind {
@@ -113,6 +119,7 @@ impl Kind {
             Kind::Download => "downloads",
             Kind::Memo => "remembered answers",
             Kind::Leftover => "leftovers",
+            Kind::Registry => "crate and git downloads",
         }
     }
 }
@@ -247,6 +254,50 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     let mut v: Vec<PathBuf> = fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
     v.sort();
     v
+}
+
+/// Haul's Cargo home and a Cargo to collect its downloads with.
+#[derive(Clone, Debug)]
+pub struct Downloads {
+    pub cargo_home: PathBuf,
+    pub cargo: PathBuf,
+}
+
+/// Haul's Cargo home with the newest installed toolchain's Cargo; `None` without a toolchain.
+pub fn downloads() -> Option<Downloads> {
+    let layout = crate::toolchain::Layout::current();
+    let newest = crate::toolchain::installed(&layout).into_iter().filter_map(|tc| Some((semver::Version::parse(&tc.record()?.version).ok()?, tc))).max_by(|a, b| a.0.cmp(&b.0))?;
+    Some(Downloads { cargo_home: util::cargo_home(), cargo: newest.1.cargo() })
+}
+
+/// Cargo's collection of the downloads in `d.cargo_home`, down to `limit` (registry, git) bytes,
+/// or by Cargo's own ages. Cargo's summary line.
+fn cargo_gc(d: &Downloads, limit: Option<(u64, u64)>, dry_run: bool) -> Result<String, String> {
+    let mut c = std::process::Command::new(&d.cargo);
+    c.args(["-Zgc", "clean", "gc"]).env("CARGO_HOME", &d.cargo_home).env("RUSTC_BOOTSTRAP", "1").env("CARGO_TERM_COLOR", "never").current_dir(&d.cargo_home).stdin(std::process::Stdio::null());
+    if dry_run {
+        c.arg("--dry-run");
+    }
+    if let Some((registry, git)) = limit {
+        c.arg(format!("--max-download-size={}", registry)).arg(format!("--max-git-size={}", git));
+    }
+    let out = c.output().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?;
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !out.status.success() {
+        return Err(format!("Cargo could not collect its downloads: {}", err.lines().find(|l| l.contains("error")).unwrap_or(err.trim())));
+    }
+    Ok(err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").trim().to_string())
+}
+
+/// The bytes Haul's Cargo home's downloads take: registry, git.
+fn download_bytes(d: &Downloads) -> (u64, u64) {
+    let mut all = HashMap::new();
+    let mut size = |sub: &str| {
+        let mut u = Unit { kind: Kind::Registry, path: d.cargo_home.join(sub), companions: vec![], last_used_ns: 0, orphan: None, own_bytes: 0, shared: vec![] };
+        measure(&d.cargo_home.join(sub), &mut u, &mut all);
+        u.own_bytes + u.shared.iter().map(|(_, b, _)| b).sum::<u64>()
+    };
+    (size("registry"), size("git"))
 }
 
 pub fn scan(cache: &Path, now: u64) -> Scan {
@@ -404,12 +455,15 @@ fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
     }
 }
 
-/// Collects the cache at `cache` (see the module notes). `dry_run`: says what would go.
-/// `max_total`: removes down to this size whatever the policy says (`haul gc --to`).
-pub fn collect(cache: &Path, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
+/// Collects the cache at `cache`, and the downloads of `downloads` (see the module notes).
+/// `dry_run`: says what would go. `max_total`: removes down to this size whatever the policy
+/// says (`haul gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
+/// builds reading them).
+pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
     let now = util::now_wall_ns();
     let mut scan = scan(cache, now);
-    let mut out = Collected { before: scan.total(), ..Default::default() };
+    let (registry_before, git_before) = downloads.map(download_bytes).unwrap_or((0, 0));
+    let mut out = Collected { before: scan.total() + registry_before + git_before, ..Default::default() };
     let mut total = out.before;
     let fs_now = || fs_space(cache).unwrap_or(FsSpace { total: 0, available: u64::MAX });
     let mut units = std::mem::take(&mut scan.units);
@@ -417,7 +471,9 @@ pub fn collect(cache: &Path, policy: &Policy, max_total: Option<u64>, dry_run: b
     // 1: what nothing can use.
     let (orphans, rest): (Vec<Unit>, Vec<Unit>) = units.drain(..).partition(|u| u.orphan.is_some());
     for u in orphans {
-        if late(&u) && u.kind != Kind::Leftover {
+        // Even what nothing can use waits out the protection: a command writes a build
+        // directory's record before Cargo makes the directory.
+        if late(&u) {
             continue;
         }
         let freed = scan.links.release(&u);
@@ -464,10 +520,30 @@ pub fn collect(cache: &Path, policy: &Policy, max_total: Option<u64>, dry_run: b
             out.skipped_in_use += 1;
         }
     }
+    // 3: Cargo's downloads, by its ages, and down to what the bounds leave if still needed.
+    if let (Some(d), None) = (downloads, deadline) {
+        let needed = (total.saturating_sub(goal.max_total)).max(goal.min_free.saturating_sub(available));
+        let limit = (needed > 0).then(|| {
+            let keep = (registry_before + git_before).saturating_sub(needed);
+            let share = |part: u64| if registry_before + git_before == 0 { 0 } else { (keep as u128 * part as u128 / (registry_before + git_before) as u128) as u64 };
+            (share(registry_before), share(git_before))
+        });
+        let summary = cargo_gc(d, limit, dry_run)?;
+        let (registry_after, git_after) = if dry_run { (registry_before, git_before) } else { download_bytes(d) };
+        let freed = (registry_before + git_before).saturating_sub(registry_after + git_after);
+        total = total.saturating_sub(freed);
+        if freed > 0 || dry_run && !summary.is_empty() {
+            out.removed.push((Kind::Registry, d.cargo_home.clone(), freed, format!("Cargo: {}", summary)));
+        }
+    }
     out.after = total;
     if !dry_run {
         let fs = fs_now();
-        let by_kind: serde_json::Map<String, Value> = scan_summary(cache, now);
+        let mut by_kind: serde_json::Map<String, Value> = scan_summary(cache, now);
+        if let Some(d) = downloads {
+            let (r, g) = download_bytes(d);
+            by_kind.insert(Kind::Registry.name().to_string(), json!({ "count": 2, "bytes": r + g }));
+        }
         let usage = json!({ "format": 1, "scanned_ns": now, "total_bytes": total, "free_at_scan": fs.available, "fs_total": fs.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind });
         let _ = util::write_json_fast(&cache.join(USAGE), &usage);
         if !out.removed.is_empty() {
@@ -551,7 +627,7 @@ pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
         return None;
     }
     let _lock = util::ExclusiveLock::try_acquire(&cache.join("gc.lock")).ok()??;
-    Some(collect(&cache, &policy, None, false, Some(Instant::now() + Duration::from_secs(10))))
+    Some(collect(&cache, None, &policy, None, false, Some(Instant::now() + Duration::from_secs(10))))
 }
 
 #[cfg(test)]
@@ -633,9 +709,9 @@ mod tests {
         file(&c.join("downloads/fresh.tar.xz.part"), 10);
         // Within its size and with free disk: only what nothing can use goes.
         let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
-        let dry = collect(&c, &roomy, None, true, None).unwrap();
+        let dry = collect(&c, None, &roomy, None, true, None).unwrap();
         assert!(gone.exists(), "a dry run removes nothing");
-        let done = collect(&c, &roomy, None, false, None).unwrap();
+        let done = collect(&c, None, &roomy, None, false, None).unwrap();
         assert_eq!(dry.removed.len(), done.removed.len());
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
         assert_eq!(removed, [gone.as_path(), c.join("downloads/abc.tar.xz.part").as_path()]);
@@ -643,12 +719,28 @@ mod tests {
         assert!(old.exists() && older.exists() && fresh.exists() && c.join("downloads/fresh.tar.xz.part").exists());
         // Over its size: the least recently used first, never what was used in the last minutes.
         let tight = Policy { max_bytes: 1, min_free: 0 };
-        let done = collect(&c, &tight, None, false, None).unwrap();
+        let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
         assert_eq!(removed, [older.as_path(), old.as_path()]);
         assert!(fresh.exists() && done.skipped_in_use == 1);
         assert!(done.after < done.before);
         assert!(usage(&c).is_some() && recent(&c, 5).len() == 2);
+    }
+
+    #[test]
+    fn a_build_directory_being_started_is_not_a_leftover() {
+        // A command records its build directory before Cargo creates it.
+        let c = cache();
+        let a = workspace(&c, "a");
+        let d = c.join("builds/a-1");
+        crate::builddir::mark_used_in(&c.join("builds"), &d, &a);
+        assert!(!d.exists() && d.with_file_name("a-1.json").exists());
+        collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        assert!(d.with_file_name("a-1.json").exists(), "the record of a directory about to be made was removed");
+        // An old one, whose directory never came, goes.
+        age(&d.with_file_name("a-1.json"), 2 * 3600);
+        collect(&c, None, &Policy { max_bytes: u64::MAX, min_free: 0 }, None, false, None).unwrap();
+        assert!(!d.with_file_name("a-1.json").exists());
     }
 
     #[cfg(unix)]
@@ -661,7 +753,7 @@ mod tests {
         let _in_use = crate::builddir::in_use(&held);
         file(&building.join("debug/.cargo-lock"), 0);
         let _cargo = util::ExclusiveLock::acquire(&building.join("debug/.cargo-lock")).unwrap();
-        let done = collect(&c, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
         assert!(done.removed.is_empty() && done.skipped_in_use == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
     }

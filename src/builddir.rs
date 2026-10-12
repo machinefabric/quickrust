@@ -139,6 +139,11 @@ fn meta_path(dir: &Path) -> PathBuf {
 /// Notes that the managed directory `dir` of the workspace `root` is in use (written at most
 /// once a minute): its age is what Haul's cache goes by.
 pub fn mark_used(dir: &Path, root: &Path) {
+    mark_used_in(&builds_dir(), dir, root)
+}
+
+/// `mark_used`, with Haul's build directories in `builds`.
+pub fn mark_used_in(builds: &Path, dir: &Path, root: &Path) {
     let meta = meta_path(dir);
     let now = util::now_wall_ns();
     let previous = util::read_json(&meta).filter(|v| v["format"] == json!(META_FORMAT));
@@ -146,7 +151,7 @@ pub fn mark_used(dir: &Path, root: &Path) {
         return;
     }
     let created = previous.as_ref().and_then(|v| v["created_ns"].as_u64()).unwrap_or(now);
-    let _ = util::create_private_dir(&builds_dir()).and_then(|_| util::write_json_fast(&meta, &json!({ "format": META_FORMAT, "workspace_root": util::path_str(root), "created_ns": created, "last_used_ns": now })));
+    let _ = util::create_private_dir(builds).and_then(|_| util::write_json_fast(&meta, &json!({ "format": META_FORMAT, "workspace_root": util::path_str(root), "created_ns": created, "last_used_ns": now })));
 }
 
 /// A managed directory's record: its workspace root and when it was last used.
