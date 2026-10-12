@@ -130,7 +130,7 @@ fn qa003_toolchain_selection_plus_then_environment_then_file_then_default() {
 fn builds_and_their_build_scripts_get_hauls_toolchain_and_cargo_home() {
     let sb = Sandbox::new("engine-env");
     let p = sb.package("p", "p");
-    sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim())).unwrap();\n}\n");
+    sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim(), get(\"CARGO\"))).unwrap();\n}\n");
     let stable = sb.toolchain_dir(&p);
     ok(sb.cargo(&p).arg("build").env("CARGO_HOME", sb.dir.join("theirs")));
     let env_file = fs::read_dir(sb.target_dir(&p).join("debug/build")).unwrap().flatten().map(|e| e.path().join("out/env.txt")).find(|f| f.is_file()).expect("the build script ran");
@@ -139,6 +139,7 @@ fn builds_and_their_build_scripts_get_hauls_toolchain_and_cargo_home() {
     assert_eq!(lines[1], sb.cargo_home().display().to_string(), "Haul's Cargo home, whatever the environment says");
     assert_eq!(lines[2], stable.join("bin/rustc").display().to_string());
     assert_eq!(lines[3], stdout(&ok(std::process::Command::new(stable.join("bin/cargo")).arg("-V"))).trim());
+    assert_eq!(lines[4], sb.home.join("bin/cargo").display().to_string(), "`CARGO` is Haul's: what calls Cargo back reaches Haul");
     assert!(!sb.dir.join("theirs").exists());
 }
 
@@ -607,12 +608,27 @@ fn qa019_external_subcommands_and_nested_cargo() {
     assert_eq!(nested["parent_session_id"], outer["id"], "COMP-031: the nested invocation is linked to its parent");
     assert_eq!(nested["instrumented"], true);
 
+    // Clippy, nextest and most other subcommands call Cargo back through `$CARGO` (COMP-030).
+    let back = sb.file("bin/cargo-back", "#!/bin/sh\n\"$CARGO\" build --quiet || exit 9\nexit 6\n");
+    make_executable(&back);
+    let out = run(sb.cargo(&p).arg("back").env("PATH", &path));
+    assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
+    let sessions = sb.sessions();
+    assert_eq!(sessions.len(), 4);
+    let (outer, nested) = (&sessions[2], &sessions[3]);
+    assert_eq!((&outer["command"]["family"], &nested["command"]["family"]), (&"external".into(), &"build".into()));
+    assert_eq!(nested["parent_session_id"], outer["id"], "a build through `$CARGO` is a nested Haul session");
+    // `haul upstream` is the toolchain's Cargo as it is: it hands on its own path.
+    let out = run(sb.haul(&p).args(["upstream", "back"]).env("PATH", &path));
+    assert_eq!(out.status.code(), Some(6), "{}", stderr(&out));
+    assert_eq!(sb.sessions().len(), 4, "nothing under `haul upstream` reaches Haul");
+
     // COMP-032: projects can opt nested invocations out; they then go straight to upstream.
     fs::remove_dir_all(sb.target_dir(&p)).unwrap();
     let opt_out = run(sb.cargo(&p).args(["hello"]).env("PATH", &path).env("HAUL_NESTED", "upstream"));
     assert_eq!(opt_out.status.code(), Some(5));
     assert!(sb.target_dir(&p).join("debug/p").exists());
-    assert_eq!(sb.sessions().len(), 3, "only the outer invocation is recorded when nested ones are opted out");
+    assert_eq!(sb.sessions().len(), 5, "only the outer invocation is recorded when nested ones are opted out");
 }
 
 #[test]

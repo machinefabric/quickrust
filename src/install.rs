@@ -441,7 +441,7 @@ fn metadata(engine: &crate::engine::Engine, manifest: &Path, no_deps: bool) -> R
     }
     let mut c = engine.command(&args, &resolve::classify(&[]));
     c.stdin(std::process::Stdio::null()).env(crate::ENV_EXEC_GUARD, format!("{}:install", std::process::id()));
-    let out = c.output().map_err(|e| format!("cannot run {}: {}", engine.cargo().display(), e))?;
+    let out = c.output().map_err(|e| format!("cannot run {}: {}", engine.program.display(), e))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
         return Err(err.lines().filter(|l| !l.trim().is_empty()).map(str::trim).collect::<Vec<_>>().join("\n"));
@@ -472,7 +472,7 @@ fn registry(name: &str, req: &Option<String>, r: &Request, inv: &Invocation, cfg
         args.push(probe.join("Cargo.toml").into_os_string());
         let mut c = engine.command(&args, &resolve::classify(&[]));
         c.stdin(std::process::Stdio::null()).env("RUSTC_BOOTSTRAP", "1").env(crate::ENV_EXEC_GUARD, format!("{}:install", std::process::id()));
-        let o = c.output().map_err(|e| format!("cannot run {}: {}", engine.cargo().display(), e))?;
+        let o = c.output().map_err(|e| format!("cannot run {}: {}", engine.program.display(), e))?;
         if !o.status.success() {
             let err = String::from_utf8_lossy(&o.stderr);
             if err.contains("requires a `bin` artifact") {

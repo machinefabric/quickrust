@@ -69,7 +69,7 @@ pub fn workspace_root(engine: &Engine, start: &Path) -> Result<Option<PathBuf>, 
     }
     let mut cmd = engine.command(&["locate-project".into(), "--workspace".into(), "--message-format".into(), "plain".into()], &crate::resolve::classify(&[]));
     cmd.current_dir(start).stdin(std::process::Stdio::null()).env(crate::ENV_EXEC_GUARD, format!("{}:locate", std::process::id()));
-    let out = cmd.output().map_err(|e| format!("cannot run {}: {}", engine.cargo().display(), e))?;
+    let out = cmd.output().map_err(|e| format!("cannot run {}: {}", engine.program.display(), e))?;
     let root = if out.status.success() {
         let manifest = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
         Some(manifest.parent().map(Path::to_path_buf).ok_or_else(|| format!("`cargo locate-project` named {}", manifest.display()))?)

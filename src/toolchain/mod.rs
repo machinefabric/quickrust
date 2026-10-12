@@ -73,12 +73,69 @@ impl Toolchain {
         self.bin("cargo")
     }
 
+    /// The engine of an installed toolchain (see `engine_program`): its `cargo` under a name Cargo
+    /// does not take for its own, a hard link beside it.
+    pub fn engine(&self) -> PathBuf {
+        self.bin(ENGINE)
+    }
+
     /// Haul's record of it (`None` for a linked toolchain).
     pub fn record(&self) -> Option<install::Record> {
         if self.linked {
             return None;
         }
         install::read_record(&self.dir).ok()
+    }
+}
+
+/// The file name (before any `.exe`) of `Toolchain::engine`.
+const ENGINE: &str = ".haul-engine";
+
+/// The program Haul runs as Cargo for toolchain `tc`.
+///
+/// Cargo tells everything it starts where Cargo is (`CARGO`: external subcommands such as
+/// Clippy's or nextest's, build scripts, `env!("CARGO")`, `cargo test`'s binaries), and they call
+/// it back there for nested builds. Run as a file named `cargo`, it gives its own path, and those
+/// builds would bypass Haul; run under another name, it gives its `argv[0]` when that is named
+/// `cargo`, else the `CARGO` it was given, both of which Haul sets to its own `cargo` (see
+/// `crate::engine`). So for an installed toolchain the program
+/// is `Toolchain::engine`, made here (staged, then renamed into place) when it is missing or no
+/// longer the same file as the toolchain's `cargo`. A linked toolchain is never changed: its
+/// `cargo` runs as itself.
+pub fn engine_program(tc: &Toolchain) -> Result<PathBuf, String> {
+    let cargo = tc.cargo();
+    if tc.linked {
+        return Ok(cargo);
+    }
+    if !cargo.is_file() {
+        return Err(format!("toolchain {} has no {}", tc.id, cargo.display()));
+    }
+    let link = tc.engine();
+    if same_file(&cargo, &link) {
+        return Ok(link);
+    }
+    let staged = link.with_file_name(format!("{}.{}", ENGINE, std::process::id()));
+    let _ = std::fs::remove_file(&staged);
+    match std::fs::hard_link(&cargo, &staged).and_then(|_| std::fs::rename(&staged, &link)) {
+        Ok(()) => Ok(link),
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            Err(format!("cannot link {} as {}: {}", cargo.display(), link.display(), e))
+        }
+    }
+}
+
+/// Whether `a` and `b` are one file (links of it).
+fn same_file(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        util::file_identity(a).is_some_and(|id| util::file_identity(b) == Some(id))
+    }
+    // NTFS keeps the size and times in the file record every link of the file shares.
+    #[cfg(not(unix))]
+    {
+        let key = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok(), m.created().ok()));
+        key(a).is_some() && key(a) == key(b)
     }
 }
 
@@ -615,6 +672,35 @@ mod tests {
 
     fn sel(s: &str) -> Selection {
         Selection { spec: Spec::parse(s).unwrap(), source: Source::Plus, file: None }
+    }
+
+    #[test]
+    fn the_engine_is_the_toolchains_cargo_under_another_name_and_follows_it() {
+        let l = layout();
+        let tc = Toolchain { id: "1.99.0-x86_64-unknown-linux-gnu".into(), dir: l.toolchains().join("1.99.0-x86_64-unknown-linux-gnu"), linked: false };
+        std::fs::create_dir_all(tc.dir.join("bin")).unwrap();
+        assert!(engine_program(&tc).unwrap_err().contains("has no"), "a toolchain without Cargo has no engine");
+        std::fs::write(tc.cargo(), "cargo 1").unwrap();
+        let engine = engine_program(&tc).unwrap();
+        assert_eq!(engine, tc.engine());
+        assert_ne!(engine.file_stem(), Some(std::ffi::OsStr::new("cargo")), "Cargo hands on `CARGO` only under another name");
+        assert!(same_file(&engine, &tc.cargo()));
+        assert_eq!(engine_program(&tc).unwrap(), engine, "made once, then found");
+        // The toolchain's `cargo` replaced (its component installed again): the engine follows.
+        std::fs::remove_file(tc.cargo()).unwrap();
+        std::fs::write(tc.cargo(), "cargo 2").unwrap();
+        assert!(!same_file(&engine, &tc.cargo()));
+        assert_eq!(engine_program(&tc).unwrap(), engine);
+        assert_eq!(std::fs::read_to_string(&engine).unwrap(), "cargo 2");
+        let names: Vec<String> = std::fs::read_dir(tc.dir.join("bin")).unwrap().map(|e| util::lossy(&e.unwrap().file_name())).collect();
+        assert_eq!(names.len(), 2, "nothing staged is left behind: {:?}", names);
+        // A linked toolchain is never changed: its Cargo runs as itself.
+        let linked = Toolchain { id: "mine".into(), dir: l.toolchains().join("elsewhere"), linked: true };
+        std::fs::create_dir_all(linked.dir.join("bin")).unwrap();
+        std::fs::write(linked.cargo(), "cargo").unwrap();
+        assert_eq!(engine_program(&linked).unwrap(), linked.cargo());
+        assert!(!linked.engine().exists());
+        std::fs::remove_dir_all(l.toolchains().parent().unwrap()).unwrap();
     }
 
     #[test]

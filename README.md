@@ -7,9 +7,10 @@ argument, the toolchain's own Cargo and rustc as Haul's engine. Haul owns everyt
 around them and uses it to speed up, observe, explain and police builds.
 
 ```text
-developer / IDE / CI ──► cargo (Haul shim) ──► toolchain's Cargo ──► haul-rustc-wrapper ──► [your wrapper / sccache] ──► rustc
-                              │                                          │
-                              └── session record                         └── one event per rustc invocation
+developer / IDE / CI ──► cargo (Haul) ──► toolchain's Cargo ──► haul-rustc-wrapper ──► [your wrapper / sccache] ──► rustc
+                           ▲   │                      │                  │
+                           │   └── session record     │                  └── one event per rustc invocation
+                           └──────────────────────────┘  $CARGO: Clippy, nextest, build scripts — nested builds come back to Haul
 ```
 
 What you get on top of an unchanged Cargo:

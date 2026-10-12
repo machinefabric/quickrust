@@ -49,7 +49,7 @@ struct Key {
 const KEYS: &[Key] = &[
     Key { name: "output", kind: Kind::Enum(&["haul", "cargo"]), default: "haul", env: Some("HAUL_OUTPUT"), help: "build output in a terminal: Haul's (status line, errors in full, warnings counted; everything stored) or Cargo's own; compat mode defaults to cargo" },
     Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("HAUL_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
-    Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested `cargo` invocations that reach the shim: record them (orchestrator) or hand straight to upstream" },
+    Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested Cargo invocations (a build script's or a subcommand's `cargo` or `$CARGO`): run them through Haul as sessions of their own, linked to the outer one (orchestrator), or hand them straight to the toolchain's Cargo (upstream)" },
     Key { name: "compatibility.unknown-command", kind: Kind::Enum(&["delegate", "instrument"]), default: "delegate", env: None, help: "external subcommands: plain delegation or rustc-wrapper instrumentation" },
     Key { name: "measurement.enabled", kind: Kind::Bool, default: "true", env: None, help: "observe rustc invocations through the Haul rustc wrapper" },
     Key { name: "measurement.report", kind: Kind::Str, default: "", env: Some("HAUL_REPORT"), help: "sidecar report path; `{session}` expands to the run id" },

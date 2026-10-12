@@ -413,7 +413,7 @@ pub fn exec_upstream(args: Vec<OsString>) -> ! {
     let cwd = std::env::current_dir().unwrap_or_default();
     let cfg = Config::defaults();
     let engine = crate::engine::for_command(&inv, &cwd, &cfg).unwrap_or_else(|e| fail(&e));
-    let mut cmd = engine.command(&args, &inv);
+    let mut cmd = engine.upstream_command(&args, &inv);
     cmd.env(crate::ENV_EXEC_GUARD, format!("{}:upstream", std::process::id()));
     let err = proc::exec(&mut cmd);
     fail(&format!("could not execute Cargo {}: {}", engine.cargo().display(), err))
@@ -481,7 +481,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         let mut cmd = engine.command(&spec.args, &inv);
         cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
         let err = proc::exec(&mut cmd);
-        return Err(format!("could not execute Cargo {}: {}", engine.cargo().display(), err));
+        return Err(format!("could not execute Cargo {}: {}", engine.program.display(), err));
     }
 
     let ws_root = engine.workspace_root.clone();
@@ -605,7 +605,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
                 }
             });
             let duration_ns = started.elapsed().as_nanos() as u64;
-            let (exit, _usage) = run.map_err(|e| format!("could not execute Cargo {}: {}", engine.cargo().display(), e))?;
+            let (exit, _usage) = run.map_err(|e| format!("could not execute Cargo {}: {}", engine.program.display(), e))?;
             (exit, duration_ns)
         }
     };
@@ -664,7 +664,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             second = crate::ui::with_arg(second, "--quiet");
         }
         let again = Instant::now();
-        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute Cargo {}: {}", engine.cargo().display(), e))?;
+        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute Cargo {}: {}", engine.program.display(), e))?;
         exit = e;
         duration_ns += again.elapsed().as_nanos() as u64;
     }

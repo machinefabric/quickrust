@@ -12,8 +12,8 @@ haul build                 # the same build, recorded
 haul analyze
 ```
 
-`haul doctor` prints the shim path, the active toolchain and what selected it, its
-Cargo and rustc, Haul's Cargo home, the `CARGO`, `RUSTC`, `RUSTC_WRAPPER` and
+`haul doctor` prints where Haul is set up, the active toolchain and what selected
+it, its Cargo (and the file Haul runs it as) and rustc, Haul's Cargo home, the `CARGO`, `RUSTC`, `RUSTC_WRAPPER` and
 `RUSTC_WORKSPACE_WRAPPER` values, target and build directories, cache policy and
 the capability set, and exits non-zero if something is wrong.
 

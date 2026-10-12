@@ -13,7 +13,7 @@ behaviour is asserted.
 | argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |
 | Cargo config / environment non-interference | done | `environment_reaches_build_scripts_unchanged`, `no_rebuild_when_alternating…` |
-| Nested invocations + opt-out | done via `PATH`; see deviation 1 | `qa019` |
+| Nested invocations + opt-out | done, through `PATH` and `$CARGO`; see deviation 1 | `qa019`, `builds_and_their_build_scripts_get_hauls_toolchain…` |
 | Workspace, toolchain, environment fingerprints (FR-010) | done | `src/discover.rs` · `qa002`, `report_follows…` |
 | Cargo JSON-event collector | done, when the user requests JSON on a pipe | `qa018` |
 | rustc wrapper collector; existing wrapper composition | done | `src/wrapper.rs` · `qa010_qa011_qa012`, `wrapper_configured_in_cargo_config…` |
@@ -49,16 +49,21 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 
 ## Deviations and decisions
 
-1. **`CARGO` is not pointed at the shim (COMP-030).** The specification assumes
-   Cargo forwards an inherited `CARGO` to build scripts and subcommands. The
-   Cargo this was built against (1.98.1) does so only when its own executable is
-   not named `cargo`; a real `cargo` always exports its own path. Setting the
-   variable therefore has no effect, and Haul does not set it. Nested
-   invocations stay inside Haul when they call `cargo` through a `PATH` that has
-   the shim first; they are then linked to their parent session (COMP-031) and
-   can be opted out with `HAUL_NESTED=upstream` (COMP-032). Nested builds started
-   through `$CARGO` bypass the shim, but their rustc invocations are still
-   observed, because `RUSTC_WRAPPER` is inherited.
+1. **`CARGO` is Haul's `cargo` (COMP-030), by running Cargo under another name.**
+   Cargo hands everything it starts (external subcommands, build scripts,
+   `env!("CARGO")`, test binaries) its own path, and takes an inherited `CARGO`
+   instead only when its own executable is not named `cargo` (Cargo 1.86 and
+   later), or, after that, the path in its `argv[0]` when that is named `cargo`.
+   Haul therefore runs a hard link of the toolchain's `cargo`, `bin/.haul-engine`,
+   with `argv[0]` and `CARGO` set to `~/.haul/bin/cargo` (Windows has no separate
+   `argv[0]`: there Cargo's help names the link, `.haul-engine.exe`): a nested build
+   through `$CARGO` (Clippy's, nextest's, `cargo llvm-cov`'s) is a Haul session
+   linked to its parent (COMP-031), with Haul's settings, like one through
+   `PATH`. Either can be opted out with `HAUL_NESTED=upstream` (COMP-032).
+   `haul upstream` runs the toolchain's `cargo` as itself, and a linked toolchain
+   is never changed, so there nested builds through `$CARGO` reach that Cargo
+   directly; their rustc invocations are still observed, because `RUSTC_WRAPPER`
+   is inherited.
 
 2. **Run state lives in `~/.haul`, not in the repository.** The specification's
    configuration example writes reports to `.haul/runs/`. Creating files in a

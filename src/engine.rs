@@ -1,6 +1,9 @@
 //! The engine: the Cargo of the toolchain a command uses, which Haul runs for it with the
 //! environment Haul gives every build.
 //!
+//! - Cargo runs as `toolchain::engine_program`, a name it does not take for its own, with `CARGO`
+//!   set to Haul's `cargo`: Cargo hands that on to everything it starts, so a nested build through
+//!   `$CARGO` (Clippy's, nextest's, a build script's, a test's) runs through Haul too.
 //! - `CARGO_HOME` is Haul's (`$HAUL_HOME/cargo`): registry index and sources, git checkouts and
 //!   Cargo's own configuration live there for every project on the machine.
 //! - `RUSTUP_TOOLCHAIN` names the toolchain, so that a nested `cargo` or `rustc` (a build script,
@@ -63,6 +66,11 @@ pub fn bin_dir() -> PathBuf {
     util::haul_home().join("bin")
 }
 
+/// Haul as `cargo`, in its `bin`.
+fn haul_cargo() -> PathBuf {
+    util::exe_candidates(&bin_dir(), "cargo").remove(0)
+}
+
 #[derive(Debug, Clone)]
 pub struct Engine {
     pub toolchain: Toolchain,
@@ -74,10 +82,13 @@ pub struct Engine {
     pub workspace_root: Option<PathBuf>,
     /// Its target directory (see `builddir`), for a Cargo command in a workspace.
     pub target: Option<crate::builddir::Target>,
+    /// What runs as Cargo (`toolchain::engine_program`).
+    pub program: PathBuf,
     pub env: Vec<(String, String)>,
 }
 
 impl Engine {
+    /// The toolchain's `cargo`.
     pub fn cargo(&self) -> PathBuf {
         self.toolchain.cargo()
     }
@@ -86,9 +97,16 @@ impl Engine {
         self.toolchain.rustc()
     }
 
-    /// Cargo with `args` (without a leading `+toolchain`) and the engine's environment.
+    /// Cargo with `args` (without a leading `+toolchain`) and the engine's environment. Its
+    /// `argv[0]` is Haul's `cargo`, which Cargo takes for its own path and name (`CARGO`, and
+    /// `Usage: cargo build` in its help and errors); Windows has no separate `argv[0]`, and there
+    /// Cargo goes by `CARGO` and names itself after the file it runs as.
     pub fn command(&self, args: &[OsString], inv: &Invocation) -> Command {
-        let mut cmd = Command::new(self.cargo());
+        let mut cmd = Command::new(&self.program);
+        #[cfg(unix)]
+        if self.program != self.cargo() {
+            std::os::unix::process::CommandExt::arg0(&mut cmd, haul_cargo());
+        }
         cmd.args(&args[usize::from(inv.toolchain.is_some())..]);
         for (k, v) in &self.env {
             cmd.env(k, v);
@@ -96,10 +114,22 @@ impl Engine {
         cmd
     }
 
-    /// A tool of the toolchain with the engine's environment.
+    /// The toolchain's own Cargo, run as itself with the engine's environment but for `CARGO`:
+    /// what it starts calls it back directly (`haul upstream`).
+    pub fn upstream_command(&self, args: &[OsString], inv: &Invocation) -> Command {
+        let mut cmd = Command::new(self.cargo());
+        cmd.args(&args[usize::from(inv.toolchain.is_some())..]);
+        for (k, v) in self.env.iter().filter(|(k, _)| k != "CARGO") {
+            cmd.env(k, v);
+        }
+        cmd
+    }
+
+    /// A tool of the toolchain with the engine's environment (`CARGO` only for Cargo's
+    /// subcommands, which call Cargo back).
     pub fn tool(&self, name: &str) -> Command {
         let mut cmd = Command::new(self.toolchain.bin(name));
-        for (k, v) in &self.env {
+        for (k, v) in self.env.iter().filter(|(k, _)| k != "CARGO" || name.starts_with("cargo-")) {
             cmd.env(k, v);
         }
         cmd
@@ -150,8 +180,12 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     };
     progress.finish(&tc);
     toolchain::mark_used(&tc);
-    let env = environment(&tc);
-    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, env })
+    let program = toolchain::engine_program(&tc).map_err(|e| format!("toolchain {}: {}", tc.id, e))?;
+    let mut env = environment(&tc);
+    if program != tc.cargo() {
+        env.push(("CARGO".to_string(), util::path_str(&haul_cargo())));
+    }
+    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, program, env })
 }
 
 /// The dynamic library path variable the toolchain's programs find their libraries by.
@@ -226,7 +260,7 @@ fn environment(tc: &Toolchain) -> Vec<(String, String)> {
 /// installs Haul there for good.
 fn ensure_proxies() {
     let bin = bin_dir();
-    let cargo = util::exe_candidates(&bin, "cargo").remove(0);
+    let cargo = haul_cargo();
     if std::fs::metadata(&cargo).is_ok() {
         return;
     }
