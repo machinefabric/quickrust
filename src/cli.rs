@@ -28,7 +28,7 @@ haul — drop-in Cargo replacement: orchestration, observation and policy around
 USAGE
     haul <cargo-command> [args…]     run a Cargo command through Haul (same syntax as cargo)
     haul upstream <args…>            run upstream Cargo directly: no policy, no instrumentation
-    cargo <args…>                    the same as the first form, when the shim is on PATH
+    cargo <args…>                    the same as the first form (`haul setup` puts Haul's cargo first on PATH)
 
 OUTPUT OF A BUILD (stored for every build Haul rendered in a terminal)
     haul warnings [--run REF] [--crate NAME] [--lint LINT]
@@ -413,7 +413,7 @@ fn cmd_runs(raw: &[OsString]) -> CmdResult {
         return Ok(0);
     }
     if sessions.is_empty() {
-        println!("No recorded runs for this workspace. Run a build through `haul` or the `cargo` shim first.");
+        println!("No recorded runs for this workspace. Run a build through `haul` or Haul's `cargo` first.");
         return Ok(0);
     }
     println!("{:<26}  {:<24}  {:<11}  {:<9}  {:>9}  {:<8}  COMMAND", "RUN", "STARTED", "FAMILY", "STATE", "WALL", "OBSERVED");
@@ -614,7 +614,14 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 None => util::ExclusiveLock::acquire(&layout.toolchains().join(".locks").join("update.lock")).map_err(|e| e.to_string())?,
             };
             let mut progress = crate::ui::ToolchainProgress::new("update");
-            let moved = toolchain::update(&layout, &server, only.as_deref(), &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
+            // A channel's new release gets Haul's compiler driver before builds use it.
+            let wanted = crate::driver::wanted(&Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?);
+            let mut prepare = |tc: &toolchain::Toolchain| {
+                if wanted {
+                    crate::driver::prepare(tc);
+                }
+            };
+            let moved = toolchain::update(&layout, &server, only.as_deref(), &mut prepare, &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
             let (moved, retired) = match moved {
                 Ok(m) => m,
                 Err(e) => {
@@ -622,7 +629,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                     return Err(e);
                 }
             };
-            drop(progress);
+            progress.clear();
             if moved.is_empty() {
                 println!("Every channel is at its latest release.");
             }
@@ -1236,7 +1243,7 @@ fn cmd_fix(raw: &[OsString]) -> CmdResult {
     }
     // Remediation is preview-only unless a specific previewed change is applied by id (FR-170.1).
     if !a.flag("--dry-run") {
-        return Err("usage: haul fix --dry-run [REC_ID] | --apply REMEDIATION_ID | --rollback REMEDIATION_ID   (for `cargo fix`, use `haul upstream fix` or the cargo shim)".into());
+        return Err("usage: haul fix --dry-run [REC_ID] | --apply REMEDIATION_ID | --rollback REMEDIATION_ID   (for `cargo fix`, use `cargo fix` or `haul upstream fix`)".into());
     }
     let format = a.format(&["text", "json"])?;
     let patch = a.flag("--patch");
@@ -1399,16 +1406,25 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     if let Some(spec) = &opts.toolchain {
         let layout = crate::toolchain::Layout::current();
         let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-        let server = Config::load(&cwd).map(|c| c.str("toolchain.dist-server").to_string()).unwrap_or_else(|_| crate::toolchain::dist::UPSTREAM.to_string());
+        let cfg = Config::load(&cwd)?;
         let sel = crate::toolchain::Selection { spec: crate::toolchain::spec::Spec::parse(spec)?, source: crate::toolchain::Source::Plus, file: None };
         let mut progress = crate::ui::ToolchainProgress::new(spec);
-        match crate::toolchain::ensure(&layout, &sel, &crate::toolchain::Needs::default(), &server, &mut progress) {
-            Ok(tc) if progress.worked() => progress.finish(&tc),
-            Ok(tc) => println!("  Rust: {} is installed ({})", spec, tc.id),
+        let tc = match crate::toolchain::ensure(&layout, &sel, &crate::toolchain::Needs::default(), cfg.str("toolchain.dist-server"), &mut progress) {
+            Ok(tc) if progress.worked() => {
+                progress.finish(&tc);
+                tc
+            }
+            Ok(tc) => {
+                println!("  Rust: {} is installed ({})", spec, tc.id);
+                tc
+            }
             Err(e) => {
                 progress.fail(&e);
                 return Err(e);
             }
+        };
+        if crate::driver::wanted(&cfg) {
+            crate::driver::prepare(&tc);
         }
     }
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {

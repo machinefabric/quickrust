@@ -100,7 +100,7 @@ impl WsStore {
             let back: usize = if rest.is_empty() { 0 } else { rest.strip_prefix('~').and_then(|n| n.parse().ok()).ok_or_else(|| format!("invalid run reference {:?}", reference))? };
             return usable.iter().rev().nth(back).map(|s| s.to_string()).ok_or_else(|| {
                 if usable.is_empty() {
-                    "no recorded build runs for this workspace yet; run a build through `haul` or the `cargo` shim first".to_string()
+                    "no recorded build runs for this workspace yet; run a build through `haul` or Haul's `cargo` first".to_string()
                 } else {
                     format!("only {} recorded build run(s); {:?} does not exist", usable.len(), reference)
                 }

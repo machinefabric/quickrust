@@ -285,12 +285,19 @@ pub fn bar(done: u64, total: u64) -> String {
 pub struct ToolchainProgress {
     phase: Option<Phase>,
     what: String,
+    /// The component being added to an installed toolchain, if that is what it shows.
+    adding: Option<String>,
 }
 
 impl ToolchainProgress {
     /// `what`: how the toolchain was asked for (`stable`, `1.98`), shown while installing.
     pub fn new(what: &str) -> ToolchainProgress {
-        ToolchainProgress { phase: None, what: what.to_string() }
+        ToolchainProgress { phase: None, what: what.to_string(), adding: None }
+    }
+
+    /// Adding `component` to the installed toolchain `what`.
+    pub fn adding(what: &str, component: &str) -> ToolchainProgress {
+        ToolchainProgress { phase: None, what: what.to_string(), adding: Some(component.to_string()) }
     }
 
     fn phase(&mut self) -> &mut Phase {
@@ -306,13 +313,26 @@ impl ToolchainProgress {
     pub fn finish(self, tc: &crate::toolchain::Toolchain) {
         if let Some(p) = self.phase {
             let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
-            p.finish(true, &format!("Rust {} ready ({})", release, tc.id));
+            match &self.adding {
+                Some(c) => p.finish(true, &format!("{} added to Rust {}", c, release)),
+                None => p.finish(true, &format!("Rust {} ready ({})", release, tc.id)),
+            }
+        }
+    }
+
+    /// Takes its status line off the screen, for output that says what was done instead.
+    pub fn clear(self) {
+        if let Some(mut p) = self.phase {
+            p.clear_line();
         }
     }
 
     pub fn fail(self, why: &str) {
         if let Some(p) = self.phase {
-            p.finish(false, &format!("Rust {} could not be installed: {}", self.what, why));
+            match &self.adding {
+                Some(c) => p.finish(false, &format!("{} could not be added to Rust {}: {}", c, self.what, why)),
+                None => p.finish(false, &format!("Rust {} could not be installed: {}", self.what, why)),
+            }
         }
     }
 }
@@ -324,8 +344,11 @@ impl crate::toolchain::install::Report for ToolchainProgress {
     }
 
     fn progress(&mut self, done: usize, total: usize, bytes: u64, current: &str) {
-        let what = self.what.clone();
-        let text = format!("Installing Rust {} {}  {}/{} · {}{}", what, bar(done as u64, total as u64), done, total, util::human_bytes(bytes), if current.is_empty() { String::new() } else { format!(" · {}", current) });
+        let doing = match &self.adding {
+            Some(c) => format!("Adding {} to Rust {}", c, self.what),
+            None => format!("Installing Rust {}", self.what),
+        };
+        let text = format!("{} {}  {}/{} · {}{}", doing, bar(done as u64, total as u64), done, total, util::human_bytes(bytes), if current.is_empty() { String::new() } else { format!(" · {}", current) });
         self.phase().status(&text, done == total);
     }
 }
@@ -379,7 +402,7 @@ pub fn note(text: &str) {
 /// Haul could not start building its compiler driver.
 pub fn notice_driver_unavailable(why: &str) {
     let r = Renderer::new();
-    let _ = writeln!(std::io::stderr(), "{} Haul's compiler driver cannot be built in the background: {}", r.paint("2", "note:"), why);
+    let _ = writeln!(std::io::stderr(), "{} Haul's compiler driver cannot be built: {}", r.paint("2", "note:"), why);
 }
 
 /// The summary of a build Haul knows to be fresh without asking Cargo: the build phase of a

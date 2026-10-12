@@ -1329,6 +1329,29 @@ fn a_compiler_driver_that_crashes_never_fails_the_build() {
 }
 
 #[test]
+fn setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
+    // The driver is part of an artifact-cache entry's key: what a first build stored without it,
+    // every later build (with it) would miss.
+    let sb = Sandbox::new("driver-setup");
+    let p = sb.package("p", "p");
+    let out = run(sb.haul(&p).args(["setup", "--toolchain", "1.99.0", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("HAUL_EARLY_CUTOFF", "auto"));
+    assert!(out.status.success(), "{}", stderr(&out));
+    if stderr(&out).contains(NO_RUSTC_DEV) {
+        eprintln!("not run: Haul's compiler driver cannot be built here: {}", stderr(&out));
+        return;
+    }
+    assert!(stderr(&out).contains("Compiler driver for Rust 1.99.0 ready"), "{}", stderr(&out));
+    assert!(stdout(&ok(sb.haul(&p).args(["driver", "status"]))).starts_with("built:"));
+    let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
+    first.env("HAUL_EARLY_CUTOFF", "auto");
+    let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
+    assert!(!screen.contains("compiler driver"), "{}", screen);
+    let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+    let compiled: Vec<Value> = fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["kind"] == "compile").collect();
+    assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+}
+
+#[test]
 fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     let sb = Sandbox::new("driver-background");
     let p = sb.package("p", "p");
