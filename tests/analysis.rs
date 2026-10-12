@@ -27,7 +27,7 @@ fn report_follows_the_versioned_contract() {
     let sb = Sandbox::new("contract");
     let ws = sb.workspace("ws");
     let sidecar = sb.dir.join("out/{session}.json");
-    ok(sb.cargo(&ws).arg("build").env("HAUL_REPORT", &sidecar));
+    ok(sb.cargo(&ws).arg("build").env("QRUST_REPORT", &sidecar));
     let files = tree(&sb.dir.join("out"));
     assert_eq!(files.len(), 1, "exactly one sidecar, named after the session: {:?}", files);
     let r: Value = serde_json::from_slice(&fs::read(sb.dir.join("out").join(&files[0])).unwrap()).unwrap();
@@ -69,8 +69,8 @@ fn report_follows_the_versioned_contract() {
     assert!(!text.contains(sb.dir.to_str().unwrap()), "the sandbox path leaked into the exported report");
     assert!(!text.contains(&std::env::var("HOME").unwrap()), "the home directory leaked into the exported report");
     // DATA-001: the stored report is immutable; asking again returns the same bytes.
-    let a = ok(sb.haul(&ws).args(["report", "--format", "json"]));
-    let b = ok(sb.haul(&ws).args(["report", "--format", "json"]));
+    let a = ok(sb.qrust(&ws).args(["report", "--format", "json"]));
+    let b = ok(sb.qrust(&ws).args(["report", "--format", "json"]));
     assert_eq!(a.stdout, b.stdout);
     assert_eq!(serde_json::from_slice::<Value>(&a.stdout).unwrap()["run"]["id"], r["run"]["id"]);
 }
@@ -99,7 +99,7 @@ fn rebuild_causes_are_classified_from_evidence() {
     assert!(r["rebuilds"]["units"][0]["detail"].as_str().unwrap().contains("[] → [extra]"));
 
     // Flags from the environment.
-    ok(sb.cargo(&ws).args(["build", "-p", "util"]).env("RUSTFLAGS", "--cfg haul_test_flag"));
+    ok(sb.cargo(&ws).args(["build", "-p", "util"]).env("RUSTFLAGS", "--cfg qrust_test_flag"));
     assert_eq!(reasons(&sb.report(&ws, "latest")), vec![("util".into(), "lib".into(), "rustflags".into())]);
 
     // Profile change.
@@ -118,7 +118,7 @@ fn rebuild_causes_are_classified_from_evidence() {
     assert!(touched["detail"].as_str().unwrap().contains("timestamp-only"), "{}", touched["detail"]);
 
     // The duplication view now knows util in several variants, with their causes.
-    let dup = json_out(sb.haul(&ws).args(["analyze", "duplication", "--format", "json"]));
+    let dup = json_out(sb.qrust(&ws).args(["analyze", "duplication", "--format", "json"]));
     let util_group = dup["variants"].as_array().unwrap().iter().find(|g| g["package"] == "util").expect("util variants are reported");
     let causes = util_group["causes"].to_string();
     assert!(causes.contains("feature-set") && causes.contains("profile"), "{}", causes);
@@ -130,16 +130,16 @@ fn toolchain_change_is_reported_as_compiler_drift() {
     let sb = Sandbox::new("drift");
     let p = sb.package("p", "p");
     // A second compiler: a pinned release, installed once into the suites' toolchain store.
-    ok(sb.haul(&p).args(["toolchain", "install", "1.80.0", "--profile", "minimal"]));
+    ok(sb.qrust(&p).args(["toolchain", "install", "1.80.0", "--profile", "minimal"]));
     ok(sb.cargo(&p).args(["check", "--lib"]));
     ok(sb.cargo(&p).args(["+1.80.0", "check", "--lib"]));
     let r = sb.report(&p, "latest");
     assert_eq!(reasons(&r), vec![("p".into(), "lib".into(), "compiler".into())]);
     // FR-160 acceptance: comparing the two runs states the compiler difference before any delta.
-    let cmp = json_out(sb.haul(&p).args(["compare", "latest~1", "latest", "--format", "json"]));
+    let cmp = json_out(sb.qrust(&p).args(["compare", "latest~1", "latest", "--format", "json"]));
     assert_eq!(cmp["comparability"]["state"], "incomparable");
     assert!(cmp["comparability"]["differences"].as_array().unwrap().iter().any(|d| d["what"] == "compiler version"));
-    let text = stdout(&ok(sb.haul(&p).args(["compare", "latest~1", "latest"])));
+    let text = stdout(&ok(sb.qrust(&p).args(["compare", "latest~1", "latest"])));
     let (diff_at, table_at) = (text.find("compiler version").unwrap(), text.find("METRIC").unwrap());
     assert!(diff_at < table_at, "environment differences must precede the deltas:\n{}", text);
 }
@@ -167,7 +167,7 @@ fn build_script_without_rerun_directives_is_flagged_after_it_reruns() {
     assert_eq!(rec["impact"]["avoidable_time_ns"], script["duration_ns"]);
     // AC-017: the preview changes nothing in the repository.
     let before = tree(&ws);
-    let text = stdout(&ok(sb.haul(&ws).args(["fix", "--dry-run"])));
+    let text = stdout(&ok(sb.qrust(&ws).args(["fix", "--dry-run"])));
     assert!(text.contains("guidance-only") && text.contains("rerun-if-changed"), "{}", text);
     assert_eq!(tree(&ws), before);
 }
@@ -184,13 +184,13 @@ fn secrets_never_reach_reports_or_state() {
         .env("CARGO_REGISTRIES_INTERNAL_TOKEN", secrets[0])
         .env("SCCACHE_REDIS", format!("redis://user:{}@cache.invalid", secrets[1]))
         .env("AWS_SECRET_ACCESS_KEY", secrets[2])
-        .env("HAUL_REPORT", &sidecar));
+        .env("QRUST_REPORT", &sidecar));
     let mut haystack = vec![fs::read_to_string(&sidecar).unwrap()];
     for f in tree(&sb.home) {
         haystack.push(String::from_utf8_lossy(&fs::read(sb.home.join(&f)).unwrap()).into_owned());
     }
-    haystack.push(stdout(&ok(sb.haul(&p).args(["report"]))));
-    haystack.push(stdout(&ok(sb.haul(&p).args(["report", "--format", "html"]))));
+    haystack.push(stdout(&ok(sb.qrust(&p).args(["report"]))));
+    haystack.push(stdout(&ok(sb.qrust(&p).args(["report", "--format", "html"]))));
     for s in secrets {
         assert!(haystack.iter().all(|h| !h.contains(s)), "secret {} was persisted or printed", s);
     }
@@ -205,39 +205,39 @@ fn budgets_gate_ci_without_touching_cargo_output() {
     let sb = Sandbox::new("budgets");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
-    let set = stdout(&ok(sb.haul(&p).args(["baseline", "set", "main"])));
+    let set = stdout(&ok(sb.qrust(&p).args(["baseline", "set", "main"])));
     assert!(set.contains("Baseline `main` set"));
-    let baseline: Value = serde_json::from_slice(&fs::read(p.join(".haul/baselines/main.json")).unwrap()).unwrap();
+    let baseline: Value = serde_json::from_slice(&fs::read(p.join(".qrust/baselines/main.json")).unwrap()).unwrap();
     assert_eq!(baseline["baseline"]["name"], "main");
-    assert!(!fs::read_to_string(p.join(".haul/baselines/main.json")).unwrap().contains(sb.dir.to_str().unwrap()), "a committed baseline must not embed local paths");
+    assert!(!fs::read_to_string(p.join(".qrust/baselines/main.json")).unwrap().contains(sb.dir.to_str().unwrap()), "a committed baseline must not embed local paths");
 
     // No budget file yet: an explicit error, not a silent pass.
-    let missing = run(sb.haul(&p).args(["ci", "evaluate"]));
+    let missing = run(sb.qrust(&p).args(["ci", "evaluate"]));
     assert_eq!(missing.status.code(), Some(2));
     assert!(stderr(&missing).contains("budgets.toml"));
 
     // A generous relative budget passes against the baseline taken from this very run.
-    sb.file("p/.haul/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-increase-percent = 50\n\n[[budget]]\nmetric = \"artifact_allocated_bytes\"\nmax-value = \"10GiB\"\n");
-    let pass = ok(sb.haul(&p).args(["ci", "evaluate", "--format", "json"]));
+    sb.file("p/.qrust/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-increase-percent = 50\n\n[[budget]]\nmetric = \"artifact_allocated_bytes\"\nmax-value = \"10GiB\"\n");
+    let pass = ok(sb.qrust(&p).args(["ci", "evaluate", "--format", "json"]));
     assert_eq!(serde_json::from_slice::<Value>(&pass.stdout).unwrap()["result"], "pass");
 
     // An impossible absolute budget fails with the policy exit status.
-    sb.file("p/.haul/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
-    let fail = run(sb.haul(&p).args(["ci", "evaluate"]));
+    sb.file("p/.qrust/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
+    let fail = run(sb.qrust(&p).args(["ci", "evaluate"]));
     assert_eq!(fail.status.code(), Some(3), "{}", stdout(&fail));
     assert!(stdout(&fail).contains("Budget result: FAIL"));
     // Warn-only rollout: same violation, reported, not blocking.
-    sb.file("p/.haul/budgets.toml", "[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
-    let warn = ok(sb.haul(&p).args(["ci", "evaluate", "--format", "json"]));
+    sb.file("p/.qrust/budgets.toml", "[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
+    let warn = ok(sb.qrust(&p).args(["ci", "evaluate", "--format", "json"]));
     assert_eq!(serde_json::from_slice::<Value>(&warn.stdout).unwrap()["result"], "warn");
 
     // Enforcement on the ordinary cargo invocation: nonzero policy status, JSON stdout untouched.
-    sb.file("p/.haul/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
-    sb.file("p/.haul/config.toml", "[ci]\nenforce-on-build = true\n");
+    sb.file("p/.qrust/budgets.toml", "[policy]\nmode = \"blocking\"\n\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ns\"\n");
+    sb.file("p/.qrust/config.toml", "[ci]\nenforce-on-build = true\n");
     fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
     let gated = run(sb.cargo(&p).args(["build", "--message-format=json"]));
     assert_eq!(gated.status.code(), Some(3), "{}", stderr(&gated));
-    assert!(stderr(&gated).contains("haul: budget fail"), "{}", stderr(&gated));
+    assert!(stderr(&gated).contains("qrust: budget fail"), "{}", stderr(&gated));
     for line in stdout(&gated).lines() {
         let v: Value = serde_json::from_str(line).expect("stdout stays pure Cargo JSON");
         assert!(v["reason"].is_string());
@@ -254,7 +254,7 @@ fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
     let sb = Sandbox::new("gc");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
-    let inv = json_out(sb.haul(&ws).args(["inventory", "--format", "json"]));
+    let inv = json_out(sb.qrust(&ws).args(["inventory", "--format", "json"]));
     let root = &inv["build_directories"][0];
     let cats = root["categories"].as_object().unwrap();
     for c in ["final", "dependency", "metadata", "incremental", "fingerprint", "build-script-binary", "build-script-output", "proc-macro"] {
@@ -273,7 +273,7 @@ fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
         fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
     }
     let before = tree(&sb.target_dir(&ws));
-    let plan = json_out(sb.haul(&ws).args(["inventory", "--format", "json", "--max-size", "1KiB"]));
+    let plan = json_out(sb.qrust(&ws).args(["inventory", "--format", "json", "--max-size", "1KiB"]));
     let p = &plan["build_directories"][0]["gc_plan"];
     let groups: Vec<&str> = p["candidates"].as_array().unwrap().iter().map(|c| c["group"].as_str().unwrap()).collect();
     assert_eq!(groups, vec!["unit:gone-0123456789abcdef"], "only the stale unit; live units and unknown files are never candidates");
@@ -281,32 +281,32 @@ fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
     assert_eq!(p["size_budget"]["met_by_plan"], false, "the plan says so when stale output alone does not reach the budget");
     assert!(plan["build_directories"][0]["reclaimability"]["uncertain"]["logical_bytes"].as_u64().unwrap() >= 50_000);
     assert_eq!(tree(&sb.target_dir(&ws)), before, "dry-run deleted something");
-    let text = stdout(&ok(sb.haul(&ws).arg("inventory")));
+    let text = stdout(&ok(sb.qrust(&ws).arg("inventory")));
     assert!(text.contains("estimated reclaimable") && text.contains("Nothing was deleted"), "{}", text);
     assert_eq!(tree(&sb.target_dir(&ws)), before);
 }
 
 #[test]
-fn what_haul_starts_in_the_background_is_haul_whatever_name_it_runs_by() {
-    // On Windows Haul's `cargo` is a hard link, and the running binary's path names it
+fn what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_by() {
+    // On Windows QuickRust's `cargo` is a hard link, and the running binary's path names it
     // `cargo.exe`; a hard link here makes the same so. It is made beside the binary (a link must
     // be on its filesystem); writing a copy instead could leave it busy for a parallel test's
     // fork when it is run.
     let sb = Sandbox::new("itself");
     let p = sb.package("p", "p");
-    let linked = std::path::Path::new(env!("CARGO_BIN_EXE_haul")).with_file_name(format!("as-cargo-{}", std::process::id()));
+    let linked = std::path::Path::new(env!("CARGO_BIN_EXE_qrust")).with_file_name(format!("as-cargo-{}", std::process::id()));
     let _ = fs::remove_dir_all(&linked);
     fs::create_dir_all(&linked).unwrap();
     let cargo = linked.join("cargo");
-    fs::hard_link(env!("CARGO_BIN_EXE_haul"), &cargo).unwrap();
+    fs::hard_link(env!("CARGO_BIN_EXE_qrust"), &cargo).unwrap();
     // A cache last counted long ago: the build starts a collection.
-    sb.file("haul-home/cache/usage.json", r#"{"format": 1, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0}"#);
+    sb.file("qrust-home/cache/usage.json", r#"{"format": 1, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0}"#);
     ok(sb.with_shim(&cargo.display().to_string(), &p).arg("build"));
     // The collection counts the cache when it is done (a command only records that it never was).
     let usage = sb.home.join("cache/usage.json");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     while !fs::read(&usage).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).is_some_and(|u| u["counted"] == json!(true)) {
-        assert!(std::time::Instant::now() < deadline, "no collection ran as Haul; its log: {:?}", fs::read_to_string(sb.home.join("cache/gc.log")));
+        assert!(std::time::Instant::now() < deadline, "no collection ran as QuickRust; its log: {:?}", fs::read_to_string(sb.home.join("cache/gc.log")));
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     let commands: Vec<String> = sb.sessions().iter().map(|s| s["command"]["argv"].to_string()).collect();
@@ -315,7 +315,7 @@ fn what_haul_starts_in_the_background_is_haul_whatever_name_it_runs_by() {
 }
 
 #[test]
-fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
+fn quickrusts_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
     let sb = Sandbox::new("collect");
     let (a, b, c) = (sb.package("a", "a"), sb.package("b", "b"), sb.package("c", "c"));
     for p in [&a, &b, &c] {
@@ -324,7 +324,7 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
     let (ta, tb, tc) = (sb.target_dir(&a), sb.target_dir(&b), sb.target_dir(&c));
     // A collection first: it waits for one the builds started in the background, and counts the
     // cache, so that no other starts before the ones this test runs.
-    ok(sb.haul(&a).arg("gc"));
+    ok(sb.qrust(&a).arg("gc"));
     // b was last used three hours ago, a two; c just now. The workspace of the third is deleted.
     let backdate = |t: &std::path::Path, hours: u64| {
         let meta = t.with_file_name(format!("{}.json", t.file_name().unwrap().to_string_lossy()));
@@ -342,29 +342,29 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
     fs::remove_dir_all(&gone).unwrap();
     assert!(tg.exists());
     // Within bounds: only the build directory of the workspace that is gone goes.
-    let plain = json_out(sb.haul(&a).args(["gc", "--format", "json"]));
+    let plain = json_out(sb.qrust(&a).args(["gc", "--format", "json"]));
     assert!(!tg.exists() && ta.exists() && tb.exists() && tc.exists(), "{}", plain);
     assert!(plain["removed"].as_array().unwrap().iter().any(|r| r["why"].as_str().unwrap().contains("is gone")));
     // Down to almost nothing: the least recently used first; the one just used stays.
-    let dry = json_out(sb.haul(&a).args(["gc", "--dry-run", "--to", "1", "--format", "json"]));
+    let dry = json_out(sb.qrust(&a).args(["gc", "--dry-run", "--to", "1", "--format", "json"]));
     assert!(ta.exists() && tb.exists(), "a dry run removes nothing");
     let paths = |v: &Value| -> Vec<String> { v["removed"].as_array().unwrap().iter().filter(|r| r["kind"] == "build directories").map(|r| r["path"].as_str().unwrap().to_string()).collect() };
     assert_eq!(paths(&dry), [tb.display().to_string(), ta.display().to_string()]);
-    let done = json_out(sb.haul(&a).args(["gc", "--to", "1", "--format", "json"]));
+    let done = json_out(sb.qrust(&a).args(["gc", "--to", "1", "--format", "json"]));
     assert_eq!(paths(&done), paths(&dry));
     assert!(!ta.exists() && !tb.exists() && tc.exists());
     assert!(done["skipped_in_use"].as_u64().unwrap() >= 1);
     // A removed directory is simply built again.
     ok(sb.cargo(&a).arg("build"));
     assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "3\n");
-    let status = stdout(&ok(sb.haul(&a).args(["cache", "status"])));
-    assert!(status.contains("Haul's cache:") && status.contains("build directories"), "{}", status);
+    let status = stdout(&ok(sb.qrust(&a).args(["cache", "status"])));
+    assert!(status.contains("QuickRust's cache:") && status.contains("build directories"), "{}", status);
     // When, as people say it.
     assert!(status.lines().any(|l| l.trim_start().starts_with("collected") && (l.contains("just now ·") || l.contains(" ago ·"))), "{}", status);
 }
 
 #[test]
-fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_short() {
+fn crates_download_into_quickrusts_cargo_home_and_cargo_collects_them_when_space_is_short() {
     let sb = Sandbox::new("registry-gc");
     let reg = common::registry::Registry::start();
     reg.publish(&common::registry::Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello from the registry\"\n}\n"));
@@ -377,18 +377,18 @@ fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_s
     let downloads = || reg.requests().iter().filter(|r| r.starts_with("/dl/greet")).count();
     assert_eq!(downloads(), 1);
     let sources = |h: &std::path::Path| fs::read_dir(h.join("registry/src")).map(|d| d.flatten().flat_map(|i| fs::read_dir(i.path()).into_iter().flatten().flatten()).count()).unwrap_or(0);
-    assert_eq!(sources(&sb.cargo_home()), 1, "Haul's Cargo home holds the source");
+    assert_eq!(sources(&sb.cargo_home()), 1, "QuickRust's Cargo home holds the source");
     // Within bounds, nothing of the downloads goes (they were just used).
-    let plain = json_out(sb.haul(&p).args(["gc", "--format", "json"]));
+    let plain = json_out(sb.qrust(&p).args(["gc", "--format", "json"]));
     assert!(plain["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", plain);
     assert_eq!(sources(&sb.cargo_home()), 1);
     // Down to nothing, what was just used still stays: downloads like the build directory.
-    let tight = json_out(sb.haul(&p).args(["gc", "--to", "1", "--format", "json"]));
+    let tight = json_out(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"]));
     assert!(tight["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", tight);
     assert_eq!(sources(&sb.cargo_home()), 1);
     // An hour later by Cargo's clock (which Cargo's own tests move) and for the downloads' files
     // (whose times say what is old enough to look at), Cargo removes them; the build directory,
-    // by Haul's clock, stays.
+    // by QuickRust's clock, stays.
     let hour_later = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3_600).to_string();
     let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
     for dir in ["registry/cache", "registry/src"] {
@@ -398,7 +398,7 @@ fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_s
             }
         }
     }
-    let later = json_out(sb.haul(&p).args(["gc", "--to", "1", "--format", "json"]).env("__CARGO_TEST_LAST_USE_NOW", &hour_later));
+    let later = json_out(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"]).env("__CARGO_TEST_LAST_USE_NOW", &hour_later));
     let by_cargo = later["removed"].as_array().unwrap().iter().find(|r| r["kind"] == "crate and git downloads").unwrap_or_else(|| panic!("{}", later));
     assert!(by_cargo["bytes"].as_u64().unwrap() > 0 && by_cargo["why"].as_str().unwrap().starts_with("Cargo: Removed "), "{}", by_cargo);
     assert_eq!(sources(&sb.cargo_home()), 0);
@@ -410,7 +410,7 @@ fn crates_download_into_hauls_cargo_home_and_cargo_collects_them_when_space_is_s
 }
 
 #[test]
-fn every_command_speaks_hauls_language_in_a_terminal() {
+fn every_command_speaks_quickrusts_language_in_a_terminal() {
     use common::registry::{Crate, Registry};
     let sb = Sandbox::new("screens");
     let reg = Registry::start();
@@ -455,13 +455,13 @@ fn the_stale_plan_is_blocked_while_a_build_is_running() {
     while !marker.exists() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    let during = json_out(sb.haul(&p).args(["inventory", "--format", "json"]));
+    let during = json_out(sb.qrust(&p).args(["inventory", "--format", "json"]));
     assert!(build.wait().unwrap().success());
     let plan = &during["build_directories"][0];
     assert!(plan["gc_plan"]["blocked_by"].is_string(), "{}", plan["gc_plan"]);
     assert_eq!(plan["gc_plan"]["reclaimable_now_bytes"], 0);
-    assert!(plan["active"]["cargo_lock_held"] == true || !plan["active"]["haul_sessions"].as_array().unwrap().is_empty());
-    let after = json_out(sb.haul(&p).args(["inventory", "--format", "json"]));
+    assert!(plan["active"]["cargo_lock_held"] == true || !plan["active"]["qrust_sessions"].as_array().unwrap().is_empty());
+    let after = json_out(sb.qrust(&p).args(["inventory", "--format", "json"]));
     assert!(after["build_directories"][0]["gc_plan"]["blocked_by"].is_null());
     assert!(after["build_directories"][0]["gc_plan"]["reclaimable_now_bytes"].as_u64().unwrap() >= 100_000);
 }
@@ -482,7 +482,7 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     ok(sb.cargo(&ws).arg("build"));
     let user_target = tree(&sb.target_dir(&ws));
 
-    let b = json_out(sb.haul(&ws).args(["benchmark", "--scenario", "no-change", "--reps", "2", "--warmups", "0", "--format", "json"]));
+    let b = json_out(sb.qrust(&ws).args(["benchmark", "--scenario", "no-change", "--reps", "2", "--warmups", "0", "--format", "json"]));
     assert_eq!(b["state"], "complete", "{}", b);
     assert_eq!((b["samples_valid"].as_u64(), b["samples_discarded"].as_u64()), (Some(2), Some(0)));
     assert_eq!(b["summary"]["samples"]["wall_time_ns"].as_array().unwrap().len(), 2, "raw samples are retained");
@@ -491,16 +491,16 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     let phases: Vec<&str> = b["runs"].as_array().unwrap().iter().map(|r| r["phase"].as_str().unwrap()).collect();
     assert_eq!(phases, ["prime", "measured", "measured"]);
     let now = tree(&sb.target_dir(&ws));
-    assert_eq!(now.iter().filter(|f| !f.starts_with("haul-bench/")).collect::<Vec<_>>(), user_target.iter().collect::<Vec<_>>(), "the user's own build output is untouched");
-    assert!(now.iter().any(|f| f.starts_with("haul-bench/no-change-default/")));
+    assert_eq!(now.iter().filter(|f| !f.starts_with("qrust-bench/")).collect::<Vec<_>>(), user_target.iter().collect::<Vec<_>>(), "the user's own build output is untouched");
+    assert!(now.iter().any(|f| f.starts_with("qrust-bench/no-change-default/")));
 
     // Without permission and without a terminal, the edit scenario refuses and edits nothing.
-    let refused = run(sb.haul(&ws).args(["benchmark", "--scenario", "small-edit", "--edit", "util/src/lib.rs", "--reps", "1", "--warmups", "0"]));
+    let refused = run(sb.qrust(&ws).args(["benchmark", "--scenario", "small-edit", "--edit", "util/src/lib.rs", "--reps", "1", "--warmups", "0"]));
     assert_eq!(refused.status.code(), Some(2));
     assert!(stderr(&refused).contains("--allow-mutation"));
     assert_eq!(fs::read(&lib).unwrap(), original);
 
-    let e = json_out(sb.haul(&ws).args(["benchmark", "--scenario", "small-edit", "--edit", "util/src/lib.rs", "--allow-mutation", "--reps", "2", "--warmups", "0", "--format", "json"]));
+    let e = json_out(sb.qrust(&ws).args(["benchmark", "--scenario", "small-edit", "--edit", "util/src/lib.rs", "--allow-mutation", "--reps", "2", "--warmups", "0", "--format", "json"]));
     assert_eq!(e["state"], "complete", "{}", e);
     assert_eq!(e["mutation"]["restored"], true);
     assert_eq!(fs::read(&lib).unwrap(), original, "the edited file is restored byte for byte, uncommitted change included");
@@ -508,13 +508,13 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     assert!(tree(&sb.home).iter().all(|f| !f.contains("/restore/")), "the restore journal is gone after a clean finish");
     // Files outside the workspace are never edited.
     let outside = sb.file("outside.rs", "fn x() {}\n");
-    let out = run(sb.haul(&ws).args(["benchmark", "--scenario", "small-edit", "--allow-mutation", "--edit"]).arg(&outside));
+    let out = run(sb.qrust(&ws).args(["benchmark", "--scenario", "small-edit", "--allow-mutation", "--edit"]).arg(&outside));
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("outside the workspace"));
 
     // Baselines can be promoted from a benchmark and compared against.
-    ok(sb.haul(&ws).args(["baseline", "set", "edit-loop", "--benchmark", e["id"].as_str().unwrap()]));
-    let cmp = json_out(sb.haul(&ws).args(["compare", "baseline:edit-loop", &format!("benchmark:{}", e["id"].as_str().unwrap()), "--format", "json"]));
+    ok(sb.qrust(&ws).args(["baseline", "set", "edit-loop", "--benchmark", e["id"].as_str().unwrap()]));
+    let cmp = json_out(sb.qrust(&ws).args(["compare", "baseline:edit-loop", &format!("benchmark:{}", e["id"].as_str().unwrap()), "--format", "json"]));
     assert_eq!(cmp["comparability"]["state"], "comparable");
     let wall = cmp["metrics"].as_array().unwrap().iter().find(|m| m["metric"] == "wall_time_ns").unwrap();
     assert_eq!(wall["delta"], 0);
@@ -524,14 +524,14 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
 fn clean_scenario_and_failed_builds() {
     let sb = Sandbox::new("benchclean");
     let p = sb.package("p", "p");
-    let b = json_out(sb.haul(&p).args(["benchmark", "--scenario", "clean", "--reps", "2", "--warmups", "0", "--format", "json"]));
+    let b = json_out(sb.qrust(&p).args(["benchmark", "--scenario", "clean", "--reps", "2", "--warmups", "0", "--format", "json"]));
     assert_eq!(b["state"], "complete");
     assert_eq!(b["summary"]["metrics"]["units_compiled"], 2, "every repetition of a clean build compiles everything");
     assert_eq!(b["summary"]["scenario"]["cache_state"], "cold");
     assert!(!sb.target_dir(&p).join("debug").exists(), "a benchmark does not build into the user's own profile directory");
     // A build failure makes the benchmark invalid, never a fast sample.
     fs::write(p.join("src/lib.rs"), "does not compile\n").unwrap();
-    let out = run(sb.haul(&p).args(["benchmark", "--scenario", "clean", "--reps", "1", "--warmups", "0", "--format", "json"]));
+    let out = run(sb.qrust(&p).args(["benchmark", "--scenario", "clean", "--reps", "1", "--warmups", "0", "--format", "json"]));
     assert_eq!(out.status.code(), Some(1));
     let failed: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(failed["state"], "invalid");
@@ -548,7 +548,7 @@ fn experiment_rejects_a_candidate_that_fails_verification() {
     ok(sb.upstream(&p).arg("generate-lockfile"));
     let before = tree(&p).into_iter().filter(|f| !f.starts_with("target/")).collect::<Vec<_>>();
     let common = ["--scenario", "no-change", "--reps", "1", "--warmups", "0", "--verify", "test", "--format", "json"];
-    let bad = run(sb.haul(&p).args(["experiment", "--name", "no-asserts", "--set", "profile.dev.debug-assertions=false"]).args(common).args(["--", "build"]));
+    let bad = run(sb.qrust(&p).args(["experiment", "--name", "no-asserts", "--set", "profile.dev.debug-assertions=false"]).args(common).args(["--", "build"]));
     let r: Value = serde_json::from_slice(&bad.stdout).unwrap_or_else(|_| panic!("{}", stderr(&bad)));
     assert_eq!(r["status"], "invalid", "{}", r["reason"]);
     assert_eq!((r["verification"]["performed"].as_bool(), r["verification"]["passed"].as_bool()), (Some(true), Some(false)));
@@ -556,7 +556,7 @@ fn experiment_rejects_a_candidate_that_fails_verification() {
     assert_eq!(bad.status.code(), Some(1));
 
     // A candidate that passes verification reports build and runtime dimensions separately.
-    let good = json_out(sb.haul(&p).args(["experiment", "codegen", "--codegen-units", "4"]).args(common).args(["--", "build"]));
+    let good = json_out(sb.qrust(&p).args(["experiment", "codegen", "--codegen-units", "4"]).args(common).args(["--", "build"]));
     assert_eq!(good["verification"]["passed"], true);
     assert!(matches!(good["status"].as_str(), Some("verified" | "inconclusive")), "{}", good["status"]);
     assert_eq!(good["candidate_settings"]["cargo_config"], json!(["profile.dev.codegen-units=4"]));
@@ -565,7 +565,7 @@ fn experiment_rejects_a_candidate_that_fails_verification() {
     // The overlay was ephemeral: no file in the repository changed.
     assert_eq!(tree(&p).into_iter().filter(|f| !f.starts_with("target/")).collect::<Vec<_>>(), before);
     // An experiment without a candidate setting is an error, not a self-comparison.
-    assert_eq!(run(sb.haul(&p).args(["experiment", "--", "build"])).status.code(), Some(2));
+    assert_eq!(run(sb.qrust(&p).args(["experiment", "--", "build"])).status.code(), Some(2));
 }
 
 #[test]
@@ -586,7 +586,7 @@ fn worktrees_report_identical_units_built_twice() {
     git(&repo, &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "feature"]);
     ok(sb.cargo(&repo).arg("build"));
     ok(sb.cargo(&wt).arg("build"));
-    let w = json_out(sb.haul(&repo).args(["analyze", "worktrees", "--format", "json"]));
+    let w = json_out(sb.qrust(&repo).args(["analyze", "worktrees", "--format", "json"]));
     let other = w["others"].as_array().unwrap().iter().find(|o| o["root"].as_str().unwrap().ends_with("repo-feature")).expect("the linked worktree is found");
     assert_eq!(other["same_repository"], true);
     assert_eq!(other["state"], "isolated");
@@ -598,14 +598,14 @@ fn worktrees_report_identical_units_built_twice() {
     // Once the branches diverge, only the third-party unit is still the same work done twice.
     fs::write(wt.join("src/lib.rs"), "pub fn f() -> u32 { shared::add(2, 2) }\n").unwrap();
     ok(sb.cargo(&wt).arg("build"));
-    let w = json_out(sb.haul(&repo).args(["analyze", "worktrees", "--format", "json"]));
+    let w = json_out(sb.qrust(&repo).args(["analyze", "worktrees", "--format", "json"]));
     let other = w["others"].as_array().unwrap().iter().find(|o| o["root"].as_str().unwrap().ends_with("repo-feature")).unwrap();
     assert_eq!(other["sample"], json!(["shared@0.1.0"]), "a unit with different source content is not a duplicate");
     assert_eq!(w["summary"]["duplicate_units"], 1);
     // FR-120.3: the advice never proposes one shared writable target directory.
     let advice = w["advice"].to_string();
     assert!(advice.contains("sccache") && advice.contains("does not point several worktrees at one writable target directory"), "{}", advice);
-    let text = stdout(&ok(sb.haul(&repo).args(["analyze", "worktrees"])));
+    let text = stdout(&ok(sb.qrust(&repo).args(["analyze", "worktrees"])));
     assert!(text.contains("potential cross-worktree reuse: 1 unit(s)"), "{}", text);
 }
 
@@ -634,11 +634,11 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
     }
     let _stop = StopServer(sb.dir.join("sccache-cache"), port);
 
-    sb.file("ws/.haul/config.toml", "[cache]\nprovider = \"sccache\"\n");
+    sb.file("ws/.qrust/config.toml", "[cache]\nprovider = \"sccache\"\n");
     let mut build = sb.cargo(&ws);
     isolate(build.arg("build"));
     ok(&mut build);
-    let mut rep = sb.haul(&ws);
+    let mut rep = sb.qrust(&ws);
     isolate(rep.args(["report", "--format", "json"]));
     let r = json_out(&mut rep);
     assert_eq!(r["policy"]["cache"]["state"], "local");
@@ -660,16 +660,16 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
     assert_eq!(rec["alternatives"][0]["id"], "keep-incremental", "on a developer machine keeping incremental is the first alternative");
     assert!(rec["impact"].get("avoidable_time_ns").is_none());
 
-    // Preview the other alternative, apply it (a change to Haul's own config is `safe`), verify, roll back.
-    let mut fix = sb.haul(&ws);
+    // Preview the other alternative, apply it (a change to QuickRust's own config is `safe`), verify, roll back.
+    let mut fix = sb.qrust(&ws);
     isolate(fix.args(["fix", "--dry-run", "rec:cache-strategy:incremental-vs-sccache", "--option", "disable-incremental", "--format", "json"]));
     let preview = json_out(&mut fix);
-    assert_eq!((preview[0]["class"].as_str(), preview[0]["file"].as_str()), (Some("safe"), Some(".haul/config.toml")));
+    assert_eq!((preview[0]["class"].as_str(), preview[0]["file"].as_str()), (Some("safe"), Some(".qrust/config.toml")));
     assert!(preview[0]["diff"].as_str().unwrap().contains("+local-dev = \"off\""));
-    assert_eq!(fs::read_to_string(ws.join(".haul/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n", "the preview applied nothing");
+    assert_eq!(fs::read_to_string(ws.join(".qrust/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n", "the preview applied nothing");
     let id = preview[0]["id"].as_str().unwrap();
-    ok(sb.haul(&ws).args(["fix", "--apply", id]));
-    assert_eq!(fs::read_to_string(ws.join(".haul/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n\n[incremental]\nlocal-dev = \"off\"\n");
+    ok(sb.qrust(&ws).args(["fix", "--apply", id]));
+    assert_eq!(fs::read_to_string(ws.join(".qrust/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n\n[incremental]\nlocal-dev = \"off\"\n");
 
     // With the policy in place the change is recorded, units are no longer incremental, and a clean rebuild hits the cache.
     for _ in 0..2 {
@@ -678,17 +678,17 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
         isolate(b.arg("build"));
         ok(&mut b);
     }
-    let mut rep = sb.haul(&ws);
+    let mut rep = sb.qrust(&ws);
     isolate(rep.args(["report", "--format", "json"]));
     let r2 = json_out(&mut rep);
     let inc2 = &r2["policy"]["incremental"];
     assert_eq!((inc2["decision"].as_str(), inc2["applied_env"].as_str()), (Some("force-off"), Some("CARGO_INCREMENTAL=0")));
-    assert!(inc2["rationale"].as_str().unwrap().contains(".haul/config.toml"), "the decision names its origin: {}", inc2["rationale"]);
+    assert!(inc2["rationale"].as_str().unwrap().contains(".qrust/config.toml"), "the decision names its origin: {}", inc2["rationale"]);
     assert_eq!(inc2["sccache_conflict"], false);
     assert_eq!(inc2["observed"]["units_incremental"], 0);
     assert!(r2["cache"]["hits"].as_u64().unwrap() >= 2, "library units are served from the cache on the second clean build: {}", r2["cache"]);
     let text = {
-        let mut c = sb.haul(&ws);
+        let mut c = sb.qrust(&ws);
         isolate(c.args(["analyze", "cache"]));
         stdout(&ok(&mut c))
     };
@@ -701,8 +701,8 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
     assert_eq!(last["policy"]["incremental"]["decision"], "cargo-default");
     assert!(last["policy"]["incremental"]["rationale"].as_str().unwrap().contains("explicit CARGO_INCREMENTAL=1 is respected"));
 
-    ok(sb.haul(&ws).args(["fix", "--rollback", id]));
-    assert_eq!(fs::read_to_string(ws.join(".haul/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n");
+    ok(sb.qrust(&ws).args(["fix", "--rollback", id]));
+    assert_eq!(fs::read_to_string(ws.join(".qrust/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n");
 }
 
 #[test]
@@ -710,31 +710,31 @@ fn text_and_html_reports_render_every_section() {
     let sb = Sandbox::new("render");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
-    let text = stdout(&ok(sb.haul(&ws).arg("analyze")));
+    let text = stdout(&ok(sb.qrust(&ws).arg("analyze")));
     for heading in ["Timing", "Rebuild reasons", "Duplication", "Build scripts", "Procedural macros", "Codegen and linking", "Compiler cache", "Storage", "Recommendations"] {
         assert!(text.contains(heading), "section {} missing", heading);
     }
     assert!(text.contains("Proc-macro execution timing\n    Unavailable:"), "unavailable data is labelled as such");
     assert!(text.contains("Link phase timing\n    Unavailable:"));
-    ok(sb.haul(&ws).args(["report", "--format", "html", "-o", "report.html"]));
+    ok(sb.qrust(&ws).args(["report", "--format", "html", "-o", "report.html"]));
     let html = fs::read_to_string(ws.join("report.html")).unwrap();
     assert!(html.starts_with("<!doctype html>") && html.contains("<html lang=\"en\">"));
     assert!(html.contains("<caption>") && html.contains("<th scope=\"col\">") && !html.contains("<script"), "tables with headers, no scripts");
     for section in ["analyze timing", "analyze rebuilds", "analyze scripts", "analyze proc-macros", "analyze codegen", "analyze storage", "analyze recommendations", "runs", "inspect", "policy explain", "cache status"] {
-        ok(sb.haul(&ws).args(section.split(' ')));
+        ok(sb.qrust(&ws).args(section.split(' ')));
     }
-    assert_eq!(run(sb.haul(&ws).args(["analyze", "nonsense"])).status.code(), Some(2));
-    assert_eq!(run(sb.haul(&ws).args(["analyze", "--bogus-flag"])).status.code(), Some(2));
+    assert_eq!(run(sb.qrust(&ws).args(["analyze", "nonsense"])).status.code(), Some(2));
+    assert_eq!(run(sb.qrust(&ws).args(["analyze", "--bogus-flag"])).status.code(), Some(2));
 }
 
 #[test]
 fn analysis_without_any_run_explains_what_to_do() {
     let sb = Sandbox::new("norun");
     let p = sb.package("p", "p");
-    let out = run(sb.haul(&p).arg("analyze"));
+    let out = run(sb.qrust(&p).arg("analyze"));
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("no recorded build runs"), "{}", stderr(&out));
-    assert!(stdout(&ok(sb.haul(&p).arg("runs"))).contains("No recorded runs"));
+    assert!(stdout(&ok(sb.qrust(&p).arg("runs"))).contains("No recorded runs"));
 }
 
 #[test]
@@ -742,26 +742,26 @@ fn policy_explain_shows_each_setting_with_its_origin() {
     // CFG-001, CFG-002.
     let sb = Sandbox::new("policy");
     let p = sb.package("p", "p");
-    sb.file("p/.haul/config.toml", "[cache]\nfail = \"closed\"\n");
-    sb.file("haul-home/config.toml", "[artifacts]\nstale-days = 7\n");
-    let v = json_out(sb.haul(&p).args(["policy", "explain", "--format", "json"]).env("HAUL_INCREMENTAL_CI", "off").env("HAUL_REPORT", "r.json"));
+    sb.file("p/.qrust/config.toml", "[cache]\nfail = \"closed\"\n");
+    sb.file("qrust-home/config.toml", "[artifacts]\nstale-days = 7\n");
+    let v = json_out(sb.qrust(&p).args(["policy", "explain", "--format", "json"]).env("QRUST_INCREMENTAL_CI", "off").env("QRUST_REPORT", "r.json"));
     let get = |key: &str| v["settings"].as_array().unwrap().iter().find(|s| s["key"] == key).unwrap().clone();
-    assert_eq!((get("cache.fail")["value"].as_str(), get("cache.fail")["origin"].as_str()), (Some("\"closed\""), Some("$WORKSPACE/.haul/config.toml")));
+    assert_eq!((get("cache.fail")["value"].as_str(), get("cache.fail")["origin"].as_str()), (Some("\"closed\""), Some("$WORKSPACE/.qrust/config.toml")));
     assert_eq!(get("artifacts.stale-days")["value"], "7");
     assert!(get("artifacts.stale-days")["origin"].as_str().unwrap().ends_with("config.toml"));
-    assert_eq!(get("incremental.ci")["origin"], "env HAUL_INCREMENTAL_CI");
-    assert_eq!(get("measurement.report")["origin"], "env HAUL_REPORT");
+    assert_eq!(get("incremental.ci")["origin"], "env QRUST_INCREMENTAL_CI");
+    assert_eq!(get("measurement.report")["origin"], "env QRUST_REPORT");
     assert_eq!(get("cache.provider")["origin"], "default");
     // Repository settings override user settings; the environment overrides both.
-    sb.file("p/.haul/config.toml", "[artifacts]\nstale-days = 3\n");
-    let v2 = json_out(sb.haul(&p).args(["policy", "explain", "--format", "json"]));
+    sb.file("p/.qrust/config.toml", "[artifacts]\nstale-days = 3\n");
+    let v2 = json_out(sb.qrust(&p).args(["policy", "explain", "--format", "json"]));
     assert_eq!(v2["settings"].as_array().unwrap().iter().find(|s| s["key"] == "artifacts.stale-days").unwrap()["value"], "3");
-    let v3 = json_out(sb.haul(&p).args(["policy", "explain", "--format", "json"]).env("HAUL_ARTIFACTS_STALE_DAYS", "1"));
+    let v3 = json_out(sb.qrust(&p).args(["policy", "explain", "--format", "json"]).env("QRUST_ARTIFACTS_STALE_DAYS", "1"));
     assert_eq!(v3["settings"].as_array().unwrap().iter().find(|s| s["key"] == "artifacts.stale-days").unwrap()["value"], "1");
-    // A misspelt variable in Haul's namespace is an error rather than a silently ignored setting.
-    let bad = run(sb.haul(&p).args(["policy", "explain"]).env("HAUL_CACHE_PROVIDR", "sccache"));
+    // A misspelt variable in QuickRust's namespace is an error rather than a silently ignored setting.
+    let bad = run(sb.qrust(&p).args(["policy", "explain"]).env("QRUST_CACHE_PROVIDR", "sccache"));
     assert_eq!(bad.status.code(), Some(2));
-    assert!(stderr(&bad).contains("HAUL_CACHE_PROVIDR"));
+    assert!(stderr(&bad).contains("QRUST_CACHE_PROVIDR"));
 }
 
 #[test]
@@ -769,7 +769,7 @@ fn doctor_setup_and_uninstall() {
     // MIG-001, MIG-002.
     let sb = Sandbox::new("install");
     let p = sb.package("p", "p");
-    let doctor = stdout(&run(sb.haul(&p).arg("doctor")));
+    let doctor = stdout(&run(sb.qrust(&p).arg("doctor")));
     for item in ["set up             no", "active toolchain", "selected by: default toolchain", "  Cargo  ", "  rustc  ", "cargo home", "CARGO ", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "target directory", "build directory", "cache policy", "capabilities", "No problems found."] {
         assert!(doctor.contains(item), "doctor output lacks `{}`:\n{}", item, doctor);
     }
@@ -778,16 +778,16 @@ fn doctor_setup_and_uninstall() {
     sb.file("user/.cargo/credentials.toml", "[registries.corp]\ntoken = \"s3cret\"\n");
     sb.file("user/.cargo/config.toml", "[registries.corp]\nindex = \"sparse+https://corp.example/index/\"\n\n[build]\ntarget-dir = \"/elsewhere\"\n");
     sb.file("user/.bashrc", "export EDITOR=vi\n");
-    let setup = |extra: &[&str]| run(sb.haul(&p).arg("setup").args(["--toolchain", "none"]).args(extra).env("HOME", &home));
+    let setup = |extra: &[&str]| run(sb.qrust(&p).arg("setup").args(["--toolchain", "none"]).args(extra).env("HOME", &home));
     let out = setup(&[]);
     assert!(out.status.success(), "{}", stderr(&out));
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert!(said.contains("installed in") && said.contains("imported from") && said.contains("credentials, [registries]") && said.contains("not imported: [build]"), "{}", said);
     let bin = sb.home.join("bin");
-    assert_ne!(fs::canonicalize(bin.join("haul")).unwrap(), fs::canonicalize(env!("CARGO_BIN_EXE_haul")).unwrap(), "a copy of its own, not the binary setup ran from");
-    assert!(bin.join("haul-rustc-wrapper").is_file());
+    assert_ne!(fs::canonicalize(bin.join("qrust")).unwrap(), fs::canonicalize(env!("CARGO_BIN_EXE_qrust")).unwrap(), "a copy of its own, not the binary setup ran from");
+    assert!(bin.join("qrust-rustc-wrapper").is_file());
     for proxy in ["cargo", "rustc", "rustfmt", "cargo-clippy", "rust-analyzer"] {
-        assert_eq!(fs::read_link(bin.join(proxy)).unwrap(), std::path::Path::new("haul"), "{}", proxy);
+        assert_eq!(fs::read_link(bin.join(proxy)).unwrap(), std::path::Path::new("qrust"), "{}", proxy);
     }
     let cargo_home = sb.cargo_home();
     assert_eq!(fs::read_to_string(cargo_home.join("credentials.toml")).unwrap(), "[registries.corp]\ntoken = \"s3cret\"\n");
@@ -797,18 +797,18 @@ fn doctor_setup_and_uninstall() {
     }
     let config = fs::read_to_string(cargo_home.join("config.toml")).unwrap();
     assert!(config.contains("[registries.corp]") && config.contains("sparse+https://corp.example/index/") && !config.contains("target-dir"), "{}", config);
-    // The shell startup files source Haul's environment, which puts its bin first.
+    // The shell startup files source QuickRust's environment, which puts its bin first.
     for f in [".profile", ".bashrc"] {
-        assert_eq!(fs::read_to_string(home.join(f)).unwrap().matches("haul-home/env\"").count(), 1, "{}", f);
+        assert_eq!(fs::read_to_string(home.join(f)).unwrap().matches("qrust-home/env\"").count(), 1, "{}", f);
     }
     assert!(fs::read_to_string(home.join(".bashrc")).unwrap().starts_with("export EDITOR=vi\n"));
     let path = stdout(&ok(std::process::Command::new("sh").arg("-c").arg(". \"$1\"; printf %s \"$PATH\"").arg("sh").arg(sb.home.join("env")).env("HOME", &home).env("PATH", "/usr/bin:/bin")));
     assert!(path.starts_with(&format!("{}:", bin.display())), "{}", path);
-    // Haul as cargo, through the installed proxy.
-    let via = run(std::process::Command::new(bin.join("cargo")).current_dir(&p).arg("--version").env("HAUL_HOME", &sb.home).env("PATH", &path));
+    // QuickRust as cargo, through the installed proxy.
+    let via = run(std::process::Command::new(bin.join("cargo")).current_dir(&p).arg("--version").env("QRUST_HOME", &sb.home).env("PATH", &path));
     assert!(stdout(&via).starts_with("cargo 1."), "{}", stderr(&via));
     // Doctor sees the setup, and that its bin is not first on this test's PATH.
-    let doctor = run(sb.haul(&p).arg("doctor"));
+    let doctor = run(sb.qrust(&p).arg("doctor"));
     assert_eq!(doctor.status.code(), Some(1));
     assert!(stdout(&doctor).contains("its bin is NOT first on PATH"), "{}", stdout(&doctor));
     // Again: repairs, never imports twice or edits a file twice.
@@ -820,47 +820,47 @@ fn doctor_setup_and_uninstall() {
     assert!(stdout(&again).contains("PATH: already set up"), "{}", stdout(&again));
     assert!(bin.join("rustc").exists());
     assert_eq!(fs::read_to_string(cargo_home.join("credentials.toml")).unwrap(), "[registries.corp]\ntoken = \"s3cret\"\n");
-    assert_eq!(fs::read_to_string(home.join(".profile")).unwrap().matches("haul-home/env\"").count(), 1);
+    assert_eq!(fs::read_to_string(home.join(".profile")).unwrap().matches("qrust-home/env\"").count(), 1);
     // Something of someone else's where a proxy goes is never replaced.
     fs::remove_file(bin.join("rustfmt")).unwrap();
     fs::write(bin.join("rustfmt"), "#!/bin/sh\necho theirs\n").unwrap();
     let refused = setup(&[]);
     assert_eq!(refused.status.code(), Some(2));
-    assert!(stderr(&refused).contains("is not Haul"), "{}", stderr(&refused));
+    assert!(stderr(&refused).contains("is not QuickRust"), "{}", stderr(&refused));
     assert_eq!(fs::read_to_string(bin.join("rustfmt")).unwrap(), "#!/bin/sh\necho theirs\n");
-    // Uninstalling needs --yes, then removes Haul's home (not what its links point to) and the PATH lines.
-    assert_eq!(run(sb.haul(&p).args(["self", "uninstall"]).env("HOME", &home)).status.code(), Some(2));
-    ok(sb.haul(&p).args(["self", "uninstall", "--yes"]).env("HOME", &home));
+    // Uninstalling needs --yes, then removes QuickRust's home (not what its links point to) and the PATH lines.
+    assert_eq!(run(sb.qrust(&p).args(["self", "uninstall"]).env("HOME", &home)).status.code(), Some(2));
+    ok(sb.qrust(&p).args(["self", "uninstall", "--yes"]).env("HOME", &home));
     assert!(!sb.home.exists());
     assert!(toolchain_store().join("channels.json").exists(), "the linked toolchain store is untouched");
     assert_eq!(fs::read_to_string(home.join(".bashrc")).unwrap(), "export EDITOR=vi\n");
-    assert!(!fs::read_to_string(home.join(".profile")).unwrap().contains("haul"));
-    // What setup says to run, pasted into a shell, puts Haul's bin first (`~/.haul` as usual).
-    let haul_home = home.join(".haul");
-    let said = stdout(&ok(sb.haul(&p).args(["setup", "--toolchain", "none"]).env("HOME", &home).env("HAUL_HOME", &haul_home)));
+    assert!(!fs::read_to_string(home.join(".profile")).unwrap().contains("qrust"));
+    // What setup says to run, pasted into a shell, puts QuickRust's bin first (`~/.qrust` as usual).
+    let qrust_home = home.join(".qrust");
+    let said = stdout(&ok(sb.qrust(&p).args(["setup", "--toolchain", "none"]).env("HOME", &home).env("QRUST_HOME", &qrust_home)));
     let pasted = said.lines().find_map(|l| l.strip_prefix("Open a new shell, or run:  ")).and_then(|l| l.split("  (fish").next()).unwrap_or_else(|| panic!("{}", said));
     let path = stdout(&ok(std::process::Command::new("sh").arg("-c").arg(format!("{}\nprintf %s \"$PATH\"", pasted)).env("HOME", &home).env("PATH", "/usr/bin:/bin")));
-    assert_eq!(path, format!("{}:/usr/bin:/bin", haul_home.join("bin").display()), "{}", pasted);
+    assert_eq!(path, format!("{}:/usr/bin:/bin", qrust_home.join("bin").display()), "{}", pasted);
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn haul_updates_itself_from_its_releases_and_only_to_what_they_say() {
+fn qrust_updates_itself_from_its_releases_and_only_to_what_they_say() {
     use std::io::Write as _;
     let sb = Sandbox::new("selfupdate");
     let home = sb.dir.join("user");
     fs::create_dir_all(&home).unwrap();
-    ok(sb.haul(&sb.dir).args(["setup", "--toolchain", "none", "--no-modify-path"]).env("HOME", &home));
-    let haul = sb.home.join("bin/haul");
+    ok(sb.qrust(&sb.dir).args(["setup", "--toolchain", "none", "--no-modify-path"]).env("HOME", &home));
+    let qrust = sb.home.join("bin/qrust");
     let target = if cfg!(target_arch = "aarch64") { "aarch64-unknown-linux-musl" } else { "x86_64-unknown-linux-musl" };
-    // A release: Haul's archive (here, scripts that say what they are) and its checksum.
+    // A release: QuickRust's archive (here, scripts that say what they are) and its checksum.
     let release = |says: &str| -> Vec<u8> {
         let mut b = tar::Builder::new(Vec::new());
-        for (name, body) in [("haul", format!("#!/bin/sh\necho '{}'\n", says)), ("haul-rustc-wrapper", "#!/bin/sh\n".to_string())] {
+        for (name, body) in [("qrust", format!("#!/bin/sh\necho '{}'\n", says)), ("qrust-rustc-wrapper", "#!/bin/sh\n".to_string())] {
             let mut h = tar::Header::new_gnu();
             h.set_size(body.len() as u64);
             h.set_mode(0o755);
-            b.append_data(&mut h, format!("haul-{}/{}", target, name), body.as_bytes()).unwrap();
+            b.append_data(&mut h, format!("qrust-{}/{}", target, name), body.as_bytes()).unwrap();
         }
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gz.write_all(&b.into_inner().unwrap()).unwrap();
@@ -871,73 +871,73 @@ fn haul_updates_itself_from_its_releases_and_only_to_what_they_say() {
         let archive = release(says);
         let sum = sha256_hex(sum_of.unwrap_or(&archive));
         server.put("/version.txt", format!("{}\n", version).into_bytes());
-        server.put(&format!("/haul-{}.tar.gz", target), archive);
-        server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  haul-{}.tar.gz\n", sum, target).into_bytes());
+        server.put(&format!("/qrust-{}.tar.gz", target), archive);
+        server.put(&format!("/qrust-{}.tar.gz.sha256", target), format!("{}  qrust-{}.tar.gz\n", sum, target).into_bytes());
     };
-    let update = || run(sb.haul(&sb.dir).args(["self", "update"]).env("HAUL_UPDATE_URL", &server.url));
+    let update = || run(sb.qrust(&sb.dir).args(["self", "update"]).env("QRUST_UPDATE_URL", &server.url));
     let current = env!("CARGO_PKG_VERSION");
     // Nothing published yet.
     let none = update();
     assert_eq!(none.status.code(), Some(2));
-    assert!(stderr(&none).contains(&format!("no Haul release is published at {} yet", server.url)), "{}", stderr(&none));
-    let before = fs::read(&haul).unwrap();
+    assert!(stderr(&none).contains(&format!("no QuickRust release is published at {} yet", server.url)), "{}", stderr(&none));
+    let before = fs::read(&qrust).unwrap();
     // Not newer: nothing to do.
-    publish(current, "haul old", None);
+    publish(current, "qrust old", None);
     let out = update();
     assert!(out.status.success() && stderr(&out).contains("is the latest"), "{}", stderr(&out));
     // Tampered with: refused, nothing replaced.
-    publish("999.0.0", "haul 999.0.0", Some(b"something else"));
+    publish("999.0.0", "qrust 999.0.0", Some(b"something else"));
     let out = update();
     assert_eq!(out.status.code(), Some(2));
     assert!(stderr(&out).contains("is not the published file"), "{}", stderr(&out));
     // Not the version it was published as: refused.
-    publish("999.0.0", "haul 998.0.0", None);
+    publish("999.0.0", "qrust 998.0.0", None);
     let out = update();
-    assert!(stderr(&out).contains("says \"haul 998.0.0\", not haul 999.0.0"), "{}", stderr(&out));
-    assert_eq!(fs::read(&haul).unwrap(), before);
+    assert!(stderr(&out).contains("says \"qrust 998.0.0\", not qrust 999.0.0"), "{}", stderr(&out));
+    assert_eq!(fs::read(&qrust).unwrap(), before);
     // A newer release: installed, and the proxies are it.
-    publish("999.0.0", "haul 999.0.0", None);
+    publish("999.0.0", "qrust 999.0.0", None);
     let out = update();
-    assert!(out.status.success() && stderr(&out).contains("Haul 999.0.0 installed"), "{}", stderr(&out));
-    assert_eq!(stdout(&ok(std::process::Command::new(&haul).arg("--version"))), "haul 999.0.0\n");
-    assert_eq!(stdout(&ok(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version"))), "haul 999.0.0\n");
+    assert!(out.status.success() && stderr(&out).contains("QuickRust 999.0.0 installed"), "{}", stderr(&out));
+    assert_eq!(stdout(&ok(std::process::Command::new(&qrust).arg("--version"))), "qrust 999.0.0\n");
+    assert_eq!(stdout(&ok(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version"))), "qrust 999.0.0\n");
 }
 
 #[test]
 #[cfg(target_os = "linux")]
-fn the_install_script_checks_the_release_and_sets_haul_up() {
+fn the_install_script_checks_the_release_and_sets_qrust_up() {
     use std::io::Write as _;
     let sb = Sandbox::new("installsh");
     let home = sb.dir.join("user");
     fs::create_dir_all(&home).unwrap();
     let target = if cfg!(target_arch = "aarch64") { "aarch64-unknown-linux-musl" } else { "x86_64-unknown-linux-musl" };
-    // The release archive, of the Haul under test.
+    // The release archive, of the QuickRust under test.
     let mut b = tar::Builder::new(Vec::new());
-    let haul = std::path::Path::new(env!("CARGO_BIN_EXE_haul"));
-    for name in ["haul", "haul-rustc-wrapper"] {
-        b.append_path_with_name(haul.with_file_name(name), format!("haul-{}/{}", target, name)).unwrap();
+    let qrust = std::path::Path::new(env!("CARGO_BIN_EXE_qrust"));
+    for name in ["qrust", "qrust-rustc-wrapper"] {
+        b.append_path_with_name(qrust.with_file_name(name), format!("qrust-{}/{}", target, name)).unwrap();
     }
     let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     gz.write_all(&b.into_inner().unwrap()).unwrap();
     let archive = gz.finish().unwrap();
     let server = common::registry::Registry::start();
-    server.put(&format!("/haul-{}.tar.gz", target), archive.clone());
+    server.put(&format!("/qrust-{}.tar.gz", target), archive.clone());
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("install.sh");
     let install = || {
         let mut c = sb.with_shim("sh", &sb.dir);
-        c.arg(&script).args(["--toolchain", "none", "--no-modify-path"]).env("HOME", &home).env("HAUL_UPDATE_URL", &server.url);
+        c.arg(&script).args(["--toolchain", "none", "--no-modify-path"]).env("HOME", &home).env("QRUST_UPDATE_URL", &server.url);
         run(&mut c)
     };
-    server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  x\n", "0".repeat(64)).into_bytes());
+    server.put(&format!("/qrust-{}.tar.gz.sha256", target), format!("{}  x\n", "0".repeat(64)).into_bytes());
     let refused = install();
     assert_eq!(refused.status.code(), Some(1));
     assert!(stderr(&refused).contains("is not the published file"), "{}", stderr(&refused));
-    assert!(!sb.home.join("bin/haul").exists());
-    server.put(&format!("/haul-{}.tar.gz.sha256", target), format!("{}  haul.tar.gz\n", sha256_hex(&archive)).into_bytes());
+    assert!(!sb.home.join("bin/qrust").exists());
+    server.put(&format!("/qrust-{}.tar.gz.sha256", target), format!("{}  qrust.tar.gz\n", sha256_hex(&archive)).into_bytes());
     let out = install();
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("installed in"), "{}", stderr(&out));
-    let cargo = run(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version").env("HAUL_HOME", &sb.home).env("HOME", &home).env_remove("CARGO_HOME"));
+    let cargo = run(std::process::Command::new(sb.home.join("bin/cargo")).arg("--version").env("QRUST_HOME", &sb.home).env("HOME", &home).env_remove("CARGO_HOME"));
     assert!(stdout(&cargo).starts_with("cargo 1."), "{}", stderr(&cargo));
 }
 
@@ -952,7 +952,7 @@ fn retention_bounds_recorded_state() {
     // NFR-SPACE-001 / R-014.
     let sb = Sandbox::new("retention");
     let p = sb.package("p", "p");
-    sb.file("haul-home/config.toml", "[measurement]\nkeep-runs = 3\nkeep-raw-events = 1\nfinalize = \"sync\"\n");
+    sb.file("qrust-home/config.toml", "[measurement]\nkeep-runs = 3\nkeep-raw-events = 1\nfinalize = \"sync\"\n");
     for i in 0..6 {
         fs::write(p.join("src/lib.rs"), format!("pub fn add(x: u32, y: u32) -> u32 {{ x + y + {} }}\n", i)).unwrap();
         ok(sb.cargo(&p).arg("build"));
@@ -999,9 +999,9 @@ fn fast_mode_keeps_stable_rejecting_unstable_features() {
     let first = sb.cargo(&p).arg("build").output().unwrap();
     let upstream = sb.upstream(&p).arg("build").output().unwrap();
     assert!(!upstream.status.success(), "the stable toolchain under test accepted #![feature]: {}", stderr(&upstream));
-    for (what, haul) in [("an incremental rebuild", rebuild), ("a first compilation", first)] {
-        assert!(!haul.status.success(), "fast mode accepted #![feature] on a stable compiler in {}: {}", what, stderr(&haul));
-        assert!(stderr(&haul).contains("feature"), "{}", stderr(&haul));
+    for (what, qrust) in [("an incremental rebuild", rebuild), ("a first compilation", first)] {
+        assert!(!qrust.status.success(), "fast mode accepted #![feature] on a stable compiler in {}: {}", what, stderr(&qrust));
+        assert!(stderr(&qrust).contains("feature"), "{}", stderr(&qrust));
     }
 }
 
@@ -1014,7 +1014,7 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     // compilation on: that is the one that shows it small).
     let quick = "600000";
 
-    ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
+    ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
     let r = sb.report(&p, "latest");
     assert!(!debuginfo(&r).is_empty() && debuginfo(&r).iter().all(|d| d == "line-tables-only"), "{:?}", debuginfo(&r));
     let applied: Vec<&str> = r["policy"]["fast"]["applied"].as_array().unwrap().iter().map(|a| a["key"].as_str().unwrap()).collect();
@@ -1039,34 +1039,34 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
         let first = threads_by_unit(&sb);
         assert!(!first.is_empty() && first.iter().all(|(incremental, threads)| *incremental && *threads), "{:?}", first);
         fs::write(p.join("src/lib.rs"), "pub fn add(x: u32, y: u32) -> u32 { y + x }\n").unwrap();
-        ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
+        ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
         let rebuild = threads_by_unit(&sb);
         assert!(!rebuild.is_empty() && rebuild.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", rebuild);
         // After a clean the library comes from the cache; the binary, which links in a moment and
         // so is not stored, is compiled again from scratch. Its first compilation, from scratch,
         // showed it small, and edits since have not changed that: no parallel frontend.
         ok(sb.cargo(&p).arg("clean"));
-        ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
+        ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", quick));
         assert_eq!(cache_results(&sb), vec![("p".to_string(), "hit".to_string()), ("p".to_string(), "miss".to_string())], "{:#?}", cache_details(&sb));
         assert_eq!(threads_by_unit(&sb), vec![(true, false), (true, false)], "{:#?}", cache_details(&sb));
         ok(sb.cargo(&p).args(["build", "--release"]));
         let release = threads_by_unit(&sb);
         assert!(!release.is_empty() && release.iter().all(|(incremental, threads)| !*incremental && *threads), "{:?}", release);
     }
-    assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not Haul's overlays");
+    assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not QuickRust's overlays");
 
     // A `--config` of the user's after the subcommand makes Cargo ignore every `--config` before
-    // it: Haul's settings go with it, so the build is the same one, fresh.
+    // it: QuickRust's settings go with it, so the build is the same one, fresh.
     ok(sb.cargo(&p).args(["build", "--config", "build.jobs=2"]));
     assert!(debuginfo(&sb.report(&p, "latest")).is_empty(), "rebuilt without fast mode's settings: {:?}", debuginfo(&sb.report(&p, "latest")));
 
     // compat: exactly what upstream Cargo builds.
-    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
+    ok(sb.cargo(&p).arg("build").env("QRUST_MODE", "compat"));
     let r = sb.report(&p, "latest");
     assert!(debuginfo(&r).iter().all(|d| d == "2"), "{:?}", debuginfo(&r));
     assert!(r["policy"]["fast"]["applied"].as_array().unwrap().is_empty());
 
-    // A setting the user made wins, and the report says why Haul stood back.
+    // A setting the user made wins, and the report says why QuickRust stood back.
     let manifest = p.join("Cargo.toml");
     let text = fs::read_to_string(&manifest).unwrap();
     fs::write(&manifest, format!("{}\n[profile.dev]\ndebug = 1\n", text)).unwrap();
@@ -1111,9 +1111,9 @@ fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
 #[test]
 fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
     let sb = Sandbox::new("rewritten");
-    let dep = sb.dir.join("haul-home/cargo/registry/src/fake-0000/greet-1.0.0");
-    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
-    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n");
+    let dep = sb.dir.join("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n");
     sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
     sb.file("app/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
     let app = sb.dir.join("app");
@@ -1143,9 +1143,9 @@ fn compiler_probes_run_by_build_scripts_are_never_cached() {
     // Like autocfg: a build script compiles small programs with the same rustc (through the
     // wrapper Cargo hands it) to learn what the compiler supports. Probes must run every time and
     // may fail by design; neither outcome is an artifact to keep.
-    sb.file("haul-home/cargo/registry/src/fake-0000/probed-1.0.0/Cargo.toml", "[package]\nname = \"probed\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/probed-1.0.0/Cargo.toml", "[package]\nname = \"probed\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
     sb.file(
-        "haul-home/cargo/registry/src/fake-0000/probed-1.0.0/build.rs",
+        "qrust-home/cargo/registry/src/fake-0000/probed-1.0.0/build.rs",
         r#"use std::process::Command;
 
 fn probe(name: &str, code: &str) -> bool {
@@ -1169,8 +1169,8 @@ fn main() {
 }
 "#,
     );
-    sb.file("haul-home/cargo/registry/src/fake-0000/probed-1.0.0/src/lib.rs", "#[cfg(probed)]\npub fn probed() -> bool {\n    true\n}\n");
-    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprobed = {{ path = {:?} }}\n\n[profile.dev.package.probed]\nincremental = false\n", sb.dir.join("haul-home/cargo/registry/src/fake-0000/probed-1.0.0").display().to_string()));
+    sb.file("qrust-home/cargo/registry/src/fake-0000/probed-1.0.0/src/lib.rs", "#[cfg(probed)]\npub fn probed() -> bool {\n    true\n}\n");
+    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprobed = {{ path = {:?} }}\n\n[profile.dev.package.probed]\nincremental = false\n", sb.dir.join("qrust-home/cargo/registry/src/fake-0000/probed-1.0.0").display().to_string()));
     sb.file("app/src/main.rs", "fn main() {\n    assert!(probed::probed());\n}\n");
     let app = sb.dir.join("app");
 
@@ -1201,7 +1201,7 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     // The binary links in a moment; by default such a unit is neither stored nor compiled apart.
     let cargo = || {
         let mut c = sb.cargo(&w);
-        c.env("HAUL_EARLY_CUTOFF", "auto").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
+        c.env("QRUST_EARLY_CUTOFF", "auto").env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
         c
     };
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello-1 <2>\n");
@@ -1241,7 +1241,7 @@ fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
 
     // Kept objects are linked only as they were written: one changed since, and the binary is
     // compiled again rather than linked from it.
-    let kept = fs::read_dir(sb.target_dir(&w).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".haul-objects")).expect("the binary's objects are kept");
+    let kept = fs::read_dir(sb.target_dir(&w).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".qrust-objects")).expect("the binary's objects are kept");
     let object = fs::read_dir(&kept).unwrap().next().unwrap().unwrap().path();
     let mut bytes = fs::read(&object).unwrap();
     bytes.push(0);
@@ -1258,7 +1258,7 @@ fn early_exits(sb: &Sandbox) -> usize {
     fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["early_exit"] == json!(true)).count()
 }
 
-/// The latest instrumented run's units Haul relinks: whether linked again or compiled (crate, how).
+/// The latest instrumented run's units QuickRust relinks: whether linked again or compiled (crate, how).
 fn links(sb: &Sandbox) -> Vec<(String, String)> {
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
     let mut out: Vec<(String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())
@@ -1291,7 +1291,7 @@ fn a_crate_that_reexports_another_is_compiled_again_after_any_edit_of_it() {
     build_driver(&sb, &w);
     let cargo = || {
         let mut c = sb.cargo(&w);
-        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c.env("QRUST_EARLY_CUTOFF", "auto");
         c
     };
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "2\n");
@@ -1318,11 +1318,11 @@ fn a_compiler_driver_that_cannot_be_loaded_never_fails_the_build() {
     let sb = Sandbox::new("driver-unloadable");
     let p = sb.package("p", "p");
     let driver = build_driver(&sb, &p);
-    fs::write(&driver, "#!/bin/sh\necho \"haul-rustc-driver: error while loading shared libraries: librustc_driver.so: cannot open shared object file\" >&2\nexit 127\n").unwrap();
+    fs::write(&driver, "#!/bin/sh\necho \"qrust-rustc-driver: error while loading shared libraries: librustc_driver.so: cannot open shared object file\" >&2\nexit 127\n").unwrap();
     make_executable(&driver);
-    let out = ok(sb.cargo(&p).arg("build").env("HAUL_EARLY_CUTOFF", "auto"));
-    assert!(stderr(&out).contains("Haul's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", stderr(&out));
-    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]).env("HAUL_EARLY_CUTOFF", "auto"))), "3\n");
+    let out = ok(sb.cargo(&p).arg("build").env("QRUST_EARLY_CUTOFF", "auto"));
+    assert!(stderr(&out).contains("QuickRust's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", stderr(&out));
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]).env("QRUST_EARLY_CUTOFF", "auto"))), "3\n");
 }
 
 #[test]
@@ -1335,7 +1335,7 @@ fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n\npub fn len(x: &Vec<u8>) -> usize {\n    x.len()\n}\n");
     build_driver(&sb, &p);
     // clippy-driver describes itself exactly as rustc does; it is still clippy that runs.
-    let out = ok(sb.cargo(&p).args(["clippy"]).env("HAUL_EARLY_CUTOFF", "auto"));
+    let out = ok(sb.cargo(&p).args(["clippy"]).env("QRUST_EARLY_CUTOFF", "auto"));
     assert!(stderr(&out).contains("writing `&Vec` instead of `&[_]`"), "{}", stderr(&out));
 }
 
@@ -1344,23 +1344,23 @@ fn a_compiler_driver_that_crashes_never_fails_the_build() {
     let sb = Sandbox::new("driver-crash");
     let p = sb.package("p", "p");
     let driver = build_driver(&sb, &p);
-    // A driver that fails as an internal compiler error does, wherever Haul looks for this
+    // A driver that fails as an internal compiler error does, wherever QuickRust looks for this
     // compiler's driver.
     fs::write(&driver, "#!/bin/sh\necho \"thread 'rustc' panicked at compiler/rustc_middle/src/lib.rs:1:1:\" >&2\necho \"error: the compiler unexpectedly panicked. this is a bug.\" >&2\nexit 101\n").unwrap();
     make_executable(&driver);
 
     let cargo = || {
         let mut c = sb.cargo(&p);
-        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c.env("QRUST_EARLY_CUTOFF", "auto");
         c
     };
     let first = ok(cargo().arg("build"));
     let err = stderr(&first);
-    assert!(err.contains("Haul's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", err);
+    assert!(err.contains("QuickRust's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", err);
     assert!(!err.contains("panicked"), "the driver's report is kept aside, not shown: {}", err);
     let reports: Vec<_> = fs::read_dir(driver.with_file_name("failed")).unwrap().map(|e| fs::read_to_string(e.unwrap().path()).unwrap()).collect();
     assert!(!reports.is_empty() && reports.iter().all(|r| r.contains("panicked")), "{:?}", reports);
-    assert!(cache_details(&sb).iter().any(|d| d.contains("compiled by rustc after Haul's compiler driver failed")), "{:#?}", cache_details(&sb));
+    assert!(cache_details(&sb).iter().any(|d| d.contains("compiled by rustc after QuickRust's compiler driver failed")), "{:#?}", cache_details(&sb));
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "3\n");
 
     // The units it failed on are compiled by rustc from then on, without a word.
@@ -1377,12 +1377,12 @@ fn setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     // every later build (with it) would miss.
     let sb = Sandbox::new("driver-setup");
     let p = sb.package("p", "p");
-    let out = run(sb.haul(&p).args(["setup", "--toolchain", "1.99.0", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("HAUL_EARLY_CUTOFF", "auto"));
+    let out = run(sb.qrust(&p).args(["setup", "--toolchain", "1.99.0", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("QRUST_EARLY_CUTOFF", "auto"));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("Compiler driver for Rust 1.99.0 ready"), "{}", stderr(&out));
-    assert!(stdout(&ok(sb.haul(&p).args(["driver", "status"]))).starts_with("built:"));
+    assert!(stdout(&ok(sb.qrust(&p).args(["driver", "status"]))).starts_with("built:"));
     let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
-    first.env("HAUL_EARLY_CUTOFF", "auto");
+    first.env("QRUST_EARLY_CUTOFF", "auto");
     let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
     assert!(!screen.contains("compiler driver"), "{}", screen);
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
@@ -1395,11 +1395,11 @@ fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     let sb = Sandbox::new("driver-background");
     let p = sb.package("p", "p");
     let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
-    first.env("HAUL_EARLY_CUTOFF", "auto");
+    first.env("QRUST_EARLY_CUTOFF", "auto");
     let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
-    assert!(screen.contains("building Haul's compiler driver for Rust") && screen.contains("in the background"), "{}", screen);
+    assert!(screen.contains("building QuickRust's compiler driver for Rust") && screen.contains("in the background"), "{}", screen);
     // Built once: a build while it runs, or after, starts no other.
-    let status = || stdout(&ok(sb.haul(&p).args(["driver", "status"])));
+    let status = || stdout(&ok(sb.qrust(&p).args(["driver", "status"])));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
     while !status().starts_with("built:") {
         assert!(!status().starts_with("could not be built"), "{}", status());
@@ -1409,7 +1409,7 @@ fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     let lib = p.join("src/lib.rs");
     fs::write(&lib, fs::read_to_string(&lib).unwrap().replace("x + y", "y + x")).unwrap();
     let mut second = sb.cargo_in_terminal(&p, "build").unwrap();
-    second.env("HAUL_EARLY_CUTOFF", "auto");
+    second.env("QRUST_EARLY_CUTOFF", "auto");
     let screen = String::from_utf8_lossy(&run(&mut second).stdout).into_owned();
     assert!(!screen.contains("compiler driver"), "{}", screen);
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
@@ -1422,12 +1422,12 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let sb = Sandbox::new("artifacts");
     // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.
     // Its warning must reach the user on every build, cached or not.
-    let dep = sb.dir.join("haul-home/cargo/registry/src/fake-0000/greet-1.0.0");
-    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    let dep = sb.dir.join("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
     // Like serde: a build script generates code that the library includes through OUT_DIR,
     // whose path differs in every target directory.
-    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
-    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    let unused = 1;\n    GREETING\n}\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    let unused = 1;\n    GREETING\n}\n");
     let app = |rel: &str| {
         // A path dependency is compiled incrementally, which a registry one never is.
         sb.file(&format!("{}/Cargo.toml", rel), &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
@@ -1438,7 +1438,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     // The binary links in milliseconds; by default such linked workspace outputs are not stored.
     let cargo = |dir: &std::path::Path| {
         let mut c = sb.cargo(dir);
-        c.env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
+        c.env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
         c
     };
 
@@ -1477,7 +1477,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     // user is told, and the report counts it.
     assert!(cache_details(&sb).iter().any(|d| d.starts_with("greet:") && d.contains("foreign_out_dir") && d.contains(&format!("{}/", sb.target_dir(&a).display()))), "{:#?}", cache_details(&sb));
     assert_eq!(sb.report(&b, "latest")["cache"]["artifacts"]["restored_with_foreign_out_dir"], 1);
-    // In a terminal, Haul says so once.
+    // In a terminal, QuickRust says so once.
     let (c, d) = (app("c"), app("d"));
     if let Some(mut first) = sb.cargo_in_terminal(&c, "build") {
         let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
@@ -1491,7 +1491,7 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
 
     // compat mode never uses the cache.
     ok(cargo(&a).arg("clean"));
-    ok(cargo(&a).arg("build").env("HAUL_MODE", "compat"));
+    ok(cargo(&a).arg("build").env("QRUST_MODE", "compat"));
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "off"), "{:?}", cache_results(&sb));
 }
 
@@ -1512,9 +1512,9 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     assert!(!screen.contains("let unused = 1"), "warnings are counted, not shown: {}", screen);
     assert!(screen.contains("1 warning in p: unused_variables ×1"), "{}", screen);
     // Everything is kept: the warning is shown on request, in rustc's words.
-    let shown = stdout(&ok(sb.haul(&p).arg("warnings")));
+    let shown = stdout(&ok(sb.qrust(&p).arg("warnings")));
     assert!(shown.contains("unused variable: `unused`") && shown.contains("src/lib.rs:2"), "{}", shown);
-    assert!(stdout(&ok(sb.haul(&p).args(["warnings", "--lint", "dead_code"]))).contains("No warnings"));
+    assert!(stdout(&ok(sb.qrust(&p).args(["warnings", "--lint", "dead_code"]))).contains("No warnings"));
 
     // An error is shown in full, with a summary that points at it.
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    x + \"y\"\n}\n");
@@ -1523,7 +1523,7 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     assert!(!out.status.success());
     assert!(screen.contains("cannot add `&str` to `u32`"), "the error in full: {}", screen);
     assert!(screen.contains("✗ Build failed") && screen.contains("first at src/lib.rs:2:"), "{}", screen);
-    assert!(stdout(&ok(sb.haul(&p).arg("errors"))).contains("cannot add `&str` to `u32`"));
+    assert!(stdout(&ok(sb.qrust(&p).arg("errors"))).contains("cannot add `&str` to `u32`"));
 
     // Through a pipe, Cargo's own output is untouched.
     let piped = run(sb.cargo(&p).arg("build"));
@@ -1534,7 +1534,7 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let out = run(sb.cargo_in_terminal(&p, "build").unwrap().env("CARGO_TERM_COLOR", "always"));
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("\x1b["), "{}", screen);
-    assert!(stdout(&ok(sb.haul(&p).arg("warnings"))).contains("unused variable: `unused`"));
+    assert!(stdout(&ok(sb.qrust(&p).arg("warnings"))).contains("unused variable: `unused`"));
 }
 
 #[test]
@@ -1565,13 +1565,13 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let out = run(&mut first);
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{}", screen);
-    assert!(screen.contains("✓ Built") && screen.contains("1 warning in p: unused_variables ×1"), "Haul's summary of the build: {}", screen);
+    assert!(screen.contains("✓ Built") && screen.contains("1 warning in p: unused_variables ×1"), "QuickRust's summary of the build: {}", screen);
     assert!(screen.contains(r#"terminal=true args=["one", "two"] sum=3"#), "the program has the terminal and its arguments: {}", screen);
     assert_eq!(screen.matches("terminal=").count(), 1, "the program ran once: {}", screen);
     assert!(!screen.contains("let unused = 1") && !screen.contains(crate_noop()), "nothing replayed, nothing of the build's mechanics: {}", screen);
     compiled_once(&sb);
 
-    // Nothing changed: Haul knows the build is fresh and goes straight to the program; Cargo,
+    // Nothing changed: QuickRust knows the build is fresh and goes straight to the program; Cargo,
     // running it, still checks.
     let out = run(&mut sb.cargo_in_terminal(&p, "run -- again").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -1598,9 +1598,9 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     assert!(screen.contains("✗ Build failed") && screen.contains("mismatched types") && !screen.contains("terminal="), "{}", screen);
 }
 
-/// The argument under which Haul is the do-nothing runner of `cargo run`'s build.
+/// The argument under which QuickRust is the do-nothing runner of `cargo run`'s build.
 fn crate_noop() -> &'static str {
-    "__haul-noop-runner"
+    "__qrust-noop-runner"
 }
 
 #[test]
@@ -1610,7 +1610,7 @@ fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
     let sb = Sandbox::new("store-rule");
     let p = sb.package("p", "p");
     // A threshold no compilation here reaches, however busy the machine: the rule, not its speed.
-    ok(sb.cargo(&p).arg("build").env("HAUL_CACHE_ARTIFACTS_MIN_LINK_MS", "600000"));
+    ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", "600000"));
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
     let results: Vec<(String, String, String)> = fs::read_dir(s["events_dir"].as_str().unwrap())
         .unwrap()
@@ -1657,7 +1657,7 @@ fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
     ok(sb.cargo(&p).arg("build").env("RUSTFLAGS", "-C link-arg=-fuse-ld=lld"));
     assert_eq!(linked_by(&sb.target_dir(&p).join("debug/p")), "lld");
     fs::remove_dir_all(sb.target_dir(&p)).unwrap();
-    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
+    ok(sb.cargo(&p).arg("build").env("QRUST_MODE", "compat"));
     assert_eq!(linked_by(&sb.target_dir(&p).join("debug/p")), "lld");
 }
 
@@ -1703,7 +1703,7 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
     let json_units = |args: &[&str]| -> Vec<Value> {
-        let out = ok(sb.haul(&p).args(["analyze", "timing", "--format", "json"]).args(args));
+        let out = ok(sb.qrust(&p).args(["analyze", "timing", "--format", "json"]).args(args));
         serde_json::from_slice::<Value>(&out.stdout).unwrap()["units"].as_array().unwrap().clone()
     };
     let all = json_units(&[]);
@@ -1716,20 +1716,20 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     assert_eq!((slowest.len(), slowest[0]["duration_ns"].as_u64()), (1, Some(max)));
 
     // Text shows exactly the records asked for, including the ones its default view leaves out.
-    let text = stdout(&ok(sb.haul(&p).args(["analyze", "rebuilds", "--filter", "reason=new", "--limit", "1"])));
+    let text = stdout(&ok(sb.qrust(&p).args(["analyze", "rebuilds", "--filter", "reason=new", "--limit", "1"])));
     assert!(text.contains("new") && text.contains("first time this unit is observed"), "{}", text);
     // Mistakes are named, never silently ignored.
-    let e = run(sb.haul(&p).args(["analyze", "timing", "--filter", "profile=release"]));
+    let e = run(sb.qrust(&p).args(["analyze", "timing", "--filter", "profile=release"]));
     assert!(!e.status.success() && stderr(&e).contains("no field `profile`"), "{}", stderr(&e));
-    let e = run(sb.haul(&p).args(["analyze", "--limit", "3"]));
+    let e = run(sb.qrust(&p).args(["analyze", "--limit", "3"]));
     assert!(!e.status.success() && stderr(&e).contains("one section"), "{}", stderr(&e));
-    let e = run(sb.haul(&p).args(["analyze", "cache", "--sort", "x"]));
+    let e = run(sb.qrust(&p).args(["analyze", "cache", "--sort", "x"]));
     assert!(!e.status.success() && stderr(&e).contains("no list of records"), "{}", stderr(&e));
 }
 
 #[test]
-fn haul_says_up_to_date_only_when_cargo_would_build_nothing() {
-    // The gate for Haul judging freshness itself: after every kind of change, a build Haul calls
+fn qrust_says_up_to_date_only_when_cargo_would_build_nothing() {
+    // The gate for QuickRust judging freshness itself: after every kind of change, a build QuickRust calls
     // up to date must be one Cargo, asked directly, finds entirely fresh.
     let sb = Sandbox::new("oracle");
     let ws = sb.dir.join("ws");
@@ -1788,22 +1788,22 @@ fn haul_says_up_to_date_only_when_cargo_would_build_nothing() {
     let mut skipped = Vec::new();
     for (what, change, var) in &changes {
         change();
-        let mut haul = sb.cargo_in_terminal(&ws, "build").unwrap();
+        let mut qrust = sb.cargo_in_terminal(&ws, "build").unwrap();
         let mut cargo = sb.cargo(&ws);
         cargo.args(["build", "-v"]);
         if let Some((k, v)) = var {
-            haul.env(k, v);
+            qrust.env(k, v);
             cargo.env(k, v);
         }
-        let screen = String::from_utf8_lossy(&run(&mut haul).stdout).into_owned();
+        let screen = String::from_utf8_lossy(&run(&mut qrust).stdout).into_owned();
         assert!(screen.contains('✓'), "{}: {}", what, screen);
         if screen.contains("Up to date") {
             skipped.push(*what);
-            // Asked through a pipe, where Haul never judges, Cargo must find nothing to do.
+            // Asked through a pipe, where QuickRust never judges, Cargo must find nothing to do.
             let verdict = ok(&mut cargo);
             let said = stderr(&verdict);
             let work: Vec<&str> = said.lines().map(str::trim_start).filter(|l| l.starts_with("Compiling") || l.starts_with("Running")).collect();
-            assert!(work.is_empty(), "Haul said up to date after `{}`, but Cargo had work: {:?}", what, work);
+            assert!(work.is_empty(), "QuickRust said up to date after `{}`, but Cargo had work: {:?}", what, work);
         }
     }
     // And it does answer when nothing changed: the point of judging at all.

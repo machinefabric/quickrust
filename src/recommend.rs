@@ -96,7 +96,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                     Some(ns) => json!({ "kind": "measured", "avoidable_time_ns": ns, "basis": "duration of one script run in this build; saved each time an unrelated edit no longer triggers it (the dependent crate's recompilation comes on top)" }),
                     None => unknown_impact("the script's duration could not be measured in this run"),
                 },
-                "declare the script's real inputs, edit an unrelated file in the package, rebuild, and check `haul analyze scripts` shows the script as not run",
+                "declare the script's real inputs, edit an unrelated file in the package, rebuild, and check `qrust analyze scripts` shows the script as not run",
                 "only safe when every file, environment variable and external tool the script reads is declared; an incomplete declaration makes builds stale",
                 "review_required",
             )
@@ -168,7 +168,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                 "medium",
                 "medium",
                 json!({ "kind": "measured", "avoidable_time_ns": durs.iter().sum::<u64>() - durs.iter().max().copied().unwrap_or(0), "basis": "observed compile time of all but the most expensive variant" }),
-                "make the listed dependents request the same features (for example through `[workspace.dependencies]`), rebuild, and check `haul analyze duplication`",
+                "make the listed dependents request the same features (for example through `[workspace.dependencies]`), rebuild, and check `qrust analyze duplication`",
                 "enabling a feature for every dependent changes what those crates compile against; disabling one may remove functionality a dependent needs",
                 "review_required",
             )
@@ -200,7 +200,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                 "low",
                 "low",
                 unknown_impact("the saving depends on how much of this build is debug-info generation and linking; measure it with the experiment below"),
-                "haul experiment --set 'profile.dev.package.\"*\".debug=false' --set profile.dev.debug=\"line-tables-only\" --scenario clean -- build",
+                "qrust experiment --set 'profile.dev.package.\"*\".debug=false' --set profile.dev.debug=\"line-tables-only\" --scenario clean -- build",
                 "debugger experience changes: no variable or type information inside dependencies, line numbers only in workspace crates; backtraces keep working. Release profiles are untouched",
                 "review_required",
             )
@@ -241,7 +241,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                 "low",
                 "low",
                 unknown_impact("which strategy is faster depends on the workload; neither is assumed"),
-                "haul experiment --env CARGO_INCREMENTAL=0 --scenario small-edit -- build   (and the same with --scenario clean for CI-like runs)",
+                "qrust experiment --env CARGO_INCREMENTAL=0 --scenario small-edit -- build   (and the same with --scenario clean for CI-like runs)",
                 "disabling incremental compilation slows repeated edits in a persistent checkout; it is not recommended for local development unless the experiment shows a win",
                 "safe",
             )
@@ -270,7 +270,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                     "low",
                     "medium",
                     unknown_impact("a first build after a toolchain or flag change legitimately misses; compare a second run before acting"),
-                    "repeat the same build from a clean target directory and compare `haul cache status`; hits should dominate on the second run",
+                    "repeat the same build from a clean target directory and compare `qrust cache status`; hits should dominate on the second run",
                     "differing absolute checkout paths, RUSTFLAGS or toolchains fragment cache keys; none of them may be normalised silently",
                     "none",
                 )
@@ -300,8 +300,8 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                     "medium",
                     "high",
                     json!({ "kind": "modeled", "avoidable_time_ns": d, "basis": "upper bound: the unit's whole duration, reached only if it left the critical path entirely" }),
-                    "after restructuring, compare `haul compare` critical_path_ns on a clean build",
-                    "splitting a crate or trimming its dependencies is a source-architecture decision; Haul never rewrites source layout",
+                    "after restructuring, compare `qrust compare` critical_path_ns on a clean build",
+                    "splitting a crate or trimming its dependencies is a source-architecture decision; QuickRust never rewrites source layout",
                     "none",
                 )
                 .scenarios(&["clean"]),
@@ -349,8 +349,8 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                 "low",
                 "medium",
                 json!({ "kind": "measured", "avoidable_time_ns": cost, "basis": "compile time already spent on these rebuilds in recorded runs" }),
-                "run `haul analyze rebuilds` after the next few builds; the cause should disappear from the summary",
-                "align the settings between the tools involved, or give them separate target directories; Haul does not normalise flags or environment on its own",
+                "run `qrust analyze rebuilds` after the next few builds; the cause should disappear from the summary",
+                "align the settings between the tools involved, or give them separate target directories; QuickRust does not normalise flags or environment on its own",
                 "none",
             )
             .scenarios(&["small-edit", "no-change"]),
@@ -375,8 +375,8 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                     "low",
                     "low",
                     json!({ "kind": "measured", "reclaimable_bytes": bytes, "basis": "allocated bytes of the candidate groups in the dry-run plan" }),
-                    "haul inventory",
-                    "the plan names stale groups only; Haul's cache removes whole build directories when it needs the space, and `cargo clean` keeps its exact upstream meaning (it removes reusable artifacts as well)",
+                    "qrust inventory",
+                    "the plan names stale groups only; QuickRust's cache removes whole build directories when it needs the space, and `cargo clean` keeps its exact upstream meaning (it removes reusable artifacts as well)",
                     "none",
                 )
                 .scenarios(&["storage"]),
@@ -400,7 +400,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
                 "medium",
                 "low",
                 unknown_impact("link time is not separable from codegen here; only an experiment can tell"),
-                "haul experiment linker --linker lld --scenario small-edit --verify 'test' -- build",
+                "qrust experiment linker --linker lld --scenario small-edit --verify 'test' -- build",
                 "a different linker must pass the project's tests before it counts as verified; platform and native-library support varies",
                 "review_required",
             )

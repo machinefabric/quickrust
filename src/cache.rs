@@ -1,6 +1,6 @@
 //! sccache adapter: detection, preflight and statistics (FR-100).
 //!
-//! Cache correctness is delegated to sccache itself; Haul only composes the
+//! Cache correctness is delegated to sccache itself; QuickRust only composes the
 //! wrapper chain and reports what the cache did.
 
 use serde_json::{json, Value};

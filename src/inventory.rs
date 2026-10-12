@@ -16,7 +16,7 @@ pub const CATEGORIES: &[&str] = &[
     "cargo-registry-cache", "cargo-git-cache", "container-cache", "unknown-generated",
 ];
 
-/// What Haul knows about build units from observed runs; sharpens classification and liveness.
+/// What QuickRust knows about build units from observed runs; sharpens classification and liveness.
 #[derive(Default)]
 pub struct Knowledge {
     /// Artifact stem (`name-hash`) → wall-clock time the unit was last built or linked against.
@@ -54,7 +54,7 @@ impl Tally {
 struct Group {
     tally: Tally,
     newest_mtime_ns: u64,
-    /// Allocated bytes of files that also have names outside the scanned directory (Haul's
+    /// Allocated bytes of files that also have names outside the scanned directory (QuickRust's
     /// artifact cache links outputs into its entries): deleting them here frees nothing.
     shared_outside: u64,
 }
@@ -89,10 +89,10 @@ fn unit_dir<'a>(rel: &[&'a str], build: usize) -> Option<(usize, &'a str)> {
 fn artifact(name: &str, ext: &str, known: &Knowledge) -> (&'static str, String) {
     let stem = artifact_stem(name);
     let cat = match ext {
-        // A library's interface hash, written by Haul's compiler driver beside its metadata.
-        "rmeta" | "haul-svh" => "metadata",
-        // What Haul keeps of a binary's compilation to link it again (`.rlink`, its record).
-        "rlink" | "haul-relink" => "relink",
+        // A library's interface hash, written by QuickRust's compiler driver beside its metadata.
+        "rmeta" | "qrust-svh" => "metadata",
+        // What QuickRust keeps of a binary's compilation to link it again (`.rlink`, its record).
+        "rlink" | "qrust-relink" => "relink",
         "rlib" | "a" | "lib" => "dependency",
         "d" => "fingerprint",
         "o" | "dwo" | "dwp" | "pdb" => "debug",
@@ -117,8 +117,8 @@ pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) ->
     if rel.iter().any(|c| c.ends_with(".dSYM")) {
         return ("debug", rel[..rel.len().min(3)].join("/"));
     }
-    // A binary's objects, kept by Haul's compiler driver for relinking.
-    if let Some(unit) = rel.iter().find_map(|c| c.strip_suffix(".haul-objects")) {
+    // A binary's objects, kept by QuickRust's compiler driver for relinking.
+    if let Some(unit) = rel.iter().find_map(|c| c.strip_suffix(".qrust-objects")) {
         return ("relink", format!("unit:{}", unit));
     }
     if let Some(i) = rel.iter().take(3).position(|c| LAYOUT_DIRS.contains(c)) {
@@ -245,10 +245,10 @@ fn reclaimability(category: &str, group: &str, newest_mtime_ns: u64, known: &Kno
 
 /// Adds one file to its category and group.
 #[allow(clippy::too_many_arguments)]
-/// The path below Haul's own benchmark/experiment directories, which are complete target
+/// The path below QuickRust's own benchmark/experiment directories, which are complete target
 /// directories one level down.
 fn inner<'a, 'b>(rel: &'a [&'b str]) -> &'a [&'b str] {
-    if matches!(rel.first(), Some(&"haul-bench") | Some(&"haul-exp")) && rel.len() > 2 {
+    if matches!(rel.first(), Some(&"qrust-bench") | Some(&"qrust-exp")) && rel.len() > 2 {
         &rel[2..]
     } else {
         rel
@@ -391,9 +391,9 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
     let cutoff = opts.now_ns.saturating_sub(opts.stale_days * 86_400 * 1_000_000_000);
     let cargo_active = lock_dirs.iter().any(|d| cargo_lock_held(d));
     // A session's build directory can be redirected by its environment, so every other
-    // live Haul session is treated as a possible owner of this one (NFR-026).
-    let haul_sessions: Vec<Value> = crate::store::active_sessions().into_iter().filter(|s| s["pid"].as_u64() != Some(std::process::id() as u64)).collect();
-    let active = cargo_active || !haul_sessions.is_empty();
+    // live QuickRust session is treated as a possible owner of this one (NFR-026).
+    let qrust_sessions: Vec<Value> = crate::store::active_sessions().into_iter().filter(|s| s["pid"].as_u64() != Some(std::process::id() as u64)).collect();
+    let active = cargo_active || !qrust_sessions.is_empty();
 
     let mut by_reclaim: BTreeMap<&'static str, Tally> = BTreeMap::new();
     let mut candidates: Vec<Value> = Vec::new();
@@ -461,7 +461,7 @@ pub fn scan(root: &Path, known: &Knowledge, opts: &Options) -> Value {
         "reclaimability": by_reclaim.iter().map(|(k, t)| ((*k).to_string(), t.json())).collect::<serde_json::Map<_, _>>(),
         "active": {
             "cargo_lock_held": cargo_active,
-            "haul_sessions": haul_sessions.iter().map(|s| s["session"].clone()).collect::<Vec<_>>(),
+            "qrust_sessions": qrust_sessions.iter().map(|s| s["session"].clone()).collect::<Vec<_>>(),
         },
         "gc_plan": {
             "mode": "dry-run",
@@ -519,7 +519,7 @@ pub fn scan_flat(root: &Path, category: &'static str) -> Option<Value> {
     Some(v)
 }
 
-/// Shared caches outside the workspace: sccache, the registry and git checkouts of Haul's Cargo
+/// Shared caches outside the workspace: sccache, the registry and git checkouts of QuickRust's Cargo
 /// home.
 pub fn scan_global_caches() -> Vec<Value> {
     let mut out = Vec::new();
@@ -550,10 +550,10 @@ mod tests {
         assert_eq!(cat("debug/deps/libfoo-0123.rlib"), "dependency");
         assert_eq!(cat("debug/deps/foo-0123.d"), "fingerprint");
         assert_eq!(cat("debug/deps/foo-0123.abc.rcgu.o"), "debug");
-        assert_eq!(cat("debug/deps/libfoo-0123.haul-svh"), "metadata");
+        assert_eq!(cat("debug/deps/libfoo-0123.qrust-svh"), "metadata");
         assert_eq!(cat("debug/deps/app-0123.rlink"), "relink");
-        assert_eq!(cat("debug/deps/app-0123.haul-relink"), "relink");
-        assert_eq!(cat("debug/deps/app-0123.haul-objects/app-0123.abc.rcgu.o"), "relink");
+        assert_eq!(cat("debug/deps/app-0123.qrust-relink"), "relink");
+        assert_eq!(cat("debug/deps/app-0123.qrust-objects/app-0123.abc.rcgu.o"), "relink");
         assert_eq!(cat("debug/deps/foo-0123"), "final");
         assert_eq!(cat("debug/incremental/foo-xyz/s-1/dep-graph.bin"), "incremental");
         assert_eq!(cat("debug/build/foo-0123/out/gen.rs"), "build-script-output");
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_scan_tells_a_build_scripts_generated_files_from_a_units_outputs() {
-        let root = std::env::temp_dir().join(format!("haul-bd-{}", util::new_id()));
+        let root = std::env::temp_dir().join(format!("qrust-bd-{}", util::new_id()));
         let (lib, run) = ("1111111111111111", "2222222222222222");
         for (dir, file, bytes) in [
             (format!("debug/build/native/{lib}/out"), format!("libnative-{lib}.rlib"), 3_000),
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn plan_is_conservative_and_never_follows_symlinks() {
-        let base = std::env::temp_dir().join(format!("haul-inv-{}", util::new_id()));
+        let base = std::env::temp_dir().join(format!("qrust-inv-{}", util::new_id()));
         let root = base.join("target");
         let outside = base.join("outside");
         fs::create_dir_all(root.join("debug/deps")).unwrap();
@@ -661,7 +661,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hard_links_are_counted_once() {
-        let root = std::env::temp_dir().join(format!("haul-hl-{}", util::new_id()));
+        let root = std::env::temp_dir().join(format!("qrust-hl-{}", util::new_id()));
         fs::create_dir_all(root.join("debug/deps")).unwrap();
         fs::write(root.join("debug/deps/app-1"), vec![0u8; 8_000]).unwrap();
         fs::hard_link(root.join("debug/deps/app-1"), root.join("debug/app")).unwrap();
@@ -674,9 +674,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn files_also_linked_from_outside_free_nothing_when_deleted() {
-        // Haul's artifact cache links outputs into its entries: deleting the build directory's
+        // QuickRust's artifact cache links outputs into its entries: deleting the build directory's
         // name of such a file frees no space.
-        let base = std::env::temp_dir().join(format!("haul-shared-{}", util::new_id()));
+        let base = std::env::temp_dir().join(format!("qrust-shared-{}", util::new_id()));
         let root = base.join("target");
         fs::create_dir_all(root.join("debug/deps")).unwrap();
         fs::create_dir_all(base.join("cache")).unwrap();

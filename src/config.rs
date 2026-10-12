@@ -1,8 +1,8 @@
-//! Haul's own configuration namespace. Cargo's `.cargo/config.toml` is never
+//! QuickRust's own configuration namespace. Cargo's `.cargo/config.toml` is never
 //! interpreted here for execution semantics (COMP-050).
 //!
-//! Precedence: built-in defaults < `$HAUL_HOME/config.toml`
-//! < repository `.haul/config.toml` < `HAUL_*` environment < flags.
+//! Precedence: built-in defaults < `$QRUST_HOME/config.toml`
+//! < repository `.qrust/config.toml` < `QRUST_*` environment < flags.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -47,12 +47,12 @@ struct Key {
 }
 
 const KEYS: &[Key] = &[
-    Key { name: "output", kind: Kind::Enum(&["haul", "cargo"]), default: "haul", env: Some("HAUL_OUTPUT"), help: "build output in a terminal: Haul's (status line, errors in full, warnings counted; everything stored) or Cargo's own; compat mode defaults to cargo" },
-    Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("HAUL_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
-    Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested Cargo invocations (a build script's or a subcommand's `cargo` or `$CARGO`): run them through Haul as sessions of their own, linked to the outer one (orchestrator), or hand them straight to the toolchain's Cargo (upstream)" },
+    Key { name: "output", kind: Kind::Enum(&["qrust", "cargo"]), default: "qrust", env: Some("QRUST_OUTPUT"), help: "build output in a terminal: QuickRust's (status line, errors in full, warnings counted; everything stored) or Cargo's own; compat mode defaults to cargo" },
+    Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("QRUST_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
+    Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("QRUST_NESTED"), help: "nested Cargo invocations (a build script's or a subcommand's `cargo` or `$CARGO`): run them through QuickRust as sessions of their own, linked to the outer one (orchestrator), or hand them straight to the toolchain's Cargo (upstream)" },
     Key { name: "compatibility.unknown-command", kind: Kind::Enum(&["delegate", "instrument"]), default: "delegate", env: None, help: "external subcommands: plain delegation or rustc-wrapper instrumentation" },
-    Key { name: "measurement.enabled", kind: Kind::Bool, default: "true", env: None, help: "observe rustc invocations through the Haul rustc wrapper" },
-    Key { name: "measurement.report", kind: Kind::Str, default: "", env: Some("HAUL_REPORT"), help: "sidecar report path; `{session}` expands to the run id" },
+    Key { name: "measurement.enabled", kind: Kind::Bool, default: "true", env: None, help: "observe rustc invocations through the QuickRust rustc wrapper" },
+    Key { name: "measurement.report", kind: Kind::Str, default: "", env: Some("QRUST_REPORT"), help: "sidecar report path; `{session}` expands to the run id" },
     Key { name: "measurement.finalize", kind: Kind::Enum(&["lazy", "sync"]), default: "lazy", env: None, help: "analyse runs on demand (lazy) or right after each build (sync)" },
     Key { name: "measurement.cargo-json", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: None, help: "observe Cargo JSON messages when the user already requested them on a non-terminal stdout" },
     Key { name: "measurement.strict", kind: Kind::Bool, default: "false", env: None, help: "treat report/telemetry failures as command failures" },
@@ -62,27 +62,27 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
     Key { name: "fast.frontend-threads", kind: Kind::Threads, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
-    Key { name: "fast.early-cutoff", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: Some("HAUL_EARLY_CUTOFF"), help: "fast mode with the artifact cache: compile with Haul's compiler driver (rustc built against the toolchain's rustc-dev component, built once per toolchain in the background) so that an edit inside a function body its dependents cannot observe does not rebuild them" },
+    Key { name: "fast.early-cutoff", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: Some("QRUST_EARLY_CUTOFF"), help: "fast mode with the artifact cache: compile with QuickRust's compiler driver (rustc built against the toolchain's rustc-dev component, built once per toolchain in the background) so that an edit inside a function body its dependents cannot observe does not rebuild them" },
     Key { name: "fast.linker", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: None, help: "fast mode on Linux (glibc): link with wild when it is on PATH (cargo install wild-linker), unless a linker is configured" },
-    Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
+    Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: QuickRust's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-min-link-ms", kind: Kind::Int, default: "300", env: None, help: "linked workspace outputs (binaries, tests, proc-macros) that compiled faster than this are not stored: copying them on every edit costs about what it saves" },
-    Key { name: "cache.max-size", kind: Kind::Space, default: "auto", env: Some("HAUL_CACHE_MAX_SIZE"), help: "the most disk Haul's cache (build directories, the artifact cache, compiler drivers, downloads) uses before it drops what was used least recently: a size (40GiB), a share of the disk (10%), or auto (10% of the disk, between 10 and 100 GiB)" },
-    Key { name: "cache.min-free", kind: Kind::Space, default: "auto", env: Some("HAUL_CACHE_MIN_FREE"), help: "free disk below which Haul's cache drops what was used least recently, whatever its size: a size, a share of the disk, or auto (5% of the disk, between 2 and 20 GiB)" },
+    Key { name: "cache.max-size", kind: Kind::Space, default: "auto", env: Some("QRUST_CACHE_MAX_SIZE"), help: "the most disk QuickRust's cache (build directories, the artifact cache, compiler drivers, downloads) uses before it drops what was used least recently: a size (40GiB), a share of the disk (10%), or auto (10% of the disk, between 10 and 100 GiB)" },
+    Key { name: "cache.min-free", kind: Kind::Space, default: "auto", env: Some("QRUST_CACHE_MIN_FREE"), help: "free disk below which QuickRust's cache drops what was used least recently, whatever its size: a size, a share of the disk, or auto (5% of the disk, between 2 and 20 GiB)" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
     Key { name: "artifacts.stale-days", kind: Kind::Int, default: "30", env: None, help: "age after which unused rebuildable artifacts become GC candidates" },
-    Key { name: "ci.budget-policy", kind: Kind::Str, default: ".haul/budgets.toml", env: None, help: "budget file, relative to the workspace root" },
+    Key { name: "ci.budget-policy", kind: Kind::Str, default: ".qrust/budgets.toml", env: None, help: "budget file, relative to the workspace root" },
     Key { name: "ci.baseline", kind: Kind::Str, default: "main", env: None, help: "default baseline name for budget evaluation" },
     Key { name: "ci.enforce-on-build", kind: Kind::Bool, default: "false", env: None, help: "evaluate budgets after ordinary build commands and fail on violations" },
-    Key { name: "self.update-url", kind: Kind::Str, default: "https://github.com/jowharshamshiri/haul/releases/latest/download", env: Some("HAUL_UPDATE_URL"), help: "where `haul self update` finds Haul's latest release (version.txt, haul-<target>.tar.gz and its .sha256)" },
-    Key { name: "toolchain.auto-update", kind: Kind::Enum(&["background", "off"]), default: "background", env: Some("HAUL_TOOLCHAIN_AUTO_UPDATE"), help: "once a day after a build, check in the background whether the channel it used (stable, beta, nightly, 1.xx) has a newer release, and install it for the next build; never in CI" },
-    Key { name: "toolchain.dist-server", kind: Kind::Str, default: "https://static.rust-lang.org", env: Some("HAUL_DIST_SERVER"), help: "where Haul downloads Rust releases from (a mirror of static.rust-lang.org)" },
+    Key { name: "self.update-url", kind: Kind::Str, default: "https://github.com/jowharshamshiri/quickrust/releases/latest/download", env: Some("QRUST_UPDATE_URL"), help: "where `qrust self update` finds QuickRust's latest release (version.txt, qrust-<target>.tar.gz and its .sha256)" },
+    Key { name: "toolchain.auto-update", kind: Kind::Enum(&["background", "off"]), default: "background", env: Some("QRUST_TOOLCHAIN_AUTO_UPDATE"), help: "once a day after a build, check in the background whether the channel it used (stable, beta, nightly, 1.xx) has a newer release, and install it for the next build; never in CI" },
+    Key { name: "toolchain.dist-server", kind: Kind::Str, default: "https://static.rust-lang.org", env: Some("QRUST_DIST_SERVER"), help: "where QuickRust downloads Rust releases from (a mirror of static.rust-lang.org)" },
     Key { name: "security.persist-environment", kind: Kind::Enum(&["allowlist", "none"]), default: "allowlist", env: None, help: "which environment values may be persisted in run records" },
     Key { name: "security.redact-path-home", kind: Kind::Bool, default: "true", env: None, help: "tokenise home/workspace paths in exported reports" },
     Key { name: "benchmark.allow-mutation", kind: Kind::Bool, default: "false", env: None, help: "allow synthetic source edits without interactive confirmation" },
 ];
 
-/// Variables in the `HAUL_` namespace that are not configuration keys.
+/// Variables in the `QRUST_` namespace that are not configuration keys.
 const RESERVED_ENV: &[&str] = &[
     crate::ENV_SESSION,
     crate::ENV_EVENT_DIR,
@@ -157,15 +157,15 @@ fn from_toml(key: &Key, v: &toml::Value, origin: &str) -> Result<Val, String> {
 fn env_name(key: &Key) -> String {
     match key.env {
         Some(name) => name.to_string(),
-        None => format!("HAUL_{}", key.name.replace(['.', '-'], "_").to_ascii_uppercase()),
+        None => format!("QRUST_{}", key.name.replace(['.', '-'], "_").to_ascii_uppercase()),
     }
 }
 
-/// Nearest ancestor of `start` that contains `.haul/config.toml`.
+/// Nearest ancestor of `start` that contains `.qrust/config.toml`.
 pub fn find_repo_config(start: &Path) -> Option<PathBuf> {
     let mut dir = Some(start);
     while let Some(d) = dir {
-        let p = d.join(".haul").join("config.toml");
+        let p = d.join(".qrust").join("config.toml");
         if p.is_file() {
             return Some(p);
         }
@@ -238,7 +238,7 @@ impl Config {
         }
         for (name, _) in std::env::vars_os() {
             let name = name.to_string_lossy();
-            if name.starts_with("HAUL_") && !RESERVED_ENV.contains(&name.as_ref()) && !KEYS.iter().any(|k| env_name(k) == name) {
+            if name.starts_with("QRUST_") && !RESERVED_ENV.contains(&name.as_ref()) && !KEYS.iter().any(|k| env_name(k) == name) {
                 return Err(format!("unknown configuration variable `{}`", name));
             }
         }
@@ -248,7 +248,7 @@ impl Config {
     /// Loads the effective configuration for a command started in `cwd`.
     pub fn load(cwd: &Path) -> Result<Config, String> {
         let mut c = Config::defaults();
-        c.apply_file(&crate::util::haul_home().join("config.toml"))?;
+        c.apply_file(&crate::util::qrust_home().join("config.toml"))?;
         if let Some(repo) = find_repo_config(cwd) {
             c.apply_file(&repo)?;
             c.repo_config = Some(repo);
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn rejects_unknown_keys_and_bad_values() {
-        let dir = std::env::temp_dir().join(format!("haul-cfg-{}", crate::util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-cfg-{}", crate::util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.toml");
         fs::write(&p, "[cache]\nprovidr = \"sccache\"\n").unwrap();

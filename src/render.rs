@@ -117,7 +117,7 @@ pub fn timing(r: &Value, out: &mut String, p: Presentation) {
     let rows: Vec<Vec<String>> = sorted
         .iter()
         .take(p.rows(15))
-        // Haul's artifact cache where it was in play; otherwise sccache's view of the unit.
+        // QuickRust's artifact cache where it was in play; otherwise sccache's view of the unit.
         .map(|u| vec![pkg(u), vstr(u, "kind"), vstr(u, "mode"), dur(&u["duration_ns"]), if u["on_critical_path"] == true { "yes".into() } else { "no".into() }, vstr(u, "role"), u["artifact_cache"].as_str().map(str::to_string).unwrap_or_else(|| vstr(u, "cacheability"))])
         .collect();
     let _ = writeln!(out, "  {} ({} of {}):", if p.as_given { "units" } else { "slowest units" }, rows.len(), units.len());
@@ -282,7 +282,7 @@ pub fn inventory(inv: &Value, out: &mut String) {
         let _ = writeln!(out, "  hard-linked copies counted once: {} excluded", bytes(&inv["hardlink_duplicate_bytes_excluded"]));
     }
     if inv["shared_outside_bytes"].as_u64().unwrap_or(0) > 0 {
-        let _ = writeln!(out, "  shared with other directories (Haul's artifact cache links outputs): {} — deleting them here frees nothing", bytes(&inv["shared_outside_bytes"]));
+        let _ = writeln!(out, "  shared with other directories (QuickRust's artifact cache links outputs): {} — deleting them here frees nothing", bytes(&inv["shared_outside_bytes"]));
     }
     for e in inv["errors"]["samples"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "  unreadable: {}", num(e));
@@ -319,7 +319,7 @@ pub fn gc_plan(inv: &Value, out: &mut String) {
         let _ = writeln!(out, "  size budget {}: currently {}, {} after the plan — {}", bytes(&b["target_bytes"]), bytes(&b["current_bytes"]), bytes(&b["after_plan_bytes"]), if b["met_by_plan"] == true { "met" } else { "NOT met by stale output alone" });
     }
     candidates(inv, 25, out);
-    let _ = writeln!(out, "  Nothing was deleted: Haul's cache removes whole build directories when it needs the space (`haul gc`), and `cargo clean` is unchanged.");
+    let _ = writeln!(out, "  Nothing was deleted: QuickRust's cache removes whole build directories when it needs the space (`qrust gc`), and `cargo clean` is unchanged.");
 }
 
 fn candidates(inv: &Value, rows: usize, out: &mut String) {
@@ -633,13 +633,13 @@ pub fn html(r: &Value) -> String {
     let id = vstr(&r["run"], "id");
     let _ = write!(
         o,
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Haul run {}</title>\n<style>\
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>QuickRust run {}</title>\n<style>\
 body{{font:16px/1.5 system-ui,sans-serif;margin:2rem auto;max-width:72rem;padding:0 1rem;color:#1a1a1a;background:#fff}}\
 h1,h2{{line-height:1.2}}table{{border-collapse:collapse;width:100%;margin:1rem 0 2rem}}caption{{text-align:left;font-weight:600;padding:.25rem 0}}\
 th,td{{border:1px solid #767676;padding:.3rem .6rem;text-align:left;vertical-align:top}}thead th{{background:#e8e8e8}}\
 tbody th{{font-weight:600}}pre{{white-space:pre-wrap;background:#f3f3f3;padding:1rem;border:1px solid #767676}}\
 @media (prefers-color-scheme:dark){{body{{background:#121212;color:#f0f0f0}}thead th,pre{{background:#2a2a2a}}th,td,pre{{border-color:#9a9a9a}}}}\
-</style></head><body><main>\n<h1>Haul run {}</h1>\n",
+</style></head><body><main>\n<h1>QuickRust run {}</h1>\n",
         esc(&id),
         esc(&id)
     );

@@ -9,7 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// `rustc -vV` of `rustc` (a path, or a bare name looked up on `PATH` as Cargo may pass it),
-/// remembered in `memo_dir` per binary identity. Haul's own `rustc` proxy picks a toolchain on
+/// remembered in `memo_dir` per binary identity. QuickRust's own `rustc` proxy picks a toolchain on
 /// every call, so its answers are not remembered.
 pub fn version_verbose(memo_dir: &Path, rustc: &str) -> Result<String, String> {
     let text = ask(memo_dir, rustc, "-vV")?;
@@ -65,7 +65,7 @@ mod tests {
 
     #[test]
     fn a_compiler_is_described_by_its_own_account_whatever_it_is_called() {
-        let dir = std::env::temp_dir().join(format!("haul-rustc-vv-{}", util::new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-rustc-vv-{}", util::new_id()));
         // By bare name through PATH, as Cargo may pass it, and by absolute path: the same compiler.
         let by_name = version_verbose(&dir, "rustc").unwrap();
         let path = util::which("rustc").unwrap();

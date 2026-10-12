@@ -1,30 +1,30 @@
 [package]
-name = "haul"
+name = "quickrust"
 version = "{{ project.version }}"
 edition = "2021"
 rust-version = "1.80"
-description = "Drop-in Cargo replacement: an orchestration, observability and policy layer around upstream Cargo"
+description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
 license = "MIT OR Apache-2.0"
-default-run = "haul"
+default-run = "qrust"
 
-# The benchmark harness is a separate member so its code never ships in Haul.
+# The benchmark harness is a separate member so its code never ships in QuickRust.
 [workspace]
 members = [".", "bench"]
 
 [lib]
-name = "haul"
+name = "quickrust"
 path = "src/lib.rs"
 
-# `haul` is a multi-call binary: invoked under the name `cargo` it is the
-# compatibility shim. No bin target is named `cargo` on purpose, so that
-# `cargo install` can never overwrite rustup's proxy; use `haul install-shim`.
+# `qrust` is a multi-call binary: run as `cargo` (and as `rustc`, `rustfmt`, …, the proxies
+# `qrust setup` makes in ~/.qrust/bin) it is that program. No bin target is named `cargo`, so that
+# nothing installing this crate can put a `cargo` anywhere.
 [[bin]]
-name = "haul"
-path = "src/bin/haul.rs"
+name = "qrust"
+path = "src/bin/qrust.rs"
 
 [[bin]]
-name = "haul-rustc-wrapper"
-path = "src/bin/haul-rustc-wrapper.rs"
+name = "qrust-rustc-wrapper"
+path = "src/bin/qrust-rustc-wrapper.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -32,7 +32,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 sha2 = "0.10"
 # Content hashes of the artifact cache. 1.8.3 and later need Rust 1.85 (edition 2024);
-# Haul declares 1.80.
+# QuickRust declares 1.80.
 blake3 = "=1.8.2"
 # Downloads (toolchains, registry index lines, crates): rustls with ring, roots from webpki-roots,
 # proxies from the environment. ureq 3 needs Rust 1.85.

@@ -168,24 +168,24 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// The Cargo home of every build Haul runs: `$HAUL_HOME/cargo` (see `engine`).
+/// The Cargo home of every build QuickRust runs: `$QRUST_HOME/cargo` (see `engine`).
 pub fn cargo_home() -> PathBuf {
-    haul_home().join("cargo")
+    qrust_home().join("cargo")
 }
 
-/// Haul's own state directory (`HAUL_HOME`, default `~/.haul`).
-pub fn haul_home() -> PathBuf {
+/// QuickRust's own state directory (`QRUST_HOME`, default `~/.qrust`).
+pub fn qrust_home() -> PathBuf {
     std::env::var_os(crate::ENV_HOME)
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| home_dir().map(|h| h.join(".haul")))
-        .unwrap_or_else(|| std::env::temp_dir().join("haul"))
+        .or_else(|| home_dir().map(|h| h.join(".qrust")))
+        .unwrap_or_else(|| std::env::temp_dir().join("qrust"))
 }
 
-/// Haul's disposable cache (`$HAUL_HOME/cache`): everything in it can be rebuilt or
-/// downloaded again, and Haul removes what it must to stay within its space (see `space`).
+/// QuickRust's disposable cache (`$QRUST_HOME/cache`): everything in it can be rebuilt or
+/// downloaded again, and QuickRust removes what it must to stay within its space (see `space`).
 pub fn cache_dir() -> PathBuf {
-    haul_home().join("cache")
+    qrust_home().join("cache")
 }
 
 /// Remembered answers (what a compiler says about itself, which workspace a directory is in).
@@ -247,7 +247,7 @@ impl Tokenizer {
         }
         if redact_home {
             add(cargo_home(), "$CARGO_HOME");
-            add(haul_home(), "$HAUL_HOME");
+            add(qrust_home(), "$QRUST_HOME");
             if let Some(h) = home_dir() {
                 add(h, "$HOME");
             }
@@ -488,7 +488,7 @@ impl SharedLock {
     }
 }
 
-/// Private directories for Haul state (SEC-017).
+/// Private directories for QuickRust state (SEC-017).
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
@@ -680,19 +680,19 @@ mod tests {
     #[test]
     fn verbatim_windows_paths_are_written_as_people_write_them() {
         let p = |s: &str| without_verbatim_prefix(PathBuf::from(s));
-        assert_eq!(p(r"\\?\D:\a\_temp\haul-home\bin\haul.exe"), PathBuf::from(r"D:\a\_temp\haul-home\bin\haul.exe"));
+        assert_eq!(p(r"\\?\D:\a\_temp\qrust-home\bin\qrust.exe"), PathBuf::from(r"D:\a\_temp\qrust-home\bin\qrust.exe"));
         assert_eq!(p(r"\\?\UNC\server\share\x"), PathBuf::from(r"\\server\share\x"));
         // Not a drive path (a volume GUID), or too long for the classic limit: as it is.
         assert_eq!(p(r"\\?\Volume{0}\x"), PathBuf::from(r"\\?\Volume{0}\x"));
         let long = format!(r"\\?\C:\{}", "d\\".repeat(200));
         assert_eq!(p(&long), PathBuf::from(&long));
-        assert_eq!(p("/home/u/.haul/bin/haul"), PathBuf::from("/home/u/.haul/bin/haul"));
+        assert_eq!(p("/home/u/.qrust/bin/qrust"), PathBuf::from("/home/u/.qrust/bin/qrust"));
     }
     use super::*;
 
     #[test]
     fn an_exclusive_lock_waits_for_its_holder() {
-        let dir = std::env::temp_dir().join(format!("haul-lock-{}", new_id()));
+        let dir = std::env::temp_dir().join(format!("qrust-lock-{}", new_id()));
         let path = dir.join("x.lock");
         let held = ExclusiveLock::acquire(&path).unwrap();
         let (tx, rx) = std::sync::mpsc::channel();

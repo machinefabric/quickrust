@@ -18,7 +18,7 @@ use std::path::Path;
 const VARIANTS_KEPT: usize = 8;
 const REBUILD_LOG_KEPT: usize = 12;
 
-/// Last known fingerprints of every unit Haul has seen in a workspace.
+/// Last known fingerprints of every unit QuickRust has seen in a workspace.
 pub struct Index {
     v: Value,
 }
@@ -205,7 +205,7 @@ pub fn rebuilds(graph: &Graph, index: &Index, scripts: &[Value]) -> Value {
             } else {
                 (
                     "unknown",
-                    "the fingerprint visible to Haul is unchanged".into(),
+                    "the fingerprint visible to QuickRust is unchanged".into(),
                     vec![],
                     vec!["evidence gap: Cargo's own fingerprint is not observable on a stable toolchain; possible causes include artifacts removed outside Cargo or inputs rustc did not list in its dep-info".into()],
                     "low",
@@ -526,7 +526,7 @@ pub fn duplication(meta: Option<&Metadata>, graph: &Graph, index: &Index) -> Val
             "duplicate_units": dup_units,
             "duplicate_time_ns": dup_ns,
             "duplicate_bytes": dup_bytes,
-            "basis": "variants observed by Haul whose artifacts still exist; each group keeps its most expensive variant as the necessary one",
+            "basis": "variants observed by QuickRust whose artifacts still exist; each group keeps its most expensive variant as the necessary one",
         },
     })
 }
@@ -641,7 +641,7 @@ pub fn incremental_policy(graph: &Graph, session: &Value) -> Value {
     v["explanation"] = json!(if conflict {
         format!(
             "{} unit(s) were compiled incrementally; sccache cannot cache incremental rustc invocations, so those units always compile locally. \
-             Incremental state speeds up repeated edits in one checkout, sccache reuses whole results across checkouts and machines: pick per workload and measure with `haul experiment`.",
+             Incremental state speeds up repeated edits in one checkout, sccache reuses whole results across checkouts and machines: pick per workload and measure with `qrust experiment`.",
             inc.len()
         )
     } else if sccache {
@@ -664,7 +664,7 @@ pub fn worktrees(store: &WsStore, cfg: &crate::config::Config) -> Result<Value, 
     };
     let repo_of = |dir: &Path| git(dir, &["rev-parse", "--path-format=absolute", "--git-common-dir"]);
     let this_repo = repo_of(&root);
-    // Candidate roots: linked worktrees of this repository plus every workspace Haul has recorded.
+    // Candidate roots: linked worktrees of this repository plus every workspace QuickRust has recorded.
     let mut candidates: BTreeSet<std::path::PathBuf> = BTreeSet::new();
     if let (Some(top), Some(list)) = (git(&root, &["rev-parse", "--show-toplevel"]), git(&root, &["worktree", "list", "--porcelain"])) {
         let rel = root.strip_prefix(util::canon(Path::new(&top))).unwrap_or(Path::new("")).to_path_buf();
@@ -754,8 +754,8 @@ pub fn worktrees(store: &WsStore, cfg: &crate::config::Config) -> Result<Value, 
     let advice = if total_units > 0 {
         json!([
             "identical units are compiled and stored once per build directory; a compiler cache (cache.provider = \"sccache\") reuses those results across directories without sharing writable state",
-            "Haul does not point several worktrees at one writable target directory: Cargo serialises builds there with a lock, and different branches would keep invalidating each other",
-            "Cargo's planned cross-workspace cache addresses this natively; Haul will delegate to it when it is available on the selected toolchain",
+            "QuickRust does not point several worktrees at one writable target directory: Cargo serialises builds there with a lock, and different branches would keep invalidating each other",
+            "Cargo's planned cross-workspace cache addresses this natively; QuickRust will delegate to it when it is available on the selected toolchain",
         ])
     } else {
         json!([])
@@ -767,7 +767,7 @@ pub fn worktrees(store: &WsStore, cfg: &crate::config::Config) -> Result<Value, 
         "others": others,
         "summary": { "duplicate_units": total_units, "duplicate_compile_ns": total_ns, "duplicate_bytes": total_bytes },
         "advice": advice,
-        "unavailable": if this_repo.is_none() { json!({ "worktrees": "not a git repository; only workspaces previously built through Haul are compared" }) } else { json!({}) },
+        "unavailable": if this_repo.is_none() { json!({ "worktrees": "not a git repository; only workspaces previously built through QuickRust are compared" }) } else { json!({}) },
     }))
 }
 

@@ -1,11 +1,11 @@
-//! Installing Haul on a machine (`haul setup`) and removing it (`haul self uninstall`).
+//! Installing QuickRust on a machine (`qrust setup`) and removing it (`qrust self uninstall`).
 //!
-//! Setup puts Haul into `~/.haul/bin` (the binary, its rustc wrapper, and the proxies: Haul as
+//! Setup puts QuickRust into `~/.qrust/bin` (the binary, its rustc wrapper, and the proxies: QuickRust as
 //! `cargo`, `rustc`, `rustfmt`, …), puts that directory first on `PATH` in the shell's startup
 //! files, imports what is the user's own from Cargo's home (`~/.cargo`, or `CARGO_HOME`) once —
 //! registry credentials and the `[registries] [registry] [source] [net] [http]` tables of its
 //! configuration — and installs the default toolchain. Running it again repairs what is missing
-//! and never imports again. `setup.json` in Haul's home records what it did, for `doctor` and
+//! and never imports again. `setup.json` in QuickRust's home records what it did, for `doctor` and
 //! for uninstalling.
 
 use crate::engine;
@@ -15,7 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Marks the lines setup adds to shell startup files.
-const MARK: &str = "# Added by `haul setup`: Haul's bin first on PATH";
+const MARK: &str = "# Added by `qrust setup`: QuickRust's bin first on PATH";
 /// The configuration tables imported from Cargo's home: where crates come from and how.
 const IMPORTED_TABLES: &[&str] = &["registries", "registry", "source", "net", "http"];
 
@@ -26,7 +26,7 @@ pub struct Options {
 }
 
 fn record_path() -> PathBuf {
-    util::haul_home().join("setup.json")
+    util::qrust_home().join("setup.json")
 }
 
 fn home() -> Result<PathBuf, String> {
@@ -57,8 +57,8 @@ pub type Imported = (PathBuf, Vec<String>, Vec<String>);
 pub fn setup(opts: &Options) -> Result<Done, String> {
     let bin = engine::bin_dir();
     util::create_private_dir(&bin).map_err(|e| format!("cannot create {}: {}", bin.display(), e))?;
-    let haul = install_binaries(&bin)?;
-    let proxies = link_proxies(&bin, &haul)?;
+    let qrust = install_binaries(&bin)?;
+    let proxies = link_proxies(&bin, &qrust)?;
     let path_edits = if opts.modify_path { put_on_path(&bin)? } else { vec![] };
     let previous = util::read_json(&record_path());
     let import = match previous.as_ref().and_then(|r| r.get("imported_from")).filter(|v| !v.is_null()) {
@@ -87,20 +87,20 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
     Ok(Done { version: env!("CARGO_PKG_VERSION").to_string(), bin, proxies, path_edits, import })
 }
 
-/// Copies the running Haul and its rustc wrapper into `bin` (unless they run from there);
-/// returns `bin/haul`.
+/// Copies the running QuickRust and its rustc wrapper into `bin` (unless they run from there);
+/// returns `bin/qrust`.
 fn install_binaries(bin: &Path) -> Result<PathBuf, String> {
     let (me, _) = crate::resolve::self_identity();
     install_from(bin, &me)
 }
 
-/// Copies the Haul binary `haul` and the rustc wrapper next to it into `bin` (unless they are
-/// there already); returns `bin/haul`.
+/// Copies the QuickRust binary `qrust` and the rustc wrapper next to it into `bin` (unless they are
+/// there already); returns `bin/qrust`.
 fn install_from(bin: &Path, me: &Path) -> Result<PathBuf, String> {
     let me = me.to_path_buf();
-    let wrapper = util::exe_candidates(me.parent().unwrap_or(Path::new(".")), "haul-rustc-wrapper").into_iter().find(|p| util::is_executable(p)).ok_or_else(|| format!("haul-rustc-wrapper is not next to {}; Haul is installed with it", me.display()))?;
-    let target = util::exe_candidates(bin, "haul").remove(0);
-    for (from, to) in [(&me, target.clone()), (&wrapper, util::exe_candidates(bin, "haul-rustc-wrapper").remove(0))] {
+    let wrapper = util::exe_candidates(me.parent().unwrap_or(Path::new(".")), "qrust-rustc-wrapper").into_iter().find(|p| util::is_executable(p)).ok_or_else(|| format!("qrust-rustc-wrapper is not next to {}; QuickRust is installed with it", me.display()))?;
+    let target = util::exe_candidates(bin, "qrust").remove(0);
+    for (from, to) in [(&me, target.clone()), (&wrapper, util::exe_candidates(bin, "qrust-rustc-wrapper").remove(0))] {
         if util::canon(from) == util::canon(&to) {
             continue;
         }
@@ -119,23 +119,23 @@ fn install_from(bin: &Path, me: &Path) -> Result<PathBuf, String> {
     Ok(target)
 }
 
-/// Makes `cargo` and every proxy in `bin` Haul (`bin/haul`). An entry there that is not Haul's
+/// Makes `cargo` and every proxy in `bin` QuickRust (`bin/qrust`). An entry there that is not QuickRust's
 /// is an error, never overwritten.
-fn link_proxies(bin: &Path, haul: &Path) -> Result<usize, String> {
+fn link_proxies(bin: &Path, qrust: &Path) -> Result<usize, String> {
     let names: Vec<&str> = std::iter::once("cargo").chain(engine::PROXIES.iter().copied()).collect();
     for name in &names {
         let link = util::exe_candidates(bin, name).remove(0);
         if let Ok(md) = fs::symlink_metadata(&link) {
-            if !is_haul(&link, &md, haul) {
-                return Err(format!("{} exists and is not Haul; move it away and run `haul setup` again", link.display()));
+            if !is_qrust(&link, &md, qrust) {
+                return Err(format!("{} exists and is not QuickRust; move it away and run `qrust setup` again", link.display()));
             }
         }
         let staged = bin.join(format!(".{}.{}", name, std::process::id()));
         let _ = fs::remove_file(&staged);
         #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(haul.file_name().unwrap_or_default(), &staged);
+        let made = std::os::unix::fs::symlink(qrust.file_name().unwrap_or_default(), &staged);
         #[cfg(not(unix))]
-        let made = fs::hard_link(haul, &staged).or_else(|_| fs::copy(haul, &staged).map(|_| ()));
+        let made = fs::hard_link(qrust, &staged).or_else(|_| fs::copy(qrust, &staged).map(|_| ()));
         made.and_then(|_| fs::rename(&staged, &link)).map_err(|e| {
             let _ = fs::remove_file(&staged);
             format!("cannot create {}: {}", link.display(), e)
@@ -144,35 +144,35 @@ fn link_proxies(bin: &Path, haul: &Path) -> Result<usize, String> {
     Ok(names.len())
 }
 
-/// Whether the entry at `link` is Haul: a link to a Haul binary (Haul's `bin` holds only Haul's
-/// links), or on Windows a copy of `haul`.
-fn is_haul(link: &Path, md: &fs::Metadata, haul: &Path) -> bool {
+/// Whether the entry at `link` is QuickRust: a link to a QuickRust binary (QuickRust's `bin` holds only QuickRust's
+/// links), or on Windows a copy of `qrust`.
+fn is_qrust(link: &Path, md: &fs::Metadata, qrust: &Path) -> bool {
     if md.file_type().is_symlink() {
         return true;
     }
-    cfg!(windows) && md.len() == fs::metadata(haul).map(|m| m.len()).unwrap_or(u64::MAX) && util::blake3_file(link).ok() == util::blake3_file(haul).ok()
+    cfg!(windows) && md.len() == fs::metadata(qrust).map(|m| m.len()).unwrap_or(u64::MAX) && util::blake3_file(link).ok() == util::blake3_file(qrust).ok()
 }
 
 /// The shell code that puts `bin` first on `PATH` (sh and fish).
 #[cfg(not(windows))]
 fn env_scripts(bin: &Path) -> (String, String) {
     let p = shell_path(bin);
-    let sh = format!("#!/bin/sh\n# Haul's bin first on PATH: Haul as cargo, rustc and the other toolchain programs.\ncase \"$PATH\" in\n    \"{p}\" | \"{p}\":*) ;;\n    *) export PATH=\"{p}:$PATH\" ;;\nesac\n");
-    let fish = format!("# Haul's bin first on PATH: Haul as cargo, rustc and the other toolchain programs.\nif test \"$PATH[1]\" != \"{p}\"\n    set -gx PATH \"{p}\" $PATH\nend\n");
+    let sh = format!("#!/bin/sh\n# QuickRust's bin first on PATH: QuickRust as cargo, rustc and the other toolchain programs.\ncase \"$PATH\" in\n    \"{p}\" | \"{p}\":*) ;;\n    *) export PATH=\"{p}:$PATH\" ;;\nesac\n");
+    let fish = format!("# QuickRust's bin first on PATH: QuickRust as cargo, rustc and the other toolchain programs.\nif test \"$PATH[1]\" != \"{p}\"\n    set -gx PATH \"{p}\" $PATH\nend\n");
     (sh, fish)
 }
 
-/// Writes Haul's environment files and sources them from the shell startup files that exist
+/// Writes QuickRust's environment files and sources them from the shell startup files that exist
 /// (`.profile` always); returns the files changed.
 #[cfg(not(windows))]
 fn put_on_path(bin: &Path) -> Result<Vec<PathBuf>, String> {
     let home = home()?;
-    let haul_home = util::haul_home();
+    let qrust_home = util::qrust_home();
     let (sh, fish) = env_scripts(bin);
     let write = |p: &Path, text: &str| util::write_atomic(p, text.as_bytes()).map_err(|e| format!("cannot write {}: {}", p.display(), e));
-    write(&haul_home.join("env"), &sh)?;
-    write(&haul_home.join("env.fish"), &fish)?;
-    let line = format!(". \"{}\"", shell_path(&haul_home.join("env")));
+    write(&qrust_home.join("env"), &sh)?;
+    write(&qrust_home.join("env.fish"), &fish)?;
+    let line = format!(". \"{}\"", shell_path(&qrust_home.join("env")));
     let mut changed = vec![];
     let zsh = util::which("zsh").is_some();
     for (name, wanted) in [(".profile", true), (".bash_profile", false), (".bashrc", false), (".zshenv", zsh)] {
@@ -190,8 +190,8 @@ fn put_on_path(bin: &Path) -> Result<Vec<PathBuf>, String> {
     }
     let fish_dir = home.join(".config/fish");
     if fish_dir.is_dir() {
-        let conf = fish_dir.join("conf.d/haul.fish");
-        let wanted = format!("{}\nsource \"{}\"\n", MARK, shell_path(&haul_home.join("env.fish")));
+        let conf = fish_dir.join("conf.d/qrust.fish");
+        let wanted = format!("{}\nsource \"{}\"\n", MARK, shell_path(&qrust_home.join("env.fish")));
         if fs::read_to_string(&conf).ok().as_deref() != Some(wanted.as_str()) {
             fs::create_dir_all(conf.parent().unwrap_or(&fish_dir)).map_err(|e| e.to_string())?;
             write(&conf, &wanted)?;
@@ -212,7 +212,7 @@ fn put_on_path(bin: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(vec![PathBuf::from("HKCU\\Environment\\Path")])
 }
 
-/// Imports the user's own settings from Cargo's home into Haul's, once: credentials, and the
+/// Imports the user's own settings from Cargo's home into QuickRust's, once: credentials, and the
 /// tables of its configuration that say where crates come from. `None` when there is nothing.
 fn import_cargo_home() -> Result<Option<Imported>, String> {
     let from = std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).filter(|p| *p != util::cargo_home()).or_else(|| home().ok().map(|h| h.join(".cargo")));
@@ -225,7 +225,7 @@ fn import_cargo_home() -> Result<Option<Imported>, String> {
     if let Some(cred) = first(["credentials.toml", "credentials"]) {
         let dest = to.join("credentials.toml");
         if dest.exists() {
-            skipped.push(format!("{} (Haul's Cargo home has credentials already)", cred.display()));
+            skipped.push(format!("{} (QuickRust's Cargo home has credentials already)", cred.display()));
         } else {
             let text = fs::read(&cred).map_err(|e| format!("cannot read {}: {}", cred.display(), e))?;
             write_private(&dest, &text)?;
@@ -251,7 +251,7 @@ fn import_cargo_home() -> Result<Option<Imported>, String> {
                 imported.retain(|i| !i.starts_with('['));
             } else {
                 let body = toml::to_string(&kept).map_err(|e| e.to_string())?;
-                let header = format!("# Imported by `haul setup` from {} (where crates come from).\n# This is the Cargo configuration of every build Haul runs.\n\n", config.display());
+                let header = format!("# Imported by `qrust setup` from {} (where crates come from).\n# This is the Cargo configuration of every build QuickRust runs.\n\n", config.display());
                 write_private(&dest, format!("{}{}", header, body).as_bytes())?;
             }
         }
@@ -269,7 +269,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Removes what setup added to shell startup files and Haul's home with everything in it:
+/// Removes what setup added to shell startup files and QuickRust's home with everything in it:
 /// installed toolchains and programs, caches, records. Returns what was removed.
 pub fn uninstall() -> Result<Vec<String>, String> {
     let mut removed = vec![];
@@ -285,7 +285,7 @@ pub fn uninstall() -> Result<Vec<String>, String> {
             continue;
         }
         let Ok(text) = fs::read_to_string(&f) else { continue };
-        let source_line = format!(". \"{}\"", shell_path(&util::haul_home().join("env")));
+        let source_line = format!(". \"{}\"", shell_path(&util::qrust_home().join("env")));
         if let Some(restored) = without_setup_lines(&text, &source_line) {
             util::write_atomic(&f, restored.as_bytes()).map_err(|e| format!("cannot write {}: {}", f.display(), e))?;
             removed.push(format!("the PATH line in {}", f.display()));
@@ -297,7 +297,7 @@ pub fn uninstall() -> Result<Vec<String>, String> {
         let script = format!("$b = '{}'; $p = [Environment]::GetEnvironmentVariable('Path', 'User'); [Environment]::SetEnvironmentVariable('Path', ((($p -split ';') | Where-Object {{ $_ -and $_ -ne $b }}) -join ';'), 'User')", util::path_str(&bin).replace('\'', "''"));
         let _ = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output();
     }
-    let home = util::haul_home();
+    let home = util::qrust_home();
     if home.exists() {
         fs::remove_dir_all(&home).map_err(|e| format!("cannot remove {}: {}", home.display(), e))?;
         removed.push(util::path_str(&home));
@@ -324,7 +324,7 @@ fn without_setup_lines(text: &str, source_line: &str) -> Option<String> {
     found.then(|| lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| format!("{}\n", l)).collect())
 }
 
-/// The release Haul's binaries are published for, on this machine: Linux gets the static (musl)
+/// The release QuickRust's binaries are published for, on this machine: Linux gets the static (musl)
 /// build, which runs on any distribution.
 pub fn release_target() -> Option<&'static str> {
     Some(match (std::env::consts::OS, std::env::consts::ARCH) {
@@ -337,56 +337,56 @@ pub fn release_target() -> Option<&'static str> {
     })
 }
 
-/// A self-update's outcome: the version before and the one now (equal when Haul was current).
+/// A self-update's outcome: the version before and the one now (equal when QuickRust was current).
 pub struct Updated {
     pub from: String,
     pub to: String,
 }
 
-/// `haul self update`: the latest release from `server` (`self.update-url`: where the release's
-/// `version.txt`, `haul-<target>.tar.gz` and its `.sha256` are), verified, checked to run and to
-/// be the version it says, and installed into Haul's `bin` in place of the running one.
+/// `qrust self update`: the latest release from `server` (`self.update-url`: where the release's
+/// `version.txt`, `qrust-<target>.tar.gz` and its `.sha256` are), verified, checked to run and to
+/// be the version it says, and installed into QuickRust's `bin` in place of the running one.
 pub fn self_update(server: &str) -> Result<Updated, String> {
     let bin = engine::bin_dir();
-    let installed = util::exe_candidates(&bin, "haul").remove(0);
+    let installed = util::exe_candidates(&bin, "qrust").remove(0);
     if !installed.is_file() {
-        return Err(format!("Haul is not set up ({} does not exist): `haul setup` installs it, then `haul self update` keeps it current", installed.display()));
+        return Err(format!("QuickRust is not set up ({} does not exist): `qrust setup` installs it, then `qrust self update` keeps it current", installed.display()));
     }
-    let target = release_target().ok_or("Haul publishes no release for this platform; build it from source")?;
+    let target = release_target().ok_or("QuickRust publishes no release for this platform; build it from source")?;
     let server = server.trim_end_matches('/');
     let client = crate::net::Client::new();
     let latest = match client.get_bytes(&format!("{}/version.txt", server), &[]) {
         Ok(text) => String::from_utf8_lossy(&text).trim().to_string(),
-        Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("no Haul release is published at {} yet", server)),
+        Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("no QuickRust release is published at {} yet", server)),
         Err(e) => return Err(e.to_string()),
     };
     let current = env!("CARGO_PKG_VERSION").to_string();
     let newer = match (semver::Version::parse(&latest), semver::Version::parse(&current)) {
         (Ok(l), Ok(c)) => l > c,
         (Err(e), _) => return Err(format!("{}/version.txt is not a version ({:?}: {})", server, latest, e)),
-        (_, Err(e)) => return Err(format!("this Haul's version {:?} is not a version: {}", current, e)),
+        (_, Err(e)) => return Err(format!("this QuickRust's version {:?} is not a version: {}", current, e)),
     };
     if !newer {
         return Ok(Updated { from: current.clone(), to: current });
     }
-    let name = format!("haul-{}", target);
+    let name = format!("qrust-{}", target);
     let sum = String::from_utf8_lossy(&client.get_bytes(&format!("{}/{}.tar.gz.sha256", server, name), &[]).map_err(|e| e.to_string())?).split_whitespace().next().unwrap_or("").to_string();
     let work = util::cache_dir().join("tmp").join(format!("self-update-{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
     let out = (|| {
         let archive = work.join(format!("{}.tar.gz", name));
         client.download(&format!("{}/{}.tar.gz", server, name), &archive, &sum, &mut |_, _| {}).map_err(|e| e.to_string())?;
-        let unpacked = work.join("haul");
+        let unpacked = work.join("qrust");
         crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, &name, &unpacked, 1 << 30).map_err(|e| e.to_string())?;
-        let new = util::exe_candidates(&unpacked, "haul").remove(0);
+        let new = util::exe_candidates(&unpacked, "qrust").remove(0);
         // It must run, and be the release it was published as.
-        let says = std::process::Command::new(&new).arg("--version").output().map_err(|e| format!("the downloaded Haul does not run: {}", e))?;
+        let says = std::process::Command::new(&new).arg("--version").output().map_err(|e| format!("the downloaded QuickRust does not run: {}", e))?;
         let says = String::from_utf8_lossy(&says.stdout).trim().to_string();
-        if says != format!("haul {}", latest) {
-            return Err(format!("the downloaded Haul says {:?}, not haul {}", says, latest));
+        if says != format!("qrust {}", latest) {
+            return Err(format!("the downloaded QuickRust says {:?}, not qrust {}", says, latest));
         }
-        let haul = install_from(&bin, &new)?;
-        link_proxies(&bin, &haul)?;
+        let qrust = install_from(&bin, &new)?;
+        link_proxies(&bin, &qrust)?;
         let mut record = util::read_json(&record_path()).unwrap_or_else(|| json!({ "format": 1 }));
         record["version"] = json!(latest);
         util::write_json(&record_path(), &record).map_err(|e| e.to_string())?;
@@ -396,7 +396,7 @@ pub fn self_update(server: &str) -> Result<Updated, String> {
     out
 }
 
-/// What `doctor` reports: whether Haul is set up, and whether its `bin` comes first on `PATH`.
+/// What `doctor` reports: whether QuickRust is set up, and whether its `bin` comes first on `PATH`.
 pub fn status() -> (Option<Value>, bool) {
     let record = util::read_json(&record_path());
     let first = util::which("cargo").map(|c| c.parent() == Some(engine::bin_dir().as_path())).unwrap_or(false);
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn uninstalling_restores_a_startup_file_exactly() {
-        let line = ". \"$HOME/.haul/env\"";
+        let line = ". \"$HOME/.qrust/env\"";
         for original in ["export A=1\n", "", "export A=1\n\nexport B=2\n"] {
             let sep = if original.is_empty() || original.ends_with('\n') { "" } else { "\n" };
             let edited = format!("{}{}\n{}\n{}\n", original, sep, MARK, line);

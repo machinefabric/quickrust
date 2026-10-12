@@ -1,4 +1,4 @@
-//! Command classification, and the parts of Cargo's configuration Haul needs to know.
+//! Command classification, and the parts of Cargo's configuration QuickRust needs to know.
 //!
 //! Classification never consumes or rewrites arguments (FR-001.1): it only
 //! peeks at them to decide how much observation a command gets.
@@ -187,7 +187,7 @@ pub fn classify(args: &[OsString]) -> Invocation {
     inv
 }
 
-/// The small part of Cargo's configuration Haul must know to stay transparent:
+/// The small part of Cargo's configuration QuickRust must know to stay transparent:
 /// a configured rustc wrapper (which our `RUSTC_WRAPPER` would otherwise mask,
 /// FR-100.4) and aliases (to classify commands). Parsed for analysis and
 /// wrapper preservation only; Cargo remains the execution truth (COMP-052).
@@ -360,16 +360,16 @@ pub fn apply_aliases(inv: &mut Invocation, subset: &CargoConfigSubset) {
     }
 }
 
-/// The first argument that makes the binary Haul whatever name it runs by: Haul starting itself
-/// (background work, the runner `cargo run` gets while Haul builds). Its `cargo`, `rustc`, … are
+/// The first argument that makes the binary QuickRust whatever name it runs by: QuickRust starting itself
+/// (background work, the runner `cargo run` gets while QuickRust builds). Its `cargo`, `rustc`, … are
 /// the same binary, and on Windows, where they are hard links, the running binary's path names
 /// whichever of them it was run as.
-pub const AS_HAUL: &str = "__haul";
+pub const AS_QRUST: &str = "__qrust";
 
-/// Haul itself, as a command (`AS_HAUL`): the binary at `exe` (`self_identity`).
-pub fn haul_command(exe: &Path) -> std::process::Command {
+/// QuickRust itself, as a command (`AS_QRUST`): the binary at `exe` (`self_identity`).
+pub fn qrust_command(exe: &Path) -> std::process::Command {
     let mut c = std::process::Command::new(exe);
-    c.arg(AS_HAUL);
+    c.arg(AS_QRUST);
     c
 }
 
@@ -380,8 +380,8 @@ pub fn self_identity() -> (PathBuf, Option<(u64, u64)>) {
     (exe, id)
 }
 
-/// Detects that the Cargo Haul just executed is Haul again (COMP-022): a linked toolchain whose
-/// `cargo` leads back to Haul.
+/// Detects that the Cargo QuickRust just executed is QuickRust again (COMP-022): a linked toolchain whose
+/// `cargo` leads back to QuickRust.
 /// The guard carries the delegating process id; a legitimate nested invocation
 /// has a build script or Cargo itself as its parent instead.
 pub fn recursion_detected() -> bool {

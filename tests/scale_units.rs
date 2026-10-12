@@ -1,4 +1,4 @@
-//! Scale (NFR-SCALE-001, NFR-006): Haul's analysis of a build of 10,000 units. Slow, so outside
+//! Scale (NFR-SCALE-001, NFR-006): QuickRust's analysis of a build of 10,000 units. Slow, so outside
 //! the default run (`scale_inventory` is its companion; each lives in a test binary of its own,
 //! see `common::measure`):
 //!
@@ -51,7 +51,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     let events = Path::new(session["events_dir"].as_str().unwrap()).to_path_buf();
     let start = session["started_wall_ns"].as_u64().unwrap();
     let deps_dir = sb.target_dir(&p).join("debug/deps");
-    let registry = sb.dir.join("haul-home/cargo/registry/src/fake-0000");
+    let registry = sb.dir.join("qrust-home/cargo/registry/src/fake-0000");
 
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     // Unit i: name, hash, whether a proc macro, end time (ns after start) for scheduling.
@@ -117,7 +117,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     s["duration_ns"] = json!(latest_end + 1_000_000_000);
     fs::write(&record, serde_json::to_vec_pretty(&s).unwrap()).unwrap();
 
-    let (secs, rss, success, out) = measure(sb.haul(&p).args(["report", "--format", "json"]));
+    let (secs, rss, success, out) = measure(sb.qrust(&p).args(["report", "--format", "json"]));
     assert!(success, "the report of a build of {} units failed", UNITS);
     let report: Value = serde_json::from_slice(&out).unwrap();
     let units_reported = report["units"].as_array().map(|u| u.len()).unwrap_or(0);
@@ -138,7 +138,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     ok(sb.cargo(&p).arg("build"));
     // Only its time: this process now holds the large report, which a forked child counts in its
     // peak memory until it executes (see `common::measure`).
-    let (next_secs, _, success, _) = measure(sb.haul(&p).args(["report", "--format", "json"]));
+    let (next_secs, _, success, _) = measure(sb.qrust(&p).args(["report", "--format", "json"]));
     assert!(success);
     eprintln!("scale: unit index {} KiB; the next small build analysed in {:.2} s", index_bytes >> 10, next_secs);
     // Measured: 0.4 s, of which reading and rewriting the index is about 0.3 s.

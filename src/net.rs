@@ -1,4 +1,4 @@
-//! Haul's network access: one HTTP client for toolchain manifests and components, registry index
+//! QuickRust's network access: one HTTP client for toolchain manifests and components, registry index
 //! lines and crate files.
 //!
 //! Downloads are verified and resumable: a file is written to `<dest>.part` and renamed to `dest`
@@ -28,7 +28,7 @@ pub enum Error {
     Transport { url: String, message: String },
     /// A downloaded file is not the one published.
     Checksum { url: String, expected: String, actual: String },
-    /// A body larger than Haul reads into memory.
+    /// A body larger than QuickRust reads into memory.
     TooLarge { url: String, limit: u64 },
     /// Writing the download failed.
     Io { path: PathBuf, error: io::Error },
@@ -84,7 +84,7 @@ impl Client {
             .try_proxy_from_env(true)
             .timeout_connect(Duration::from_secs(30))
             .timeout_read(Duration::from_secs(60))
-            .user_agent(&format!("haul/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(&format!("qrust/{}", env!("CARGO_PKG_VERSION")))
             .build();
         Client { agent }
     }
@@ -394,7 +394,7 @@ mod tests {
     use super::*;
 
     fn scratch() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("haul-net-{}", crate::util::new_id()));
+        let d = std::env::temp_dir().join(format!("qrust-net-{}", crate::util::new_id()));
         fs::create_dir_all(&d).unwrap();
         d
     }

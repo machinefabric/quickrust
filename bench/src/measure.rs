@@ -10,7 +10,7 @@ use std::time::Instant;
 pub struct Sample {
     pub wall_ns: u64,
     /// User + system CPU of the command and every descendant: those it waited for (rustc
-    /// included) and those that outlived it (Haul's driver finishing rustc's incremental save
+    /// included) and those that outlived it (QuickRust's driver finishing rustc's incremental save
     /// after its outputs were written), which the bench adopts (`adopt_orphans`).
     pub cpu_ns: u64,
     /// Largest resident set of any single process in the tree (not the tree's sum).

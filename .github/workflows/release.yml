@@ -1,8 +1,8 @@
 name: Release
 
-# A tag `v<version>` (the version in version.txt) builds Haul for every platform it is published
+# A tag `v<version>` (the version in version.txt) builds QuickRust for every platform it is published
 # for and creates a draft release with the archives, their checksums, version.txt and the install
-# scripts. Publishing the draft is a deliberate step, done by hand: `haul self update` and the
+# scripts. Publishing the draft is a deliberate step, done by hand: `qrust self update` and the
 # install scripts read the latest published release.
 on:
   push:
@@ -39,25 +39,25 @@ jobs:
         if: contains(matrix.target, 'musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       - name: Build
-        run: cargo build --release --locked -p haul --target ${{ matrix.target }}
+        run: cargo build --release --locked -p quickrust --target ${{ matrix.target }}
       - name: Package
         shell: bash
         run: |
-          name=haul-${{ matrix.target }}
+          name=qrust-${{ matrix.target }}
           ext=""
           case "${{ matrix.target }}" in *windows*) ext=".exe" ;; esac
           mkdir -p "dist/$name"
-          cp "target/${{ matrix.target }}/release/haul$ext" "target/${{ matrix.target }}/release/haul-rustc-wrapper$ext" "dist/$name/"
-          "dist/$name/haul$ext" --version | grep -qx "haul $(tr -d '[:space:]' < version.txt)" || { echo "the binary does not report the release's version"; exit 1; }
+          cp "target/${{ matrix.target }}/release/qrust$ext" "target/${{ matrix.target }}/release/qrust-rustc-wrapper$ext" "dist/$name/"
+          "dist/$name/qrust$ext" --version | grep -qx "qrust $(tr -d '[:space:]' < version.txt)" || { echo "the binary does not report the release's version"; exit 1; }
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           cd dist
           if command -v sha256sum > /dev/null; then sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"; else shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256"; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: haul-${{ matrix.target }}
+          name: qrust-${{ matrix.target }}
           path: |
-            dist/haul-${{ matrix.target }}.tar.gz
-            dist/haul-${{ matrix.target }}.tar.gz.sha256
+            dist/qrust-${{ matrix.target }}.tar.gz
+            dist/qrust-${{ matrix.target }}.tar.gz.sha256
 
   draft:
     needs: build
@@ -73,4 +73,4 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp version.txt install.sh install.ps1 dist/
-          gh release create "$GITHUB_REF_NAME" --draft --title "Haul ${GITHUB_REF_NAME#v}" --notes "Install: \`curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh\` (Windows: \`irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex\`). Update an installed Haul: \`haul self update\`." dist/*
+          gh release create "$GITHUB_REF_NAME" --draft --title "QuickRust ${GITHUB_REF_NAME#v}" --notes "Install: \`curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/install.sh | sh\` (Windows: \`irm https://github.com/${{ github.repository }}/releases/latest/download/install.ps1 | iex\`). Update an installed QuickRust: \`qrust self update\`." dist/*

@@ -1,10 +1,10 @@
 //! Toolchain names: what `+<name>`, `RUSTUP_TOOLCHAIN`, a toolchain file's `channel` and
-//! `haul toolchain` accept.
+//! `qrust toolchain` accept.
 //!
 //! - a release channel: `stable`, `beta`, `nightly`, optionally dated (`nightly-2026-10-11`) and
 //!   for a host (`stable-x86_64-unknown-linux-gnu`);
 //! - a release: `1.98` (its latest patch) or `1.98.1`, optionally for a host;
-//! - the name of a linked toolchain (`haul toolchain link <name> <dir>`);
+//! - the name of a linked toolchain (`qrust toolchain link <name> <dir>`);
 //! - an absolute path to a toolchain directory (what rust-analyzer passes).
 //!
 //! Anything else is rejected here, before any download is attempted.
@@ -59,7 +59,7 @@ pub fn is_triple(s: &str) -> bool {
     parts.len() >= 2 && s.bytes().next().is_some_and(|c| c.is_ascii_lowercase()) && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'.'))
 }
 
-/// A name `haul toolchain link` accepts.
+/// A name `qrust toolchain link` accepts.
 pub fn is_link_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
 }

@@ -1,7 +1,7 @@
-//! The `haul` management CLI and the multi-call entry point.
+//! The `qrust` management CLI and the multi-call entry point.
 //!
 //! Invoked as `cargo`, the binary is the compatibility shim and forwards its
-//! arguments untouched. Enhanced commands exist only under `haul`, so they can
+//! arguments untouched. Enhanced commands exist only under `qrust`, so they can
 //! never collide with a command a future Cargo introduces (OBJ-006).
 
 use crate::analyze::{self, Graph};
@@ -23,96 +23,96 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const HELP: &str = "\
-haul — Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output
-that Haul manages
+qrust — Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output
+that QuickRust manages
 
 USAGE
-    cargo <args…>                    any Cargo command, through Haul (`haul setup` makes `cargo` Haul)
-    haul <cargo-command> [args…]     the same
-    haul upstream <args…>            the toolchain's own Cargo as it is: no Haul settings, nothing recorded
+    cargo <args…>                    any Cargo command, through QuickRust (`qrust setup` makes `cargo` QuickRust)
+    qrust <cargo-command> [args…]    the same
+    qrust upstream <args…>           the toolchain's own Cargo as it is: no QuickRust settings, nothing recorded
 
-PROGRAMS (built through Haul's cache, installed into ~/.haul/bin)
-    haul install <CRATE>[@VERSION]… [--git URL [--branch B | --tag T | --rev R] | --path DIR]
-                 [--locked] [--force] [--features F] [--bin NAME]… [--root DIR] [--profile P] [--target T]
-    haul install --list
-    haul uninstall <CRATE>… [--bin NAME]… [--root DIR]
+PROGRAMS (built through QuickRust's cache, installed into ~/.qrust/bin)
+    qrust install <CRATE>[@VERSION]… [--git URL [--branch B | --tag T | --rev R] | --path DIR]
+                  [--locked] [--force] [--features F] [--bin NAME]… [--root DIR] [--profile P] [--target T]
+    qrust install --list
+    qrust uninstall <CRATE>… [--bin NAME]… [--root DIR]
 
-OUTPUT OF A BUILD (stored for every build Haul rendered in a terminal)
-    haul warnings [--run REF] [--crate NAME] [--lint LINT]
-    haul errors [--run REF] [--crate NAME]
-    haul log [--run REF] [--raw]
+OUTPUT OF A BUILD (stored for every build QuickRust rendered in a terminal)
+    qrust warnings [--run REF] [--crate NAME] [--lint LINT]
+    qrust errors [--run REF] [--crate NAME]
+    qrust log [--run REF] [--raw]
 
 ANALYSIS
-    haul analyze [SECTION] [--run REF] [--format text|json]
-                 [--filter FIELD=VALUE]… [--sort FIELD[:asc|desc]] [--limit N]
+    qrust analyze [SECTION] [--run REF] [--format text|json]
+                  [--filter FIELD=VALUE]… [--sort FIELD[:asc|desc]] [--limit N]
                                      SECTION: timing rebuilds duplication scripts proc-macros
                                               codegen cache storage recommendations worktrees
                                      filter/sort/limit work on a section's records, e.g.
-                                     `haul analyze timing --filter source=registry --sort duration_ns`
-    haul report [--run REF] [--format text|json|html] [-o FILE]
-    haul runs [--limit N] [--format text|json]
-    haul inspect [--format text|json]        workspace, toolchain and environment fingerprint
-    haul driver [status|build] [--rustc PATH] Haul's compiler driver for this toolchain
-    haul compare <BASE> <CANDIDATE> [--format text|json]
+                                     `qrust analyze timing --filter source=registry --sort duration_ns`
+    qrust report [--run REF] [--format text|json|html] [-o FILE]
+    qrust runs [--limit N] [--format text|json]
+    qrust inspect [--format text|json]       workspace, toolchain and environment fingerprint
+    qrust driver [status|build] [--rustc PATH] QuickRust's compiler driver for this toolchain
+    qrust compare <BASE> <CANDIDATE> [--format text|json]
 
 MEASUREMENT
-    haul benchmark --scenario NAME [--reps N] [--warmups N] [--edit FILE] [--allow-mutation]
-                   [--timeout DURATION] [--format text|json] [-- <cargo args>]
-    haul benchmark --list
-    haul experiment [codegen|linker] [--name NAME] [--set KEY=VALUE]… [--env KEY=VALUE]…
-                   [--codegen-units N] [--debug VALUE] [--opt-level VALUE] [--lto VALUE] [--linker NAME]
-                   [--scenario NAME] [--reps N] [--warmups N] [--verify '<cargo args>'] [-- <cargo args>]
+    qrust benchmark --scenario NAME [--reps N] [--warmups N] [--edit FILE] [--allow-mutation]
+                    [--timeout DURATION] [--format text|json] [-- <cargo args>]
+    qrust benchmark --list
+    qrust experiment [codegen|linker] [--name NAME] [--set KEY=VALUE]… [--env KEY=VALUE]…
+                    [--codegen-units N] [--debug VALUE] [--opt-level VALUE] [--lto VALUE] [--linker NAME]
+                    [--scenario NAME] [--reps N] [--warmups N] [--verify '<cargo args>'] [-- <cargo args>]
 
 BUDGETS
-    haul baseline set NAME [--run REF | --benchmark ID]
-    haul baseline list | show NAME
-    haul ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE] [--format text|json]
+    qrust baseline set NAME [--run REF | --benchmark ID]
+    qrust baseline list | show NAME
+    qrust ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE] [--format text|json]
 
 STORAGE
-    haul inventory [--caches] [--older-than DAYS] [--max-size SIZE] [--format text|json]
+    qrust inventory [--caches] [--older-than DAYS] [--max-size SIZE] [--format text|json]
                                      what this workspace's build directory holds, and what in it is stale
-    haul gc [--dry-run] [--to SIZE] [--format text|json]
-                                     collect Haul's cache now (it does so by itself when it must: see
+    qrust gc [--dry-run] [--to SIZE] [--format text|json]
+                                     collect QuickRust's cache now (it does so by itself when it must: see
                                      cache.max-size and cache.min-free)
 
 POLICY AND REMEDIATION
-    haul policy explain [--format text|json]
-    haul cache status [--format text|json]
-    haul fix --dry-run [REC_ID] [--run REF] [--option ALTERNATIVE] [--patch] [--format text|json]
-    haul fix --apply REMEDIATION_ID | --rollback REMEDIATION_ID
+    qrust policy explain [--format text|json]
+    qrust cache status [--format text|json]
+    qrust fix --dry-run [REC_ID] [--run REF] [--option ALTERNATIVE] [--patch] [--format text|json]
+    qrust fix --apply REMEDIATION_ID | --rollback REMEDIATION_ID
 
-BUILD OUTPUT LOCATION (Haul keeps each workspace's build directory in its cache, not in `target/`)
-    haul path                        this workspace's target directory
-    haul path bin <NAME> [--release | --profile P] [--target T]
+BUILD OUTPUT LOCATION (QuickRust keeps each workspace's build directory in its cache, not in `target/`)
+    qrust path                       this workspace's target directory
+    qrust path bin <NAME> [--release | --profile P] [--target T]
                                      where `cargo build` puts binary NAME
 
 TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-toolchain.toml choose)
-    haul toolchain list
-    haul toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
-    haul toolchain update [--channel C]   bring stable, beta, nightly and 1.xx to their latest release
-                                          (Haul checks once a day in the background; `toolchain.auto-update`)
-    haul toolchain remove <TOOLCHAIN>…
-    haul toolchain default [<TOOLCHAIN>]
-    haul toolchain link <NAME> <DIR> | unlink <NAME>
-    haul toolchain which [<TOOL>] [--toolchain T]
-    haul toolchain component add|remove <NAME>… [--toolchain T]
-    haul toolchain target add|remove <TRIPLE>… [--toolchain T]
+    qrust toolchain list
+    qrust toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
+    qrust toolchain update [--channel C]  bring stable, beta, nightly and 1.xx to their latest release
+                                          (QuickRust checks once a day in the background; `toolchain.auto-update`)
+    qrust toolchain remove <TOOLCHAIN>…
+    qrust toolchain default [<TOOLCHAIN>]
+    qrust toolchain link <NAME> <DIR> | unlink <NAME>
+    qrust toolchain which [<TOOL>] [--toolchain T]
+    qrust toolchain component add|remove <NAME>… [--toolchain T]
+    qrust toolchain target add|remove <TRIPLE>… [--toolchain T]
 
 INSTALLATION
-    haul doctor
-    haul setup [--no-modify-path] [--toolchain T|none]
-                                     install Haul for this user: ~/.haul/bin first on PATH (cargo, rustc,
-                                     rustfmt, … are Haul), credentials and registries imported once from
+    qrust doctor
+    qrust setup [--no-modify-path] [--toolchain T|none]
+                                     install QuickRust for this user: ~/.qrust/bin first on PATH (cargo, rustc,
+                                     rustfmt, … are QuickRust), credentials and registries imported once from
                                      ~/.cargo, the stable toolchain installed
-    haul self update                 install Haul's latest release in place of this one
-    haul self uninstall --yes        remove ~/.haul and the PATH lines
+    qrust self update                install QuickRust's latest release in place of this one
+    qrust self uninstall --yes       remove ~/.qrust and the PATH lines
 
 RUN REFERENCES
     latest, latest~N, a run id or a unique prefix/suffix of one; in `compare`
     also baseline:NAME and benchmark:ID.
 
-Haul's own configuration lives in .haul/config.toml and HAUL_* variables;
-`haul policy explain` shows every effective setting and where it came from.
+QuickRust's own configuration lives in .qrust/config.toml and QRUST_* variables;
+`qrust policy explain` shows every effective setting and where it came from.
 ";
 
 type CmdResult = Result<i32, String>;
@@ -195,7 +195,7 @@ impl Args {
 
     fn finish(self) -> Result<(), String> {
         match self.items.first() {
-            Some(a) => Err(format!("unexpected argument {:?}; see `haul help`", a)),
+            Some(a) => Err(format!("unexpected argument {:?}; see `qrust help`", a)),
             None => Ok(()),
         }
     }
@@ -210,7 +210,7 @@ struct Ctx {
 impl Ctx {
     fn load() -> Result<Ctx, String> {
         let cwd = std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?;
-        let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+        let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
         let root = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?.workspace_root;
         Ok(Ctx { store: WsStore::open(root.as_deref()), cwd, cfg })
     }
@@ -249,10 +249,10 @@ pub fn main() {
     let mut argv = std::env::args_os();
     let argv0 = argv.next().unwrap_or_default();
     let mut args: Vec<OsString> = argv.collect();
-    let itself = args.first().is_some_and(|a| a == resolve::AS_HAUL);
+    let itself = args.first().is_some_and(|a| a == resolve::AS_QRUST);
     if itself {
         args.remove(0);
-        // The runner Haul sets while it builds what `cargo run` needs: the program is run
+        // The runner QuickRust sets while it builds what `cargo run` needs: the program is run
         // afterwards, by `cargo run` itself.
         if args.first().is_some_and(|a| a == crate::ui::NOOP_RUNNER) {
             std::process::exit(0);
@@ -274,7 +274,7 @@ pub fn main() {
             Ok(0)
         }
         "version" | "--version" | "-V" => {
-            println!("haul {}", env!("CARGO_PKG_VERSION"));
+            println!("qrust {}", env!("CARGO_PKG_VERSION"));
             Ok(0)
         }
         "upstream" => session::exec_upstream(rest.to_vec()),
@@ -310,7 +310,7 @@ pub fn main() {
     }
 }
 
-/// `haul warnings` / `haul errors` / `haul log`: the stored output of a rendered build.
+/// `qrust warnings` / `qrust errors` / `qrust log`: the stored output of a rendered build.
 fn cmd_output(raw: &[OsString], level: Option<&str>) -> CmdResult {
     let mut a = Args::new(raw);
     let run = a.opt("--run")?;
@@ -343,7 +343,7 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
     let section = a.positional();
     a.finish()?;
     if !view.is_empty() && matches!(section.as_deref(), None | Some("worktrees")) {
-        return Err("--filter, --sort and --limit apply to the records of one section: `haul analyze <section> …`".into());
+        return Err("--filter, --sort and --limit apply to the records of one section: `qrust analyze <section> …`".into());
     }
     let ctx = Ctx::load()?;
     if section.as_deref() == Some("worktrees") {
@@ -406,7 +406,7 @@ fn cmd_report(raw: &[OsString]) -> CmdResult {
     match output {
         Some(path) => {
             util::write_atomic(&ctx.cwd.join(&path), body.as_bytes()).map_err(|e| format!("could not write {}: {}", path, e))?;
-            eprintln!("haul: wrote {}", path);
+            eprintln!("qrust: wrote {}", path);
         }
         None => print!("{}", body),
     }
@@ -425,7 +425,7 @@ fn cmd_runs(raw: &[OsString]) -> CmdResult {
         return Ok(0);
     }
     if sessions.is_empty() {
-        println!("No recorded runs for this workspace. Run a build through `haul` or Haul's `cargo` first.");
+        println!("No recorded runs for this workspace. Run a build through `qrust` or QuickRust's `cargo` first.");
         return Ok(0);
     }
     println!("{:<26}  {:<24}  {:<11}  {:<9}  {:>9}  {:<8}  COMMAND", "RUN", "STARTED", "FAMILY", "STATE", "WALL", "OBSERVED");
@@ -485,16 +485,16 @@ fn cmd_driver(raw: &[OsString]) -> CmdResult {
             let vv = &compiler.version_verbose;
             match (crate::driver::find(&compiler), crate::driver::build_failure(&compiler)) {
                 (Some(exe), _) => println!("built: {}", exe.display()),
-                (None, Some(why)) => println!("could not be built for {}: {}\n`haul driver build` tries again", vv.lines().next().unwrap_or("this compiler"), why.trim()),
-                (None, None) => println!("not built for {} (expected in {}); `haul driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&compiler)?.display()),
+                (None, Some(why)) => println!("could not be built for {}: {}\n`qrust driver build` tries again", vv.lines().next().unwrap_or("this compiler"), why.trim()),
+                (None, None) => println!("not built for {} (expected in {}); `qrust driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&compiler)?.display()),
             }
             Ok(0)
         }
-        Some(other) => Err(format!("unknown `haul driver` action `{}` (status, build)", other)),
+        Some(other) => Err(format!("unknown `qrust driver` action `{}` (status, build)", other)),
     }
 }
 
-/// `haul path`: where this workspace's builds go.
+/// `qrust path`: where this workspace's builds go.
 fn cmd_path(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let profile = match (a.flag("--release"), a.opt("--profile")?) {
@@ -507,7 +507,7 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
     let name = a.positional();
     a.finish()?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     let engine = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?;
     let dir = engine.target.ok_or("not inside a Cargo workspace: there is no target directory here")?.dir;
     match (what.as_deref(), name) {
@@ -525,14 +525,14 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
             let exe = if target.as_deref().unwrap_or(&crate::toolchain::host()).contains("windows") { format!("{}.exe", name) } else { name };
             println!("{}", p.join(profile_dir).join(exe).display());
         }
-        (Some("bin"), None) => return Err("`haul path bin` needs the binary's name".into()),
-        (Some(other), _) => return Err(format!("unknown `haul path` item `{}` (bin)", other)),
+        (Some("bin"), None) => return Err("`qrust path bin` needs the binary's name".into()),
+        (Some(other), _) => return Err(format!("unknown `qrust path` item `{}` (bin)", other)),
         (None, Some(_)) => unreachable!("a second positional argument needs a first"),
     }
     Ok(0)
 }
 
-/// `haul toolchain …`: Haul's Rust toolchains.
+/// `qrust toolchain …`: QuickRust's Rust toolchains.
 fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
     use crate::toolchain::{self, file::Profile, spec::Spec, state, Layout, Needs, Selection, Source};
     let mut a = Args::new(raw);
@@ -541,7 +541,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
         _ => "list".to_string(),
     };
     let cwd = std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?;
-    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     let server = cfg.str("toolchain.dist-server").to_string();
     let layout = Layout::current();
     let positionals = |a: &mut Args| -> Vec<String> { std::iter::from_fn(|| a.positional()).collect() };
@@ -598,7 +598,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             let specs = positionals(&mut a);
             a.finish()?;
             if specs.is_empty() {
-                return Err("`haul toolchain install` needs a toolchain, such as stable, 1.98 or nightly".into());
+                return Err("`qrust toolchain install` needs a toolchain, such as stable, 1.98 or nightly".into());
             }
             let needs = Needs { components, targets, profile };
             for spec in specs {
@@ -626,7 +626,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 None => util::ExclusiveLock::acquire(&layout.toolchains().join(".locks").join("update.lock")).map_err(|e| e.to_string())?,
             };
             let mut progress = crate::ui::ToolchainProgress::new("update");
-            // A channel's new release gets Haul's compiler driver before builds use it.
+            // A channel's new release gets QuickRust's compiler driver before builds use it.
             let wanted = crate::driver::wanted(&Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?);
             let mut prepare = |tc: &toolchain::Toolchain| {
                 if wanted {
@@ -657,7 +657,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             let ids = positionals(&mut a);
             a.finish()?;
             if ids.is_empty() {
-                return Err("`haul toolchain remove` needs a toolchain (`haul toolchain list` shows them)".into());
+                return Err("`qrust toolchain remove` needs a toolchain (`qrust toolchain list` shows them)".into());
             }
             let st = state::load(&layout.toolchains())?;
             for given in ids {
@@ -681,7 +681,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                     state::update(&layout.toolchains(), |st| {
                         if let Spec::Named(n) = &spec {
                             if !st.linked.contains_key(n) {
-                                return Err(format!("no toolchain is named `{}` (`haul toolchain link {} <dir>` names one)", n, n));
+                                return Err(format!("no toolchain is named `{}` (`qrust toolchain link {} <dir>` names one)", n, n));
                             }
                         }
                         st.default = s.clone();
@@ -693,8 +693,8 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         "link" => {
-            let name = a.positional().ok_or("`haul toolchain link` needs a name and a directory")?;
-            let dir = a.positional().ok_or("`haul toolchain link` needs a name and a directory")?;
+            let name = a.positional().ok_or("`qrust toolchain link` needs a name and a directory")?;
+            let dir = a.positional().ok_or("`qrust toolchain link` needs a name and a directory")?;
             a.finish()?;
             if !crate::toolchain::spec::is_link_name(&name) || !matches!(Spec::parse(&name), Ok(Spec::Named(_))) {
                 return Err(format!("`{}` cannot name a linked toolchain: use letters, digits, `-`, `_` and `.`, and not a channel or release name", name));
@@ -707,7 +707,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                     return Err(format!("{} is not a toolchain: it has no {}", dir.display(), bin.display()));
                 }
                 if std::env::current_exe().ok().and_then(|e| util::file_identity(&e)).is_some_and(|me| util::file_identity(&bin) == Some(me)) {
-                    return Err(format!("{} is Haul itself, not a toolchain's {}", bin.display(), tool));
+                    return Err(format!("{} is QuickRust itself, not a toolchain's {}", bin.display(), tool));
                 }
             }
             state::update(&layout.toolchains(), |st| {
@@ -718,7 +718,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         "unlink" => {
-            let name = a.positional().ok_or("`haul toolchain unlink` needs a name")?;
+            let name = a.positional().ok_or("`qrust toolchain unlink` needs a name")?;
             a.finish()?;
             state::update(&layout.toolchains(), |st| st.linked.remove(&name).map(|_| ()).ok_or_else(|| format!("no toolchain is linked as `{}`", name)))?;
             println!("unlinked {}", name);
@@ -741,12 +741,12 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         "component" | "target" => {
-            let verb = a.positional().ok_or_else(|| format!("`haul toolchain {}` needs add or remove", action))?;
+            let verb = a.positional().ok_or_else(|| format!("`qrust toolchain {}` needs add or remove", action))?;
             let toolchain_opt = a.opt("--toolchain")?;
             let names = positionals(&mut a);
             a.finish()?;
             if names.is_empty() {
-                return Err(format!("`haul toolchain {} {}` needs at least one {}", action, verb, if action == "target" { "target triple" } else { "component" }));
+                return Err(format!("`qrust toolchain {} {}` needs at least one {}", action, verb, if action == "target" { "target triple" } else { "component" }));
             }
             let mut b = Args { items: toolchain_opt.iter().flat_map(|t| ["--toolchain".to_string(), t.clone()]).collect(), passthrough: vec![] };
             match verb.as_str() {
@@ -758,7 +758,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 }
                 "remove" => {
                     let tc = chosen(&mut b, &Needs::default())?;
-                    let rec = tc.record().ok_or_else(|| format!("toolchain {} is linked, and Haul does not change a linked toolchain", tc.id))?;
+                    let rec = tc.record().ok_or_else(|| format!("toolchain {} is linked, and QuickRust does not change a linked toolchain", tc.id))?;
                     let which: Vec<(String, String)> = names
                         .iter()
                         .map(|n| {
@@ -774,10 +774,10 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                     println!("removed {} from {}", names.join(", "), tc.id);
                     Ok(0)
                 }
-                other => Err(format!("unknown `haul toolchain {}` action `{}` (add, remove)", action, other)),
+                other => Err(format!("unknown `qrust toolchain {}` action `{}` (add, remove)", action, other)),
             }
         }
-        other => Err(format!("unknown `haul toolchain` action `{}` (list, install, update, remove, default, link, unlink, which, component, target)", other)),
+        other => Err(format!("unknown `qrust toolchain` action `{}` (list, install, update, remove, default, link, unlink, which, component, target)", other)),
     }
 }
 
@@ -830,7 +830,7 @@ fn cmd_compare(raw: &[OsString]) -> CmdResult {
     let format = a.format(&["text", "json"])?;
     let (base, cand) = match (a.positional(), a.positional()) {
         (Some(b), Some(c)) => (b, c),
-        _ => return Err("usage: haul compare <BASE> <CANDIDATE>".into()),
+        _ => return Err("usage: qrust compare <BASE> <CANDIDATE>".into()),
     };
     a.finish()?;
     let ctx = Ctx::load()?;
@@ -965,7 +965,7 @@ fn cmd_baseline(raw: &[OsString]) -> CmdResult {
     let root = ctx.root()?.to_path_buf();
     match a.positional().as_deref() {
         Some("set") => {
-            let name = a.positional().ok_or("usage: haul baseline set NAME [--run REF | --benchmark ID]")?;
+            let name = a.positional().ok_or("usage: qrust baseline set NAME [--run REF | --benchmark ID]")?;
             a.finish()?;
             let subject = subject.resolve(&ctx)?;
             if subject["succeeded"] != json!(true) {
@@ -989,12 +989,12 @@ fn cmd_baseline(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         Some("show") => {
-            let name = a.positional().ok_or("usage: haul baseline show NAME")?;
+            let name = a.positional().ok_or("usage: qrust baseline show NAME")?;
             a.finish()?;
             println!("{}", serde_json::to_string_pretty(&compare::load_baseline(&root, &name)?).unwrap_or_default());
             Ok(0)
         }
-        _ => Err("usage: haul baseline set NAME | list | show NAME".into()),
+        _ => Err("usage: qrust baseline set NAME | list | show NAME".into()),
     }
 }
 
@@ -1005,7 +1005,7 @@ fn cmd_ci(raw: &[OsString]) -> CmdResult {
     let baseline_flag = a.opt("--baseline")?;
     let subject = SubjectFlags::read(&mut a)?;
     if a.positional().as_deref() != Some("evaluate") {
-        return Err("usage: haul ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE]".into());
+        return Err("usage: qrust ci evaluate [--run REF | --benchmark ID] [--baseline NAME] [--budgets FILE]".into());
     }
     a.finish()?;
     let ctx = Ctx::load()?;
@@ -1088,7 +1088,7 @@ fn cmd_inventory(raw: &[OsString]) -> CmdResult {
     Ok(0)
 }
 
-/// `haul gc`: Haul's cache collected now (see `space`).
+/// `qrust gc`: QuickRust's cache collected now (see `space`).
 fn cmd_gc(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
@@ -1097,7 +1097,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     let to = a.opt("--to")?.map(|s| util::parse_bytes(&s).ok_or_else(|| format!("--to {:?} is not a size (examples: 20GiB, 500MB)", s))).transpose()?;
     a.finish()?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     let cache = util::cache_dir();
     let lock_path = cache.join("gc.lock");
     let _lock = match util::ExclusiveLock::try_acquire(&lock_path).map_err(|e| e.to_string())? {
@@ -1106,7 +1106,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         None if background => return Ok(0),
         None => util::ExclusiveLock::acquire(&lock_path).map_err(|e| e.to_string())?,
     };
-    let fs = crate::space::fs_space(util::haul_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::haul_home().display(), e))?;
+    let fs = crate::space::fs_space(util::qrust_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::qrust_home().display(), e))?;
     let policy = crate::space::policy(&cfg, &fs);
     let phase = crate::ui::Phase::start();
     let done = crate::space::collect(&cache, crate::space::downloads().as_ref(), &policy, to, dry_run, None)?;
@@ -1122,7 +1122,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         println!("  {} {:<10} {}  {} ({})", if dry_run { "would remove" } else { "removed" }, human_bytes(*bytes), kind.name(), path.display(), why);
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
-    phase.finish(true, &format!("{} {} · Haul's cache {} → {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(" · {} in use left alone", done.skipped_in_use) } else { String::new() }));
+    phase.finish(true, &format!("{} {} · QuickRust's cache {} → {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(" · {} in use left alone", done.skipped_in_use) } else { String::new() }));
     Ok(0)
 }
 
@@ -1130,7 +1130,7 @@ fn cmd_policy(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
     if a.positional().as_deref() != Some("explain") {
-        return Err("usage: haul policy explain [--format text|json]".into());
+        return Err("usage: qrust policy explain [--format text|json]".into());
     }
     a.finish()?;
     let ctx = Ctx::load()?;
@@ -1139,11 +1139,11 @@ fn cmd_policy(raw: &[OsString]) -> CmdResult {
     if format == "json" {
         // Configuration values hold no credentials; anything secret-looking would still print as <redacted> (CFG-003).
         let list: Vec<Value> = settings.iter().map(|s| json!({ "key": s.key, "value": if util::is_secret_name(s.key) { "<redacted>".to_string() } else { s.value.clone() }, "origin": s.origin, "env": s.env, "description": s.help })).collect();
-        ctx.print_json(&json!({ "workload": workload, "repository_config": ctx.cfg.repo_config.as_ref().map(|p| path_str(p)), "user_config": path_str(&util::haul_home().join("config.toml")), "settings": list }));
+        ctx.print_json(&json!({ "workload": workload, "repository_config": ctx.cfg.repo_config.as_ref().map(|p| path_str(p)), "user_config": path_str(&util::qrust_home().join("config.toml")), "settings": list }));
         return Ok(0);
     }
-    println!("Effective Haul configuration (precedence: default < user < repository < environment < flag)");
-    println!("  user config        {}", util::haul_home().join("config.toml").display());
+    println!("Effective QuickRust configuration (precedence: default < user < repository < environment < flag)");
+    println!("  user config        {}", util::qrust_home().join("config.toml").display());
     println!("  repository config  {}", ctx.cfg.repo_config.as_ref().map(|p| path_str(p)).unwrap_or_else(|| "none found".into()));
     println!("  workload class     {}  (decides which incremental.* policy applies)", workload);
     println!();
@@ -1159,7 +1159,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
     if a.positional().as_deref() != Some("status") {
-        return Err("usage: haul cache status [--format text|json]".into());
+        return Err("usage: qrust cache status [--format text|json]".into());
     }
     a.finish()?;
     let ctx = Ctx::load()?;
@@ -1171,7 +1171,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         Some(bin) => match crate::cache::stats(bin) {
             Ok(s) => ("local", Some(s)),
             Err(e) => {
-                eprintln!("haul: warning: {}", e);
+                eprintln!("qrust: warning: {}", e);
                 ("degraded", None)
             }
         },
@@ -1179,15 +1179,15 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         None => ("disabled", None),
     };
     let last = ctx.store.resolve_run_ref("latest", true).ok().and_then(|id| ctx.store.load_run(&id)).map(|r| json!({ "run": r["run"]["id"], "cache": r["cache"] }));
-    let haul_cache = util::cache_dir();
-    let fs = crate::space::fs_space(util::haul_home().as_path()).ok();
+    let qrust_cache = util::cache_dir();
+    let fs = crate::space::fs_space(util::qrust_home().as_path()).ok();
     let bounds = fs.map(|f| crate::space::policy(&ctx.cfg, &f));
     let v = json!({
         "provider_policy": provider, "policy_origin": ctx.cfg.origin("cache.provider"), "fail": ctx.cfg.str("cache.fail"),
         "existing_rustc_wrapper": existing.as_ref().map(|(w, s)| json!({ "wrapper": w, "source": s })),
         "sccache": sccache, "state": state, "server_statistics": stats, "last_analysed_run": last,
-        "haul_cache": {
-            "dir": path_str(&haul_cache), "usage": crate::space::usage(&haul_cache), "recent_collections": crate::space::recent(&haul_cache, 5),
+        "qrust_cache": {
+            "dir": path_str(&qrust_cache), "usage": crate::space::usage(&qrust_cache), "recent_collections": crate::space::recent(&qrust_cache, 5),
             "max_bytes": bounds.map(|b| b.max_bytes), "min_free": bounds.map(|b| b.min_free), "free": fs.map(|f| f.available),
         },
     });
@@ -1195,12 +1195,12 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         ctx.print_json(&v);
         return Ok(0);
     }
-    let hc = &v["haul_cache"];
+    let hc = &v["qrust_cache"];
     let now = util::now_wall_ns();
     match hc["usage"].as_object().filter(|u| u["counted"] != json!(false)) {
         Some(u) => {
             let total = u["total_bytes"].as_u64().unwrap_or(0);
-            println!("Haul's cache: {} · counted {} · {}", human_bytes(total), u["scanned_ns"].as_u64().map(|t| util::human_ago(t, now)).unwrap_or_default(), haul_cache.display());
+            println!("QuickRust's cache: {} · counted {} · {}", human_bytes(total), u["scanned_ns"].as_u64().map(|t| util::human_ago(t, now)).unwrap_or_default(), qrust_cache.display());
             let mut kinds_sum = 0;
             for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {
                 kinds_sum += k["bytes"].as_u64().unwrap_or(0);
@@ -1214,7 +1214,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
                 println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
             }
         }
-        None => println!("Haul's cache: not counted yet · {} · `haul gc --dry-run` counts it", haul_cache.display()),
+        None => println!("QuickRust's cache: not counted yet · {} · `qrust gc --dry-run` counts it", qrust_cache.display()),
     }
     if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
         // A size setting reads back in bytes; `auto` and a share of the disk as written.
@@ -1229,15 +1229,15 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         println!("  {:<24} {} · {} → {} · {} removed", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
     }
     println!();
-    // A compiler cache (sccache) besides Haul's own: what it is and what it did.
+    // A compiler cache (sccache) besides QuickRust's own: what it is and what it did.
     if state == "disabled" && existing.is_none() {
-        println!("Compiler cache: none (cache.provider = {}, {}); Haul's artifact cache keeps what Haul builds", provider, ctx.cfg.origin("cache.provider"));
+        println!("Compiler cache: none (cache.provider = {}, {}); QuickRust's artifact cache keeps what QuickRust builds", provider, ctx.cfg.origin("cache.provider"));
         return Ok(0);
     }
     println!("Compiler cache: {}", state);
     println!("  policy            cache.provider = {} ({}), cache.fail = {}", provider, ctx.cfg.origin("cache.provider"), ctx.cfg.str("cache.fail"));
     match &existing {
-        Some((w, s)) => println!("  existing wrapper  {} ({}) — preserved; the Haul wrapper runs outside it", w, s),
+        Some((w, s)) => println!("  existing wrapper  {} ({}) — preserved; the QuickRust wrapper runs outside it", w, s),
         None => println!("  existing wrapper  none"),
     }
     if let Some(s) = &v["server_statistics"].as_object() {
@@ -1277,7 +1277,7 @@ fn cmd_fix(raw: &[OsString]) -> CmdResult {
     }
     // Remediation is preview-only unless a specific previewed change is applied by id (FR-170.1).
     if !a.flag("--dry-run") {
-        return Err("usage: haul fix --dry-run [REC_ID] | --apply REMEDIATION_ID | --rollback REMEDIATION_ID   (for `cargo fix`, use `cargo fix` or `haul upstream fix`)".into());
+        return Err("usage: qrust fix --dry-run [REC_ID] | --apply REMEDIATION_ID | --rollback REMEDIATION_ID   (for `cargo fix`, use `cargo fix` or `qrust upstream fix`)".into());
     }
     let format = a.format(&["text", "json"])?;
     let patch = a.flag("--patch");
@@ -1314,25 +1314,25 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     };
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "(unset)".into());
     let (exe, _) = resolve::self_identity();
-    println!("Haul {}", env!("CARGO_PKG_VERSION"));
-    println!("  haul binary        {}", exe.display());
+    println!("QuickRust {}", env!("CARGO_PKG_VERSION"));
+    println!("  qrust binary       {}", exe.display());
     let (setup, first) = crate::setup::status();
     match &setup {
-        Some(r) => println!("  set up             {} (Haul {}); its bin is {} on PATH", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"), if first { "first" } else { "NOT first" }),
-        None => println!("  set up             no (`haul setup` installs Haul for this user); `haul <command>` works without it"),
+        Some(r) => println!("  set up             {} (QuickRust {}); its bin is {} on PATH", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"), if first { "first" } else { "NOT first" }),
+        None => println!("  set up             no (`qrust setup` installs QuickRust for this user); `qrust <command>` works without it"),
     }
     if setup.is_some() && !first {
-        problem(format!("`cargo` on PATH is not {}: open a new shell, or check the PATH set up by `haul setup`", crate::engine::bin_dir().join("cargo").display()));
+        problem(format!("`cargo` on PATH is not {}: open a new shell, or check the PATH set up by `qrust setup`", crate::engine::bin_dir().join("cargo").display()));
     }
-    let wrapper = exe.parent().map(|d| d.join(if cfg!(windows) { "haul-rustc-wrapper.exe" } else { "haul-rustc-wrapper" }));
+    let wrapper = exe.parent().map(|d| d.join(if cfg!(windows) { "qrust-rustc-wrapper.exe" } else { "qrust-rustc-wrapper" }));
     match wrapper.filter(|w| util::is_executable(w)) {
         Some(w) => println!("  rustc wrapper      {}", w.display()),
-        None => problem("haul-rustc-wrapper is not next to the haul binary; builds are delegated but rustc-level observation is off".into()),
+        None => problem("qrust-rustc-wrapper is not next to the qrust binary; builds are delegated but rustc-level observation is off".into()),
     }
     let cfg = match Config::load(&cwd) {
         Ok(c) => Some(c),
         Err(e) => {
-            problem(format!("invalid Haul configuration: {}", e));
+            problem(format!("invalid QuickRust configuration: {}", e));
             None
         }
     };
@@ -1354,7 +1354,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
     println!("  cargo home         {}", util::cargo_home().display());
     if let Some(theirs) = std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty() && std::path::Path::new(v) != util::cargo_home()) {
-        println!("  note               CARGO_HOME={} is set; builds run through Haul use {}", theirs.to_string_lossy(), util::cargo_home().display());
+        println!("  note               CARGO_HOME={} is set; builds run through QuickRust use {}", theirs.to_string_lossy(), util::cargo_home().display());
     }
     println!("Environment");
     for k in ["CARGO", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", crate::ENV_HOME] {
@@ -1362,7 +1362,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
     let subset = resolve::cargo_config_subset(&cwd, &[]);
     match resolve::existing_rustc_wrapper(&subset) {
-        Some((w, src)) => println!("  existing rustc wrapper   {} ({}) — preserved inside the Haul wrapper", w, src),
+        Some((w, src)) => println!("  existing rustc wrapper   {} ({}) — preserved inside the QuickRust wrapper", w, src),
         None => println!("  existing rustc wrapper   none"),
     }
     println!("Workspace");
@@ -1383,7 +1383,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
             println!("  recorded runs      {}", ws.session_ids().len());
             if let Ok(rd) = std::fs::read_dir(ws.dir.join("restore")) {
                 for e in rd.filter_map(|e| e.ok()).filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false)) {
-                    problem(format!("an interrupted benchmark left a source edit journal at {}; run `haul benchmark` again to restore, or inspect it", e.path().display()));
+                    problem(format!("an interrupted benchmark left a source edit journal at {}; run `qrust benchmark` again to restore, or inspect it", e.path().display()));
                 }
             }
         }
@@ -1391,8 +1391,8 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
         (Some(root), None) => println!("  root               {}", root.display()),
     }
     println!("State");
-    let home = util::haul_home();
-    println!("  haul home          {}", home.display());
+    let home = util::qrust_home();
+    println!("  qrust home         {}", home.display());
     if let Err(e) = util::create_private_dir(&home).and_then(|_| util::write_atomic_fast(&home.join(".doctor"), b"ok")).and_then(|_| std::fs::remove_file(home.join(".doctor"))) {
         problem(format!("{} is not writable ({}); builds still run but are not recorded", home.display(), e));
     }
@@ -1414,7 +1414,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
 }
 
-/// `haul setup`: Haul installed for this user (see `setup.rs`).
+/// `qrust setup`: QuickRust installed for this user (see `setup.rs`).
 fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let toolchain = a.opt("--toolchain")?.unwrap_or_else(|| "stable".into());
@@ -1423,7 +1423,7 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let opts = crate::setup::Options { modify_path, toolchain: (toolchain != "none").then_some(toolchain) };
     let phase = crate::ui::Phase::start();
     let done = crate::setup::setup(&opts)?;
-    phase.finish(true, &format!("Haul {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
+    phase.finish(true, &format!("QuickRust {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
     match (&done.path_edits[..], modify_path) {
         (_, false) => println!("  PATH left alone (--no-modify-path): put {} first on PATH yourself", util::tilde(&done.bin)),
         ([], true) => println!("  PATH: already set up"),
@@ -1463,13 +1463,13 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     }
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {
         // As a shell takes it: `~` is not expanded inside quotes, `$HOME` is.
-        let home = util::haul_home();
+        let home = util::qrust_home();
         println!("\nOpen a new shell, or run:  . \"{}\"  (fish: source \"{}\")", crate::setup::shell_path(&home.join("env")), crate::setup::shell_path(&home.join("env.fish")));
     }
     Ok(0)
 }
 
-/// `haul self uninstall`: Haul removed from this machine.
+/// `qrust self uninstall`: QuickRust removed from this machine.
 fn cmd_self(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let action = a.positional();
@@ -1478,25 +1478,25 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
     match action.as_deref() {
         Some("update") => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+            let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
             let mut phase = crate::ui::Phase::start();
-            phase.status("Looking for a newer Haul", true);
+            phase.status("Looking for a newer QuickRust", true);
             let u = crate::setup::self_update(cfg.str("self.update-url")).inspect_err(|_| phase.clear_line())?;
             if u.from == u.to {
-                phase.finish(true, &format!("Haul {} is the latest", u.to));
+                phase.finish(true, &format!("QuickRust {} is the latest", u.to));
             } else {
-                phase.finish(true, &format!("Haul {} installed (was {})", u.to, u.from));
+                phase.finish(true, &format!("QuickRust {} installed (was {})", u.to, u.from));
             }
             Ok(0)
         }
-        Some("uninstall") if !yes => Err(format!("`haul self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `haul setup` added", util::haul_home().display())),
+        Some("uninstall") if !yes => Err(format!("`qrust self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `qrust setup` added", util::qrust_home().display())),
         Some("uninstall") => {
             for r in crate::setup::uninstall()? {
                 println!("removed {}", r);
             }
             Ok(0)
         }
-        Some(other) => Err(format!("unknown `haul self` action `{}` (update, uninstall)", other)),
-        None => Err("`haul self` needs an action: update, uninstall".into()),
+        Some(other) => Err(format!("unknown `qrust self` action `{}` (update, uninstall)", other)),
+        None => Err("`qrust self` needs an action: update, uninstall".into()),
     }
 }

@@ -8,8 +8,8 @@
 //!
 //! A new toolchain is assembled in `toolchains/.staging/<id>.<pid>` and renamed into place
 //! complete. Components added to an installed toolchain (which builds may be using) go through a
-//! journal, `lib/rustlib/.haul-adding`, written before anything is moved; the toolchain's record
-//! (`haul-toolchain.json`) is the commit point. An add that was interrupted is undone the next
+//! journal, `lib/rustlib/.qrust-adding`, written before anything is moved; the toolchain's record
+//! (`qrust-toolchain.json`) is the commit point. An add that was interrupted is undone the next
 //! time the toolchain's lock is taken. Two processes installing the same toolchain wait for one
 //! another on `toolchains/.locks/<id>.lock`; the second finds the work done.
 
@@ -23,15 +23,15 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-pub const RECORD: &str = "haul-toolchain.json";
-const JOURNAL: &str = "lib/rustlib/.haul-adding";
+pub const RECORD: &str = "qrust-toolchain.json";
+const JOURNAL: &str = "lib/rustlib/.qrust-adding";
 /// Components being removed: once named here, a removal is carried through.
-const REMOVING: &str = "lib/rustlib/.haul-removing";
+const REMOVING: &str = "lib/rustlib/.qrust-removing";
 /// The largest archive content unpacked (rustc-dev is the largest component, about 1 GiB).
 const MAX_UNPACKED: u64 = 8 << 30;
 const PARALLEL: usize = 4;
 
-/// What Haul knows about a toolchain it installed.
+/// What QuickRust knows about a toolchain it installed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Record {
     pub id: String,
@@ -65,7 +65,7 @@ impl Record {
 
 pub fn read_record(dir: &Path) -> Result<Record, String> {
     let p = dir.join(RECORD);
-    let v = util::read_json(&p).ok_or_else(|| format!("{} is not a toolchain Haul installed (no readable {}); `haul toolchain remove` deletes it", dir.display(), RECORD))?;
+    let v = util::read_json(&p).ok_or_else(|| format!("{} is not a toolchain QuickRust installed (no readable {}); `qrust toolchain remove` deletes it", dir.display(), RECORD))?;
     let s = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("{}: no `{}`", p.display(), k));
     let mut components = vec![];
     for c in v.get("components").and_then(Value::as_array).ok_or_else(|| format!("{}: no components", p.display()))? {
@@ -134,7 +134,7 @@ pub fn install(layout: &Layout, _locked: &Locked, release: &Release, components:
     let Release { id, host, profile, manifest, origin } = *release;
     let dest = layout.toolchains().join(id);
     if dest.exists() {
-        return Err(format!("{} exists but is not a complete toolchain; `haul toolchain remove {}` deletes it", dest.display(), id));
+        return Err(format!("{} exists but is not a complete toolchain; `qrust toolchain remove {}` deletes it", dest.display(), id));
     }
     let staging_root = layout.toolchains().join(".staging");
     util::create_private_dir(&staging_root).map_err(|e| format!("cannot create {}: {}", staging_root.display(), e))?;
@@ -211,7 +211,7 @@ pub fn remove_components(_locked: &Locked, dir: &Path, which: &[(String, String)
     for (pkg, target) in which {
         let at = record.components.iter().position(|(p, t, _)| p == pkg && t == target).ok_or_else(|| format!("{} has no {} for {}", record.id, pkg, target))?;
         if matches!(pkg.as_str(), "rustc" | "cargo") || (pkg == "rust-std" && *target == record.host) {
-            return Err(format!("{} for {} is part of every toolchain; `haul toolchain remove {}` removes the toolchain", pkg, target, record.id));
+            return Err(format!("{} for {} is part of every toolchain; `qrust toolchain remove {}` removes the toolchain", pkg, target, record.id));
         }
         names.extend(record.components.remove(at).2);
     }

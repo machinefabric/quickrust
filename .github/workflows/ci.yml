@@ -18,20 +18,20 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      # Haul itself builds with the runner's rustup; the builds the suites observe use the
-      # toolchains Haul installs into its own store, kept between runs for a day (each day's
-      # first run installs them anew, from the dist server, through Haul).
+      # QuickRust itself builds with the runner's rustup; the builds the suites observe use the
+      # toolchains QuickRust installs into its own store, kept between runs for a day (each day's
+      # first run installs them anew, from the dist server, through QuickRust).
       - name: Toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy
           rustup default stable
       - id: day
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - name: Haul's toolchain store
+      - name: QuickRust's toolchain store
         uses: actions/cache@v4
         with:
-          path: ~/.cache/haul-test-toolchains
-          key: haul-toolchains-${{ runner.os }}-${{ steps.day.outputs.day }}
+          path: ~/.cache/qrust-test-toolchains
+          key: qrust-toolchains-${{ runner.os }}-${{ steps.day.outputs.day }}
       # The fast-linker test runs only where wild is installed (Linux with glibc).
       - name: wild
         if: runner.os == 'Linux'
@@ -41,9 +41,9 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
-  # Haul declares `rust-version = 1.80`: built and tested with exactly that compiler, from the
+  # QuickRust declares `rust-version = 1.80`: built and tested with exactly that compiler, from the
   # lockfile (newer releases of some dependencies need newer Rust). The builds the suites observe
-  # use the toolchains Haul installs.
+  # use the toolchains QuickRust installs.
   msrv:
     name: test (Rust 1.80)
     runs-on: ubuntu-latest
@@ -56,11 +56,11 @@ jobs:
           rustup default stable
       - id: day
         run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - name: Haul's toolchain store
+      - name: QuickRust's toolchain store
         uses: actions/cache@v4
         with:
-          path: ~/.cache/haul-test-toolchains
-          key: haul-toolchains-msrv-${{ runner.os }}-${{ steps.day.outputs.day }}
+          path: ~/.cache/qrust-test-toolchains
+          key: qrust-toolchains-msrv-${{ runner.os }}-${{ steps.day.outputs.day }}
       - name: Tests
         run: cargo +1.80 test --locked --workspace
 
@@ -74,9 +74,9 @@ jobs:
       # The integration suites are Unix-only today (Windows card on the project board), and so is
       # the benchmark harness (it measures child processes with wait4).
       - name: Check
-        run: cargo clippy --all-targets -p haul -- -D warnings
+        run: cargo clippy --all-targets -p quickrust -- -D warnings
 
-  # What a Windows user gets from install.ps1, run end to end: Haul sets itself up (installing
+  # What a Windows user gets from install.ps1, run end to end: QuickRust sets itself up (installing
   # stable Rust from the dist server into its own home), then creates, builds, runs and tests a
   # project, with nothing of rustup's on PATH.
   windows-smoke:
@@ -88,16 +88,16 @@ jobs:
       - name: Toolchain
         run: rustup toolchain install stable --profile minimal
       - name: Build
-        run: cargo build --release -p haul
-      - name: Set up, then a project through Haul
+        run: cargo build --release -p quickrust
+      - name: Set up, then a project through QuickRust
         shell: bash
         env:
-          HAUL_HOME: ${{ runner.temp }}\haul-home
+          QRUST_HOME: ${{ runner.temp }}\qrust-home
         run: |
           set -eux
-          target/release/haul.exe setup --no-modify-path 2>&1 | tee setup.log
+          target/release/qrust.exe setup --no-modify-path 2>&1 | tee setup.log
           if grep -q "compiler driver cannot be built" setup.log; then exit 1; fi
-          bin="$(cygpath -u "$HAUL_HOME")/bin"
+          bin="$(cygpath -u "$QRUST_HOME")/bin"
           export PATH="$bin:/usr/bin:/c/Windows/system32:/c/Windows"
           test "$(command -v cargo)" = "$bin/cargo"
           cd "$RUNNER_TEMP"
@@ -107,20 +107,20 @@ jobs:
           test ! -e target
           test "$(cargo run)" = "Hello, world!"
           cargo test
-          haul driver status | grep "^built:"
+          qrust driver status | grep "^built:"
           # Paths as people write them, and no session outliving its command.
-          haul doctor | tee doctor.log
+          qrust doctor | tee doctor.log
           if grep -F '\\?\' doctor.log; then exit 1; fi
           grep -E "active sessions +0$" doctor.log
-      # Haul's background work, when something did not finish.
-      - name: What Haul left running, and its logs
+      # QuickRust's background work, when something did not finish.
+      - name: What QuickRust left running, and its logs
         if: failure() || cancelled()
         shell: bash
         env:
-          HAUL_HOME: ${{ runner.temp }}\haul-home
+          QRUST_HOME: ${{ runner.temp }}\qrust-home
         run: |
-          tasklist | grep -i -E "haul|cargo|rustc" || true
-          home="$(cygpath -u "$HAUL_HOME")"
+          tasklist | grep -i -E "qrust|cargo|rustc" || true
+          home="$(cygpath -u "$QRUST_HOME")"
           for f in "$home"/cache/gc.log "$home"/cache/gc-log.jsonl "$home"/toolchains/.update.log "$home"/cache/drivers/*/build.log "$home"/active/*.json; do
             if [ -f "$f" ]; then echo "== $f"; cat "$f"; echo; fi
           done

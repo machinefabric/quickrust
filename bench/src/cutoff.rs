@@ -3,11 +3,11 @@
 //!
 //! For random edits inside the function bodies of a workload's own crates (a literal changed,
 //! or a macro call added in front of a statement, on the same line): (A) the
-//! workload is built, the edit applied and the workload built again with the same Haul state,
-//! as in a developer's loop; (B) the edited source is built from nothing with empty Haul state,
+//! workload is built, the edit applied and the workload built again with the same QuickRust state,
+//! as in a developer's loop; (B) the edited source is built from nothing with empty QuickRust state,
 //! at the same path. Every library, metadata file and executable must be byte-identical.
 //!
-//! An incremental loop runs alongside (its own target directory and Haul state, default settings):
+//! An incremental loop runs alongside (its own target directory and QuickRust state, default settings):
 //! after each edit it builds, then appends a line to every source file the workload compiles and
 //! builds again (every workspace crate recompiles incrementally against the metadata of crates
 //! early cut-off kept), then restores them and builds again. Every one of those builds must
@@ -110,7 +110,7 @@ fn literal_edits(co: &Path, file: &str) -> Vec<LiteralEdit> {
             let words = inner.len() >= 3 && inner.len() <= 30 && inner.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) && inner.chars().all(|c| c.is_ascii_alphabetic() || c == ' ');
             let escaped = start > 0 && bytes[start - 1] == b'\\';
             if words && !escaped {
-                out.push(LiteralEdit { file: file.to_string(), line: i + 1, from: format!("\"{}\"", inner), to: format!("\"{} haul\"", inner) });
+                out.push(LiteralEdit { file: file.to_string(), line: i + 1, from: format!("\"{}\"", inner), to: format!("\"{} qrust\"", inner) });
             }
             j = end + 1;
         }
@@ -194,7 +194,7 @@ fn outputs(target: &Path) -> BTreeMap<String, PathBuf> {
     out
 }
 
-/// What the latest build in a Haul home did per unit: (crate name, cache result, or `relinked`
+/// What the latest build in a QuickRust home did per unit: (crate name, cache result, or `relinked`
 /// for a unit linked again from its kept objects).
 fn unit_results(home: &Path) -> Vec<(String, String)> {
     let runs: Vec<PathBuf> = fs::read_dir(home.join("workspaces")).into_iter().flatten().flatten().flat_map(|ws| fs::read_dir(ws.path().join("events")).into_iter().flatten().flatten().map(|e| e.path())).collect();
@@ -219,7 +219,7 @@ fn unit_results(home: &Path) -> Vec<(String, String)> {
 /// Runs the gate: `edits` edits per workload, chosen with `seed`. Returns the report and
 /// whether every edit passed.
 pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Value, bool) {
-    let drivers = ctx.drivers.as_ref().unwrap_or_else(|e| fail(&format!("the cut-off gate needs Haul's compiler driver, which could not be built: {}", e)));
+    let drivers = ctx.drivers.as_ref().unwrap_or_else(|e| fail(&format!("the cut-off gate needs QuickRust's compiler driver, which could not be built: {}", e)));
     let mut all_pass = true;
     let mut report = Vec::new();
     for w in workloads {
@@ -230,8 +230,8 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
         let fresh_home = |name: &str| -> PathBuf {
             let home = base.join(name);
             let _ = fs::remove_dir_all(&home);
-            ctx.sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
-            crate::copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver: {}", e)));
+            ctx.sealed.qrust_home(&home).unwrap_or_else(|e| fail(&e));
+            crate::copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy QuickRust's compiler driver: {}", e)));
             if name != "home-incremental" {
                 fs::write(home.join("config.toml"), "[fast]\nfrontend-threads = \"off\"\nlinker = \"off\"\n").unwrap_or_else(|e| fail(&e.to_string()));
             }
@@ -240,7 +240,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
         let inc_target = base.join("target-incremental");
         // A build of the incremental loop: its stderr's error lines (and any panic) when it fails.
         let build_incremental = |home: &Path| -> Result<(), String> {
-            let out = ctx.sealed.command(&ctx.haul, &co, &inc_target, false).env("HAUL_HOME", home).arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
+            let out = ctx.sealed.command(&ctx.qrust, &co, &inc_target, false).env("QRUST_HOME", home).arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
             let err = String::from_utf8_lossy(&out.stderr);
             if out.status.success() && !err.contains("panicked") && !err.contains("driver failed") {
                 Ok(())
@@ -249,7 +249,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             }
         };
         let build = |home: &Path| -> Result<(), String> {
-            let out = ctx.sealed.command(&ctx.haul, &co, &target, false).env("HAUL_HOME", home).env("CARGO_INCREMENTAL", "0").arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
+            let out = ctx.sealed.command(&ctx.qrust, &co, &target, false).env("QRUST_HOME", home).env("CARGO_INCREMENTAL", "0").arg("build").args(&w.args).output().map_err(|e| e.to_string())?;
             if out.status.success() {
                 Ok(())
             } else {
@@ -290,7 +290,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
                 build_incremental(&home_inc).map_err(|e| format!("incremental build after the edit: {}", e))?;
                 let originals: Vec<(PathBuf, String)> = sources.iter().map(|f| co.join(f)).filter_map(|p| fs::read_to_string(&p).ok().map(|t| (p, t))).collect();
                 for (p, t) in &originals {
-                    fs::write(p, format!("{}\n// haul-bench\n", t)).map_err(|e| e.to_string())?;
+                    fs::write(p, format!("{}\n// qrust-bench\n", t)).map_err(|e| e.to_string())?;
                 }
                 let touched = build_incremental(&home_inc).map_err(|e| format!("incremental build of every crate: {}", e));
                 for (p, t) in &originals {
@@ -356,13 +356,13 @@ mod tests {
 
     #[test]
     fn edits_stay_inside_bodies_and_change_one_literal() {
-        let dir = std::env::temp_dir().join(format!("haul-bench-cutoff-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("qrust-bench-cutoff-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let src = "const LIMIT: u32 = 10;\n\nfn f(x: u32) -> String {\n        let a = [0u8; 16];\n        let n = x + 42;\n        match n { 7 => {} _ => {} }\n        // \"not this\"\n        log(n);\n        format!(\"value is\", n)\n}\n\n#[cfg(test)]\nmod tests {\n        let t = \"in tests\";\n}\n";
         fs::write(dir.join("lib.rs"), src).unwrap();
         let edits = literal_edits(&dir, "lib.rs");
         let found: Vec<(usize, &str, &str)> = edits.iter().map(|e| (e.line, e.from.as_str(), e.to.as_str())).collect();
-        assert_eq!(found, vec![(5, "42", "43"), (8, "log(n);", "debug_assert!(true); log(n);"), (9, "\"value is\"", "\"value is haul\"")]);
+        assert_eq!(found, vec![(5, "42", "43"), (8, "log(n);", "debug_assert!(true); log(n);"), (9, "\"value is\"", "\"value is qrust\"")]);
         let applied = edits[0].apply(src).unwrap();
         assert_eq!(applied.lines().nth(4), Some("        let n = x + 43;"));
         assert_eq!(applied.lines().count(), src.lines().count());

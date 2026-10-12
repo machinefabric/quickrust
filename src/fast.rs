@@ -1,11 +1,11 @@
-//! Fast mode: build settings Haul applies by default (spec revision of 2026-10-11).
+//! Fast mode: build settings QuickRust applies by default (spec revision of 2026-10-11).
 //!
 //! Every setting here keeps the built program's behaviour identical; each one has to
 //! earn its place in the speed index (`benchmarks/`). Settings reach the delegated Cargo
 //! as `--config` overlays before the subcommand, never through files or the environment,
 //! so they cannot leak into build scripts, programs run by `cargo run`, or nested Cargo.
 //! A setting the user made anywhere (manifest, configuration, environment, `--config`)
-//! always wins: Haul then leaves that setting, and the ones that depend on it, alone.
+//! always wins: QuickRust then leaves that setting, and the ones that depend on it, alone.
 
 use crate::resolve::{Family, Invocation};
 use serde_json::{json, Value};
@@ -14,7 +14,7 @@ pub struct Setting {
     /// Path below `[profile]`, as written in a `--config` assignment.
     pub key: &'static str,
     pub value: &'static str,
-    /// User settings that make Haul leave this one alone, as flattened paths below `[profile]`.
+    /// User settings that make QuickRust leave this one alone, as flattened paths below `[profile]`.
     pub yields_to: &'static [&'static str],
     pub why: &'static str,
 }
@@ -99,7 +99,7 @@ mod tests {
 
     #[test]
     fn a_user_setting_always_wins() {
-        // The user wants debug info in dev builds: Haul touches neither setting.
+        // The user wants debug info in dev builds: QuickRust touches neither setting.
         let o = overlays(&inv(&["build"]), "fast", &[("dev.debug".into(), "manifest /w/Cargo.toml".into())]);
         assert!(o.args.is_empty());
         assert_eq!(o.record["yielded"].as_array().unwrap().len(), 2);

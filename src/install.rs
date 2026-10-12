@@ -1,22 +1,22 @@
-//! `haul install` / `cargo install`: programs built from crates and put into Haul's `bin`
-//! (`~/.haul/bin`, or `<root>/bin` with `--root`), by Haul itself.
+//! `qrust install` / `cargo install`: programs built from crates and put into QuickRust's `bin`
+//! (`~/.qrust/bin`, or `<root>/bin` with `--root`), by QuickRust itself.
 //!
 //! - Which release of a crate: Cargo's resolver decides, as for a dependency (a probe manifest
 //!   depending on its binaries — an artifact dependency, `-Zbindeps`, unlocked with
 //!   `RUSTC_BOOTSTRAP=1`: Cargo drops a plain dependency on a crate without a library — then
 //!   `cargo metadata`), so registries, source replacement, yanked releases and the toolchain's
-//!   Rust version count exactly as in a build. Its source then comes from Haul's
-//!   Cargo home, copied into Haul's cache.
+//!   Rust version count exactly as in a build. Its source then comes from QuickRust's
+//!   Cargo home, copied into QuickRust's cache.
 //! - `--git` clones with the system `git`; `--path` builds the package where it is.
-//! - It is built like any build Haul runs (release profile unless `--debug` / `--profile`), with
-//!   Haul's output, artifact cache and build directories. As by `cargo install`, a crate's
+//! - It is built like any build QuickRust runs (release profile unless `--debug` / `--profile`), with
+//!   QuickRust's output, artifact cache and build directories. As by `cargo install`, a crate's
 //!   dependencies are resolved afresh, and with `--locked` from the lockfile published with it
-//!   (kept aside in the copy as `.haul-published.lock`); `--path` builds the workspace with its own
+//!   (kept aside in the copy as `.qrust-published.lock`); `--path` builds the workspace with its own
 //!   `Cargo.lock`, as `cargo build` does. A copy is locked while it is prepared and built
 //!   (`<copy>.lock`), and the cache removes copies least recently used like build directories.
 //! - Its binaries (or `--bin`, `--example`) are put into the `bin` directory, never over one of
-//!   Haul's own names, nor over another package's or an unknown file without `--force`.
-//!   `installs.json` in Haul's home records what each package installed, for `--list`,
+//!   QuickRust's own names, nor over another package's or an unknown file without `--force`.
+//!   `installs.json` in QuickRust's home records what each package installed, for `--list`,
 //!   `uninstall` and knowing an install is already there.
 
 use crate::config::Config;
@@ -29,14 +29,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const RECORD: &str = "installs.json";
-/// The lockfile a crate was published with, in Haul's copy of it.
-const PUBLISHED_LOCK: &str = ".haul-published.lock";
+/// The lockfile a crate was published with, in QuickRust's copy of it.
+const PUBLISHED_LOCK: &str = ".qrust-published.lock";
 /// In a complete copy of a published package; its time is when an install last used the copy.
-pub const COMPLETE: &str = ".haul-complete";
+pub const COMPLETE: &str = ".qrust-complete";
 
-/// Names in Haul's `bin` that are Haul.
+/// Names in QuickRust's `bin` that are QuickRust.
 fn reserved(name: &str) -> bool {
-    matches!(name, "cargo" | "haul" | "haul-rustc-wrapper") || crate::engine::PROXIES.contains(&name)
+    matches!(name, "cargo" | "qrust" | "qrust-rustc-wrapper") || crate::engine::PROXIES.contains(&name)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -114,7 +114,7 @@ pub fn parse_install(args: &[String]) -> Result<Request, String> {
                 r.build_args.extend([flag.to_string(), v]);
             }
             "--offline" | "--frozen" | "--ignore-rust-version" | "-q" | "--quiet" | "-v" | "-vv" | "--verbose" => r.build_args.push(flag.to_string()),
-            f if f.starts_with('-') => return Err(format!("`haul install` has no option `{}`", f)),
+            f if f.starts_with('-') => return Err(format!("`qrust install` has no option `{}`", f)),
             spec => {
                 let (name, ver) = match spec.split_once('@') {
                     Some((n, v)) => (n.to_string(), Some(v.to_string())),
@@ -142,7 +142,7 @@ pub fn parse_install(args: &[String]) -> Result<Request, String> {
         return Err("--branch, --tag and --rev go with --git".into());
     }
     if !r.list && r.crates.is_empty() && r.git.is_none() && r.path.is_none() {
-        return Err("`haul install` needs a crate, --git or --path (or --list)".into());
+        return Err("`qrust install` needs a crate, --git or --path (or --list)".into());
     }
     Ok(r)
 }
@@ -156,31 +156,31 @@ fn requirement(v: &Option<String>) -> String {
     }
 }
 
-/// The root binaries go under (`<root>/bin`): `--root`, else Haul's home.
+/// The root binaries go under (`<root>/bin`): `--root`, else QuickRust's home.
 fn root_of(r: &Request, cwd: &Path) -> Result<PathBuf, String> {
     if std::env::var_os("CARGO_INSTALL_ROOT").is_some_and(|v| !v.is_empty()) && r.root.is_none() {
-        return Err("CARGO_INSTALL_ROOT is set; Haul installs into its own bin (~/.haul/bin) unless --root says otherwise".into());
+        return Err("CARGO_INSTALL_ROOT is set; QuickRust installs into its own bin (~/.qrust/bin) unless --root says otherwise".into());
     }
     Ok(match &r.root {
         Some(p) => cwd.join(p),
-        None => util::haul_home(),
+        None => util::qrust_home(),
     })
 }
 
 /// The record of installs, by root and package.
 fn load_record() -> Value {
-    util::read_json(&util::haul_home().join(RECORD)).filter(|v| v["format"] == json!(1)).unwrap_or_else(|| json!({ "format": 1, "roots": {} }))
+    util::read_json(&util::qrust_home().join(RECORD)).filter(|v| v["format"] == json!(1)).unwrap_or_else(|| json!({ "format": 1, "roots": {} }))
 }
 
 fn save_record(v: &Value) -> Result<(), String> {
-    util::write_json(&util::haul_home().join(RECORD), v).map_err(|e| format!("cannot record the install: {}", e))
+    util::write_json(&util::qrust_home().join(RECORD), v).map_err(|e| format!("cannot record the install: {}", e))
 }
 
-/// `haul install …` / `haul uninstall …`: what a session runs for them.
+/// `qrust install …` / `qrust uninstall …`: what a session runs for them.
 pub fn run(args: &[OsString], inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<i32, String> {
     let at = inv.command_index.ok_or("no command")?;
     let rest: Vec<String> = args[at + 1..].iter().map(|a| util::lossy(a)).collect();
-    let _lock = util::ExclusiveLock::acquire(&util::haul_home().join("installs.lock")).map_err(|e| format!("cannot lock the install record: {}", e))?;
+    let _lock = util::ExclusiveLock::acquire(&util::qrust_home().join("installs.lock")).map_err(|e| format!("cannot lock the install record: {}", e))?;
     match inv.command.as_deref() {
         Some("uninstall") => uninstall(&rest, cwd),
         _ => {
@@ -214,14 +214,14 @@ struct Source {
     dir: PathBuf,
     /// How the record names it: `{"kind": …, "display": …}`.
     record: Value,
-    /// The workspace of Haul's copy (registry, git), whose `Cargo.lock` the install chooses;
+    /// The workspace of QuickRust's copy (registry, git), whose `Cargo.lock` the install chooses;
     /// `None` for a workspace of the user's (`--path`).
     copy_root: Option<PathBuf>,
     /// The copy's lock, held until the install is done.
     _lock: Option<util::ExclusiveLock>,
 }
 
-/// The lock of a copy in Haul's cache (`<copy>.lock`), which the cache's collection respects.
+/// The lock of a copy in QuickRust's cache (`<copy>.lock`), which the cache's collection respects.
 pub fn copy_lock(dir: &Path) -> PathBuf {
     dir.with_file_name(format!("{}.lock", util::lossy(dir.file_name().unwrap_or_default())))
 }
@@ -271,7 +271,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     let meta = metadata(&engine, &source.dir.join("Cargo.toml"), true)?;
     let pkg = meta["packages"].as_array().and_then(|p| p.iter().find(|p| p["name"] == json!(source.name))).ok_or_else(|| format!("{} has no package {}", source.dir.display(), source.name))?.clone();
     let wanted = select_targets(&pkg, r)?;
-    // Built like any build Haul runs.
+    // Built like any build QuickRust runs.
     let mut build: Vec<OsString> = inv.toolchain.iter().map(|t| OsString::from(format!("+{}", t))).collect();
     build.extend(["build", "--manifest-path"].map(OsString::from));
     build.push(source.dir.join("Cargo.toml").into_os_string());
@@ -292,7 +292,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
         build.extend(["--target".into(), t.into()]);
     }
     match &source.copy_root {
-        // Haul's copy: Cargo resolves afresh, or with --locked from the published lockfile.
+        // QuickRust's copy: Cargo resolves afresh, or with --locked from the published lockfile.
         Some(root) => {
             let lock = root.join("Cargo.lock");
             match fs::remove_file(&lock) {
@@ -340,14 +340,14 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     for (kind, n) in &wanted {
         let file = exe(n, r.target.as_deref());
         if reserved(n) {
-            return Err(format!("{} would replace Haul's own `{}` in {}", source.name, n, bin_dir.display()));
+            return Err(format!("{} would replace QuickRust's own `{}` in {}", source.name, n, bin_dir.display()));
         }
         let dest = bin_dir.join(&file);
         if fs::symlink_metadata(&dest).is_ok() && !r.force {
             match owners.iter().find(|(b, _)| b == n) {
                 Some((_, owner)) if *owner == source.name => {}
                 Some((_, owner)) => return Err(format!("{} is {}'s; --force replaces it", dest.display(), owner)),
-                None => return Err(format!("{} exists and was not installed by Haul; --force replaces it", dest.display())),
+                None => return Err(format!("{} exists and was not installed by QuickRust; --force replaces it", dest.display())),
             }
         }
         let from = if kind == "bin" { built.join(&file) } else { built.join("examples").join(&file) };
@@ -448,7 +448,7 @@ fn metadata(engine: &crate::engine::Engine, manifest: &Path, no_deps: bool) -> R
     serde_json::from_slice(&out.stdout).map_err(|e| format!("cargo metadata: {}", e))
 }
 
-/// A crate from a registry: the release Cargo's resolver picks, its source copied into Haul's
+/// A crate from a registry: the release Cargo's resolver picks, its source copied into QuickRust's
 /// cache.
 fn registry(name: &str, req: &Option<String>, r: &Request, inv: &Invocation, cfg: &Config) -> Result<Source, String> {
     let probe = util::cache_dir().join("tmp").join(format!("install-{}", std::process::id()));
@@ -456,7 +456,7 @@ fn registry(name: &str, req: &Option<String>, r: &Request, inv: &Invocation, cfg
     fs::create_dir_all(probe.join("src")).map_err(|e| format!("cannot create {}: {}", probe.display(), e))?;
     let out = (|| {
         let registry = r.registry.as_ref().map(|reg| format!(", registry = {:?}", reg)).unwrap_or_default();
-        let manifest = format!("[package]\nname = \"haul-install-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\n{:?} = {{ version = {:?}, artifact = \"bin\", default-features = false{} }}\n\n[workspace]\n", name, requirement(req), registry);
+        let manifest = format!("[package]\nname = \"qrust-install-probe\"\nversion = \"0.0.0\"\nedition = \"2021\"\npublish = false\n\n[dependencies]\n{:?} = {{ version = {:?}, artifact = \"bin\", default-features = false{} }}\n\n[workspace]\n", name, requirement(req), registry);
         fs::write(probe.join("Cargo.toml"), manifest).map_err(|e| e.to_string())?;
         fs::write(probe.join("src/lib.rs"), "").map_err(|e| e.to_string())?;
         let mut probe_inv = resolve::classify(&inv.toolchain.iter().map(|t| OsString::from(format!("+{}", t))).collect::<Vec<_>>());
@@ -537,7 +537,7 @@ fn copy_package(from: &Path, to: &Path) -> Result<(), String> {
     })
 }
 
-/// A package from a git repository, cloned with the system `git` into Haul's cache.
+/// A package from a git repository, cloned with the system `git` into QuickRust's cache.
 fn git(url: &str, git_ref: Option<&(String, String)>, name: &str, inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Source, String> {
     let git = util::which("git").ok_or("--git needs git on PATH")?;
     let dir = util::cache_dir().join("src").join(format!("git-{}", &util::digest_parts([url.to_string(), format!("{:?}", git_ref)])[..16]));
@@ -599,7 +599,7 @@ fn local(dir: &Path, name: &str, inv: &Invocation, _cwd: &Path, cfg: &Config) ->
     Ok((Source { name: util::vstr(pkg, "name"), version: util::vstr(pkg, "version"), dir: manifest.parent().unwrap_or(dir).to_path_buf(), record: json!({ "kind": "path", "path": util::path_str(&util::canon(dir)), "display": util::path_str(&util::canon(dir)) }), copy_root: None, _lock: None }, root))
 }
 
-/// `haul uninstall <package>… [--bin NAME]… [--root DIR]`.
+/// `qrust uninstall <package>… [--bin NAME]… [--root DIR]`.
 fn uninstall(args: &[String], cwd: &Path) -> Result<i32, String> {
     let mut pkgs = vec![];
     let mut bins = vec![];
@@ -610,13 +610,13 @@ fn uninstall(args: &[String], cwd: &Path) -> Result<i32, String> {
             "--bin" => bins.push(need(args, &mut i, "--bin")?),
             "--root" => r.root = Some(PathBuf::from(need(args, &mut i, "--root")?)),
             "-q" | "--quiet" | "-v" | "--verbose" => {}
-            f if f.starts_with('-') => return Err(format!("`haul uninstall` has no option `{}`", f)),
+            f if f.starts_with('-') => return Err(format!("`qrust uninstall` has no option `{}`", f)),
             p => pkgs.push(p.split('@').next().unwrap_or(p).to_string()),
         }
         i += 1;
     }
     if pkgs.is_empty() {
-        return Err("`haul uninstall` needs a package".into());
+        return Err("`qrust uninstall` needs a package".into());
     }
     let root = root_of(&r, cwd)?;
     let mut record = load_record();
@@ -684,6 +684,6 @@ mod tests {
         assert_eq!(requirement(&Some("1.2.3".into())), "=1.2.3");
         assert_eq!(requirement(&Some("1.2".into())), "1.2");
         assert_eq!(requirement(&Some("^1".into())), "^1");
-        assert!(reserved("cargo") && reserved("rustfmt") && reserved("haul") && !reserved("rg"));
+        assert!(reserved("cargo") && reserved("rustfmt") && reserved("qrust") && !reserved("rg"));
     }
 }

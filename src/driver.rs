@@ -1,10 +1,10 @@
-//! Haul's compiler driver (`driver/` in this repository): rustc itself — the toolchain's own
-//! `librustc_driver`, its LLVM, its release — run through Haul's callbacks, which is how Haul
+//! QuickRust's compiler driver (`driver/` in this repository): rustc itself — the toolchain's own
+//! `librustc_driver`, its LLVM, its release — run through QuickRust's callbacks, which is how QuickRust
 //! changes how the compiler works without changing what it builds.
 //!
 //! The compiler's internal API differs between releases, so the driver is built for each
 //! toolchain, against that toolchain's `rustc-dev` component, and only used once it reports
-//! exactly the compiler's own `rustc -vV`. It lives in `~/.haul/cache/drivers/<key>/`, the key naming
+//! exactly the compiler's own `rustc -vV`. It lives in `~/.qrust/cache/drivers/<key>/`, the key naming
 //! the compiler (commit, host) and the driver's source. A toolchain the driver cannot be built
 //! for keeps the stock compiler; the reason is recorded next to where the driver would be.
 
@@ -14,18 +14,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Set for the driver: compute the crate hash from what dependents can observe.
-pub const ENV_INTERFACE_HASH: &str = "HAUL_DRIVER_INTERFACE_HASH";
+pub const ENV_INTERFACE_HASH: &str = "QRUST_DRIVER_INTERFACE_HASH";
 /// Set for the driver: the descriptor of a pipe on which it says its outputs are written.
-pub const ENV_READY_FD: &str = "HAUL_DRIVER_READY_FD";
-/// Set for the driver: where to keep the objects of a unit Haul relinks.
-pub const ENV_KEEP_OBJECTS: &str = "HAUL_DRIVER_KEEP_OBJECTS";
+pub const ENV_READY_FD: &str = "QRUST_DRIVER_READY_FD";
+/// Set for the driver: where to keep the objects of a unit QuickRust relinks.
+pub const ENV_KEEP_OBJECTS: &str = "QRUST_DRIVER_KEEP_OBJECTS";
 
 const MANIFEST: &str = include_str!("../driver/Cargo.toml");
 const SOURCES: [(&str, &str); 2] = [("main.rs", include_str!("../driver/src/main.rs")), ("early_link.rs", include_str!("../driver/src/early_link.rs"))];
 /// The binary's name inside its directory.
-const BINARY: &str = "haul-rustc-driver";
+const BINARY: &str = "qrust-rustc-driver";
 /// Releases whose compiler interface the driver's sources adapt to: the driver is built with
-/// `--cfg haul_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
+/// `--cfg qrust_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
 /// between releases).
 const INTERFACE_BREAKS: &[u32] = &[99];
 /// How a failure to get the toolchain's `rustc-dev` component begins.
@@ -101,10 +101,10 @@ fn release_minor(version_verbose: &str) -> Option<u32> {
 }
 
 /// Starts building the driver for the compiler at `rustc` (described by `compiler`) in the
-/// background, with `haul` (Haul's own binary) running `haul driver
-/// build`, unless it is built, being built, or could not be built before (`haul driver build`
+/// background, with `qrust` (QuickRust's own binary) running `qrust driver
+/// build`, unless it is built, being built, or could not be built before (`qrust driver build`
 /// tries again). Returns whether a build started.
-pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<bool, String> {
+pub fn start_build(qrust: &Path, rustc: &Path, compiler: &Compiler) -> Result<bool, String> {
     if find(compiler).is_some() {
         return Ok(false);
     }
@@ -127,7 +127,7 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
         Err(e) => return Err(format!("cannot create {}: {}", marker.display(), e)),
     }
     let log = fs::File::create(target.join("build.log")).map_err(|e| e.to_string())?;
-    let mut c = crate::resolve::haul_command(haul);
+    let mut c = crate::resolve::qrust_command(qrust);
     c.args(["driver", "build", "--rustc", &util::path_str(rustc)]);
     // It outlives the build that started it, and that build's terminal signals (Ctrl-C) do not
     // reach it.
@@ -135,7 +135,7 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
         Ok(()) => Ok(true),
         Err(e) => {
             let _ = fs::remove_file(&marker);
-            Err(format!("cannot start {}: {}", haul.display(), e))
+            Err(format!("cannot start {}: {}", qrust.display(), e))
         }
     }
 }
@@ -146,7 +146,7 @@ pub fn wanted(cfg: &crate::config::Config) -> bool {
     cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && cfg.str("fast.early-cutoff") == "auto"
 }
 
-/// Builds the driver for a toolchain just installed (`haul setup`, a channel's new release),
+/// Builds the driver for a toolchain just installed (`qrust setup`, a channel's new release),
 /// before any build uses the toolchain: the driver is part of what an artifact-cache entry is
 /// keyed by, so what builds store without it, builds with it never find. Shown as a phase. A
 /// failure is a note, not an error: the driver only saves time, and builds try again.
@@ -157,7 +157,7 @@ pub fn prepare(tc: &crate::toolchain::Toolchain) {
         return;
     }
     let mut phase = crate::ui::Phase::start();
-    phase.status(&format!("Preparing Haul's compiler driver for Rust {}", release), true);
+    phase.status(&format!("Preparing QuickRust's compiler driver for Rust {}", release), true);
     match build(&rustc) {
         Ok(_) => phase.finish(true, &format!("Compiler driver for Rust {} ready", release)),
         Err(e) => {
@@ -168,14 +168,14 @@ pub fn prepare(tc: &crate::toolchain::Toolchain) {
 }
 
 /// Builds the driver for the compiler at `rustc` (a toolchain's own binary) and installs it where
-/// `find` looks; one build at a time. Adds the `rustc-dev` component to a toolchain Haul installed
+/// `find` looks; one build at a time. Adds the `rustc-dev` component to a toolchain QuickRust installed
 /// when it is missing; any other compiler must have it. A failure is recorded, and background builds
 /// (`start_build`) do not try again; this one always does.
 pub fn build(rustc: &Path) -> Result<PathBuf, String> {
     let compiler = Compiler::of(&util::path_str(rustc))?;
     let target = dir(&compiler)?;
     let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
-    // Which toolchain it is for: once that is gone, Haul's cache removes the driver.
+    // Which toolchain it is for: once that is gone, QuickRust's cache removes the driver.
     let _ = util::write_json_fast(&target.join(COMPILER), &serde_json::json!({ "sysroot": util::path_str(&compiler.sysroot) }));
     let result = match find(&compiler) {
         Some(exe) => Ok(exe),
@@ -197,7 +197,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     let vv = vv.to_string();
     let toolchain = rustc.parent().and_then(Path::parent).ok_or_else(|| format!("{} is not in a toolchain's bin directory", rustc.display()))?.to_path_buf();
     let name = util::lossy(toolchain.file_name().unwrap_or_default());
-    // The toolchain's rustc-dev component: added to a toolchain Haul installed (from its own
+    // The toolchain's rustc-dev component: added to a toolchain QuickRust installed (from its own
     // release; nothing when it has it), required of any other (listed in its components).
     let layout = crate::toolchain::Layout::current();
     match crate::toolchain::owning(&layout, rustc) {
@@ -216,7 +216,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         None => {
             let listed = fs::read_to_string(toolchain.join("lib/rustlib/components")).unwrap_or_default();
             if !listed.lines().any(|l| l.trim() == "rustc-dev") {
-                return Err(format!("{} for {}: the toolchain does not have it, and Haul only adds components to toolchains it installed", NO_RUSTC_DEV, name));
+                return Err(format!("{} for {}: the toolchain does not have it, and QuickRust only adds components to toolchains it installed", NO_RUSTC_DEV, name));
             }
         }
     }
@@ -230,7 +230,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     }
     let lib = toolchain.join("lib");
     let minor = release_minor(&vv).ok_or_else(|| format!("`rustc -vV` of {} names no release", name))?;
-    let cfgs: String = INTERFACE_BREAKS.iter().map(|b| format!(" --check-cfg cfg(haul_rustc_ge_{b}){}", if minor >= *b { format!(" --cfg haul_rustc_ge_{b}") } else { String::new() })).collect();
+    let cfgs: String = INTERFACE_BREAKS.iter().map(|b| format!(" --check-cfg cfg(qrust_rustc_ge_{b}){}", if minor >= *b { format!(" --cfg qrust_rustc_ge_{b}") } else { String::new() })).collect();
     // It finds the toolchain's libraries by an rpath on Unix; on Windows by `PATH` (see
     // `engine::LIBRARY_PATH`), which Cargo's environment and `run_against` give it.
     let rpath = if cfg!(windows) { String::new() } else { format!(" -C link-arg=-Wl,-rpath,{}", util::path_str(&lib)) };
@@ -290,8 +290,8 @@ mod tests {
     fn two_toolchains_of_one_release_get_drivers_of_their_own() {
         let vv = "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\n".to_string();
         let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
-        assert_ne!(at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/haul/toolchains/dev"));
-        assert_eq!(at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
+        assert_ne!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/dev"));
+        assert_eq!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
     }
 
     #[test]

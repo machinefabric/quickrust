@@ -1,7 +1,7 @@
 //! Remediation previews (FR-170).
 //!
 //! A remediation is a minimal, reversible edit to one file, bound to the exact
-//! content it was generated against. Only changes to Haul's own configuration
+//! content it was generated against. Only changes to QuickRust's own configuration
 //! are classified `safe` and can be applied; everything that alters how the
 //! project is compiled is `review_required` and is only ever shown as a diff.
 
@@ -98,7 +98,7 @@ pub fn toml_set(text: &str, section: &str, key: &str, value: &str) -> Result<Str
     }
     let mut result = out.join("\n");
     result.push('\n');
-    let doc: toml::Table = result.parse().map_err(|e| format!("the edited document would not be valid TOML ({}); it defines `{}` in a form Haul does not edit", e, section))?;
+    let doc: toml::Table = result.parse().map_err(|e| format!("the edited document would not be valid TOML ({}); it defines `{}` in a form QuickRust does not edit", e, section))?;
     let want: toml::Table = format!("v = {}", value).parse().map_err(|e| format!("invalid value {:?}: {}", value, e))?;
     // Walk the dotted section path; quoted segments (`package."*"`) are single keys.
     let mut cur = &doc;
@@ -154,7 +154,7 @@ fn file_remediation(rec: &Value, root: &Path, rel: &str, class: &str, new_conten
         "rollback": { "method": "restore the recorded preimage (or remove the file if it did not exist)", "command": Value::Null },
         "verification": rec["verification"],
         "applicable": class == "safe",
-        "apply_note": if class == "safe" { "can be applied with `haul fix --apply <id>`" } else { "review required: apply the diff yourself (for example `haul fix --dry-run --patch | git apply`) after reviewing it" },
+        "apply_note": if class == "safe" { "can be applied with `qrust fix --apply <id>`" } else { "review required: apply the diff yourself (for example `qrust fix --dry-run --patch | git apply`) after reviewing it" },
     })
 }
 
@@ -182,7 +182,7 @@ pub fn preview(report: &Value, root: &Path, only: Option<&str>, option: Option<&
                 };
                 let workload = report["policy"]["workload"].as_str().unwrap_or("local-dev");
                 let value = if chosen["id"] == json!("disable-incremental") { "\"off\"" } else { "\"cargo-default\"" };
-                let mut r = file_remediation(rec, root, ".haul/config.toml", "safe", |t| toml_set(t, "incremental", workload, value), &format!("{} ({})", util::vstr(chosen, "action"), util::vstr(chosen, "id")));
+                let mut r = file_remediation(rec, root, ".qrust/config.toml", "safe", |t| toml_set(t, "incremental", workload, value), &format!("{} ({})", util::vstr(chosen, "action"), util::vstr(chosen, "id")));
                 r["alternative"] = chosen["id"].clone();
                 r
             }
@@ -194,10 +194,10 @@ pub fn preview(report: &Value, root: &Path, only: Option<&str>, option: Option<&
                 |t| toml_set(t, "profile.dev", "debug", "\"line-tables-only\"").and_then(|t| toml_set(&t, "profile.dev.package.\"*\"", "debug", "false")),
                 "line tables only for workspace crates, no debug info for dependencies, in the dev profile",
             ),
-            "build_script_broad_invalidation" => guidance(rec, "declare the script's inputs with `println!(\"cargo::rerun-if-changed=<path>\")` / `cargo::rerun-if-env-changed=<VAR>` for every file, directory and variable it reads. Haul does not generate these lines: it cannot prove what the script reads"),
+            "build_script_broad_invalidation" => guidance(rec, "declare the script's inputs with `println!(\"cargo::rerun-if-changed=<path>\")` / `cargo::rerun-if-env-changed=<VAR>` for every file, directory and variable it reads. QuickRust does not generate these lines: it cannot prove what the script reads"),
             "duplicate_dependency_versions" => guidance(rec, "unify with `cargo update -p <name>` or by aligning the version requirements shown in the evidence; review the resulting Cargo.lock diff"),
             "feature_variant_duplication" => guidance(rec, "make the dependents listed in the evidence request the same feature set, for example via `[workspace.dependencies]`"),
-            "stale_artifacts" => guidance(rec, "inspect the plan with `haul inventory`; Haul's cache removes whole build directories when it needs the space (`haul gc`)"),
+            "stale_artifacts" => guidance(rec, "inspect the plan with `qrust inventory`; QuickRust's cache removes whole build directories when it needs the space (`qrust gc`)"),
             _ => guidance(rec, "no file change is associated with this recommendation; follow its verification procedure"),
         };
         out.push(rem);
@@ -231,7 +231,7 @@ fn current_sha(path: &Path) -> Result<Option<String>, String> {
 /// Applies a previewed `safe` remediation after verifying the file is unchanged since the preview.
 pub fn apply(store: &WsStore, id: &str) -> Result<Value, String> {
     let path = record_path(store, id);
-    let mut rem = util::read_json(&path).ok_or_else(|| format!("no previewed remediation `{}`; run `haul fix --dry-run` first", id))?;
+    let mut rem = util::read_json(&path).ok_or_else(|| format!("no previewed remediation `{}`; run `qrust fix --dry-run` first", id))?;
     if rem["class"] != json!("safe") {
         return Err(format!("remediation {} is `{}`: it changes how the project is built and is never applied automatically. Review and apply its diff yourself.", id, util::vstr(&rem, "class")));
     }
@@ -242,10 +242,10 @@ pub fn apply(store: &WsStore, id: &str) -> Result<Value, String> {
     let file = root.join(util::vstr(&rem, "file"));
     // Conflict safety: the target must be byte-identical to what the preview was computed from.
     if current_sha(&file)? != rem["preimage_sha256"].as_str().map(str::to_string) {
-        return Err(format!("{} changed after the preview was generated; refusing to apply. Run `haul fix --dry-run` again.", file.display()));
+        return Err(format!("{} changed after the preview was generated; refusing to apply. Run `qrust fix --dry-run` again.", file.display()));
     }
     util::write_atomic(&file, rem["postimage_content"].as_str().unwrap_or("").as_bytes()).map_err(|e| format!("could not write {}: {}", file.display(), e))?;
-    // Verify the result; a remediation that leaves Haul's configuration invalid is rolled back (FR-170.4).
+    // Verify the result; a remediation that leaves QuickRust's configuration invalid is rolled back (FR-170.4).
     let verified = Config::load(&root);
     if let Err(e) = &verified {
         restore_preimage(&file, &rem)?;
@@ -256,7 +256,7 @@ pub fn apply(store: &WsStore, id: &str) -> Result<Value, String> {
     }
     rem["state"] = json!("applied");
     rem["applied_at"] = json!(util::iso8601(util::now_wall_ns()));
-    rem["rollback"]["command"] = json!(format!("haul fix --rollback {}", id));
+    rem["rollback"]["command"] = json!(format!("qrust fix --rollback {}", id));
     util::write_json(&path, &rem).map_err(|e| format!("the change was applied but its audit record could not be written: {}", e))?;
     Ok(rem)
 }
@@ -319,7 +319,7 @@ mod tests {
     }
 
     fn fixture() -> (PathBuf, WsStore, Value) {
-        let base = std::env::temp_dir().join(format!("haul-fix-{}", util::new_id()));
+        let base = std::env::temp_dir().join(format!("qrust-fix-{}", util::new_id()));
         let root = base.join("ws");
         fs::create_dir_all(&root).unwrap();
         fs::write(root.join("Cargo.toml"), "[package]\nname = \"x\"\nversion = \"0.1.0\"\n").unwrap();
@@ -342,7 +342,7 @@ mod tests {
         let before = fs::read_to_string(root.join("Cargo.toml")).unwrap();
         let p = preview(&report, &root, None, None).unwrap();
         assert_eq!(fs::read_to_string(root.join("Cargo.toml")).unwrap(), before, "a preview must not modify the manifest");
-        assert!(!root.join(".haul").exists(), "a preview must not create configuration");
+        assert!(!root.join(".qrust").exists(), "a preview must not create configuration");
         assert_eq!((p[0]["class"].as_str(), p[0]["applicable"].as_bool()), (Some("safe"), Some(true)));
         assert!(p[0]["diff"].as_str().unwrap().contains("+ci = \"off\""));
         assert_eq!((p[1]["class"].as_str(), p[1]["applicable"].as_bool()), (Some("review_required"), Some(false)));
@@ -361,18 +361,18 @@ mod tests {
         assert!(apply(&store, review_id).unwrap_err().contains("never applied automatically"));
 
         // FR-170 acceptance: the target changed after the preview ⇒ refuse.
-        fs::create_dir_all(root.join(".haul")).unwrap();
-        fs::write(root.join(".haul/config.toml"), "[cache]\nfail = \"open\"\n").unwrap();
+        fs::create_dir_all(root.join(".qrust")).unwrap();
+        fs::write(root.join(".qrust/config.toml"), "[cache]\nfail = \"open\"\n").unwrap();
         assert!(apply(&store, safe_id).unwrap_err().contains("changed after the preview"));
-        assert_eq!(fs::read_to_string(root.join(".haul/config.toml")).unwrap(), "[cache]\nfail = \"open\"\n");
+        assert_eq!(fs::read_to_string(root.join(".qrust/config.toml")).unwrap(), "[cache]\nfail = \"open\"\n");
 
-        fs::remove_file(root.join(".haul/config.toml")).unwrap();
+        fs::remove_file(root.join(".qrust/config.toml")).unwrap();
         let applied = apply(&store, safe_id).unwrap();
         assert_eq!(applied["state"], "applied");
-        assert_eq!(fs::read_to_string(root.join(".haul/config.toml")).unwrap(), "[incremental]\nci = \"off\"\n");
+        assert_eq!(fs::read_to_string(root.join(".qrust/config.toml")).unwrap(), "[incremental]\nci = \"off\"\n");
         assert!(apply(&store, safe_id).is_err(), "applying twice is an error");
         assert_eq!(rollback(&store, safe_id).unwrap()["state"], "reverted");
-        assert!(!root.join(".haul/config.toml").exists(), "the file did not exist before, so rollback removes it");
+        assert!(!root.join(".qrust/config.toml").exists(), "the file did not exist before, so rollback removes it");
         fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 }

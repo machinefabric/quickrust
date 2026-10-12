@@ -28,7 +28,7 @@ fn inventory_of_a_build_directory_of_a_million_files() {
         }
     }
     eprintln!("scale: a million files written in {:.1} s", started.elapsed().as_secs_f64());
-    let (secs, rss, success, out) = measure(sb.haul(&p).args(["inventory", "--format", "json"]));
+    let (secs, rss, success, out) = measure(sb.qrust(&p).args(["inventory", "--format", "json"]));
     assert!(success);
     let v: Value = serde_json::from_slice(&out).unwrap();
     let files: u64 = v["build_directories"].as_array().unwrap().iter().map(|d| d["files"].as_u64().unwrap_or(0)).sum();
