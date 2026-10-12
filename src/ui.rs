@@ -555,8 +555,9 @@ struct Activity {
     progress: Option<(u64, u64)>,
     /// Downloading: the most crates seen remaining (the total), those remaining now, the bytes left.
     downloading: Option<(u64, u64, String)>,
-    /// `Blocking waiting for file lock on …`: on what.
-    waiting: Option<String>,
+    /// `Blocking waiting for file lock on …`: on what, and whether Haul's cache collection is
+    /// what holds it (otherwise another Cargo).
+    waiting: Option<(String, bool)>,
     /// `Updating crates.io index`: which.
     updating: Option<String>,
     /// `Fetch n complete; m pending`: index entries looked up so far.
@@ -589,7 +590,7 @@ impl Activity {
                 self.looked_up = None;
             }
             Line::Progress { verb: "Fetch", done, .. } => self.looked_up = done,
-            Line::Status { verb: "Blocking", rest } => self.waiting = Some(rest.trim_start_matches("waiting for file lock on ").to_string()),
+            Line::Status { verb: "Blocking", rest } => self.waiting = Some((rest.trim_start_matches("waiting for file lock on ").to_string(), crate::space::collecting())),
             Line::Status { verb: "Updating", rest } if rest.ends_with(" index") => {
                 self.updating = Some(rest.to_string());
                 self.looked_up = None;
@@ -614,8 +615,8 @@ impl Activity {
 
     /// The status line for what Cargo is doing before (or apart from) compiling.
     fn status(&self) -> Option<String> {
-        if let Some(w) = &self.waiting {
-            return Some(format!("Waiting for the lock on the {} (another Cargo holds it)", w));
+        if let Some((w, by_haul)) = &self.waiting {
+            return Some(format!("Waiting for the lock on the {} ({} holds it)", w, if *by_haul { "Haul's cache collection" } else { "another Cargo" }));
         }
         if let Some((most, remaining, bytes)) = &self.downloading {
             if *most == 0 {
