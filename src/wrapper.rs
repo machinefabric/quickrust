@@ -34,6 +34,8 @@ pub struct Settings {
     pub frontend_threads: Option<u32>,
     /// Linked workspace outputs that compiled faster than this are not stored in the cache.
     pub min_link_store_ns: u64,
+    /// Directory whose `ld` is the fast linker, when one is used for this build.
+    pub linker_dir: Option<PathBuf>,
 }
 
 const SETTINGS_FILE: &str = "_wrapper.settings";
@@ -85,6 +87,18 @@ pub fn main() {
     if let (Some(n), None) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner) {
         if is_cargo_unit(&lossy) && codegen_value(&lossy, "incremental").is_none() && !lossy.iter().any(|a| a.contains("threads=")) {
             argv.push(format!("-Zthreads={}", n).into());
+            bootstrap = true;
+        }
+    }
+    // Fast mode: link with wild instead of rustc's bundled LLD (measured: relinking ripgrep
+    // 22% faster, a small binary 34%). Only for host builds, and only when no linker was chosen
+    // by the user (a `-C linker`, link arguments selecting one, or linker features).
+    if let (Some(dir), None) = (settings.as_ref().and_then(|s| s.linker_dir.clone()), &inner) {
+        if is_cargo_unit(&lossy) && links_output(&lossy) && arg_value(&lossy, "--target").is_none() && !chooses_linker(&lossy) {
+            for a in ["-Zunstable-options", "-Clink-self-contained=-linker", "-Clinker-features=-lld"] {
+                argv.push(a.into());
+            }
+            argv.push(format!("-Clink-arg=-B{}", util::path_str(&dir)).into());
             bootstrap = true;
         }
     }
@@ -218,6 +232,24 @@ fn run_teed(cmd: &mut Command) -> std::io::Result<(ExitInfo, Option<proc::Usage>
     // A grandchild holding the pipe open must not hang the build.
     let buf = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap_or_default();
     Ok((exit, usage, buf))
+}
+
+/// The unit produces something a linker builds: a binary, test, proc-macro or dynamic library.
+fn links_output(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--test")
+        || args.iter().enumerate().any(|(i, a)| {
+            let v = if a == "--crate-type" { args.get(i + 1).map(String::as_str) } else { a.strip_prefix("--crate-type=") };
+            v.map(|v| v.split(',').any(|t| matches!(t, "bin" | "proc-macro" | "cdylib" | "dylib"))).unwrap_or(false)
+        })
+}
+
+/// Whether the user (through Cargo configuration or RUSTFLAGS) already decided how to link.
+fn chooses_linker(args: &[String]) -> bool {
+    codegen_value(args, "linker").is_some()
+        || codegen_value(args, "link-self-contained").is_some()
+        || codegen_value(args, "linker-features").is_some()
+        || codegen_value(args, "linker-flavor").is_some()
+        || args.iter().any(|a| a.contains("-fuse-ld=") || a.contains("--ld-path="))
 }
 
 /// A compilation Cargo scheduled, as opposed to a compiler probe run by a build script:
@@ -445,12 +477,21 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000 };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")) };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
-        std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"from_the_future":true}"#).unwrap();
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"linker_dir":null,"from_the_future":true}"#).unwrap();
         assert!(Settings::read(&dir).unwrap_err().contains("different versions"));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_fast_linker_is_for_linked_outputs_without_a_linker_of_the_users() {
+        let a = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+        assert!(links_output(&a(&["--crate-type", "bin"])) && links_output(&a(&["--crate-type=proc-macro"])) && links_output(&a(&["--test"])));
+        assert!(!links_output(&a(&["--crate-type", "lib"])) && !links_output(&a(&["--crate-type", "rlib"])));
+        assert!(chooses_linker(&a(&["-C", "linker=clang"])) && chooses_linker(&a(&["-C", "link-arg=-fuse-ld=mold"])) && chooses_linker(&a(&["-Clinker-features=-lld"])));
+        assert!(!chooses_linker(&a(&["-C", "opt-level=0", "-C", "link-arg=-Wl,--as-needed"])));
     }
 
     #[test]

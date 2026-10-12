@@ -894,3 +894,38 @@ fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
     assert!(results.iter().any(|(k, r, why)| k == "bin" && r == "miss" && why == "quick to link"), "{:?}", results);
 }
 
+/// Which linker produced a binary, from its `.comment` section ("Linker: Wild ..." / "Linker: LLD ...").
+fn linked_by(binary: &std::path::Path) -> &'static str {
+    let bytes = fs::read(binary).unwrap();
+    let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+    if has(b"Linker: Wild") {
+        "wild"
+    } else if has(b"Linker: LLD") {
+        "lld"
+    } else {
+        "other"
+    }
+}
+
+#[test]
+fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) || std::process::Command::new("wild").arg("--version").output().is_err() {
+        eprintln!("skipped: wild is not installed (cargo install wild-linker)");
+        return;
+    }
+    let sb = Sandbox::new("wild");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    assert_eq!(linked_by(&p.join("target/debug/p")), "wild");
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "3\n", "the wild-linked program works");
+    let r = sb.report(&p, "latest");
+    assert!(r["policy"]["fast"]["applied"].as_array().unwrap().iter().any(|a| a["key"] == "linker"), "{}", r["policy"]["fast"]);
+    // A linker the user chose wins; compat mode keeps rustc's own.
+    fs::remove_dir_all(p.join("target")).unwrap();
+    ok(sb.cargo(&p).arg("build").env("RUSTFLAGS", "-C link-arg=-fuse-ld=lld"));
+    assert_eq!(linked_by(&p.join("target/debug/p")), "lld");
+    fs::remove_dir_all(p.join("target")).unwrap();
+    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
+    assert_eq!(linked_by(&p.join("target/debug/p")), "lld");
+}
+

@@ -62,6 +62,7 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
     Key { name: "fast.frontend-threads", kind: Kind::Threads, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
+    Key { name: "fast.linker", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: None, help: "fast mode on Linux (glibc): link with wild when it is on PATH (cargo install wild-linker), unless a linker is configured" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-min-link-ms", kind: Kind::Int, default: "300", env: None, help: "linked workspace outputs (binaries, tests, proc-macros) that compiled faster than this are not stored: copying them on every edit costs about what it saves" },
     Key { name: "cache.artifacts-max-size", kind: Kind::Size, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
