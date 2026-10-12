@@ -196,6 +196,8 @@ struct Plan {
     warnings: Vec<String>,
     /// Parallel-frontend threads the wrapper applies to Cargo's units (fast mode).
     frontend_threads: Option<u32>,
+    /// The fast linker in use (fast mode).
+    linker: Option<PathBuf>,
 }
 
 /// Decides wrapper composition and cache/incremental policy for one session.
@@ -211,6 +213,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         sccache: None,
         warnings: Vec::new(),
         frontend_threads: None,
+        linker: None,
     };
     let wants = cfg.bool("measurement.enabled") && (inv.family.builds() || (inv.family == Family::External && cfg.str("compatibility.unknown-command") == "instrument"));
     let wrapper = wrapper_binary();
@@ -323,10 +326,12 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 // The parallel frontend: not behind a user wrapper, and not when the user decides
                 // about RUSTC_BOOTSTRAP themselves.
                 let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
+                let linker = if cfg.str("mode") == "fast" && cfg.str("fast.linker") == "auto" && inner.is_none() { fast_linker() } else { None };
                 let settings = crate::wrapper::Settings {
                     artifact_cache: artifacts.then(|| artifact_cache.to_path_buf()),
                     frontend_threads: threads,
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
+                    linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
                 if util::create_private_dir(&dir).and_then(|_| settings.write(&dir)).is_ok() {
@@ -343,6 +348,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     }
                     p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
                     p.frontend_threads = threads;
+                    p.linker = linker.map(|(_, wild)| wild);
                     p.events_dir = Some(dir);
                 }
             }
@@ -367,6 +373,29 @@ fn upstream_command(up: &resolve::Upstream, args: &[OsString], inv: &Invocation)
         cmd.env(k, v);
     }
     cmd
+}
+
+/// The fast linker for this machine: wild on PATH (or in Cargo's bin directory), for Linux with
+/// glibc. Returns the directory whose `ld` is wild — handed to the compiler driver with `-B` —
+/// and wild itself. `None` when wild is not installed or the link cannot be maintained.
+fn fast_linker() -> Option<(PathBuf, PathBuf)> {
+    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+        return None;
+    }
+    let wild = util::which("wild").or_else(|| util::cargo_home().map(|h| h.join("bin").join("wild")).filter(|p| util::is_executable(p)))?;
+    let wild = util::canon(&wild);
+    let dir = util::haul_home().join("linker");
+    let ld = dir.join("ld");
+    if std::fs::read_link(&ld).ok().as_deref() != Some(wild.as_path()) {
+        // Replaced atomically: a concurrent build sees the old link or the new one.
+        let tmp = dir.join(format!(".ld.{}", std::process::id()));
+        util::create_private_dir(&dir).ok()?;
+        let _ = std::fs::remove_file(&tmp);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&wild, &tmp).ok()?;
+        std::fs::rename(&tmp, &ld).ok()?;
+    }
+    Some((dir, wild))
 }
 
 /// Units of this session restored from the artifact cache, from the wrapper's events.
@@ -466,8 +495,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     user_keys.extend(resolve::env_profile_keys());
     let fast = crate::fast::overlays(&inv, cfg.str("mode"), &user_keys);
     plan.policy["fast"] = fast.record;
-    if let (Some(n), Some(applied)) = (plan.frontend_threads, plan.policy["fast"]["applied"].as_array_mut()) {
-        applied.push(json!({ "key": "rustc -Zthreads", "value": n.to_string(), "why": "rustc's parallel frontend works inside the large crates on a build's critical path; applied by the wrapper to Cargo's units only, never to compiler probes run by build scripts" }));
+    if let Some(applied) = plan.policy["fast"]["applied"].as_array_mut() {
+        if let Some(n) = plan.frontend_threads {
+            applied.push(json!({ "key": "rustc -Zthreads", "value": n.to_string(), "why": "rustc's parallel frontend speeds up large crates compiled from scratch; applied by the wrapper to Cargo's non-incremental units only, never to compiler probes run by build scripts" }));
+        }
+        if let Some(wild) = &plan.linker {
+            applied.push(json!({ "key": "linker", "value": format!("wild ({})", path_str(wild)), "why": "relinking after an edit is markedly faster than with rustc's bundled LLD; applied to host builds of linked outputs when no linker is configured" }));
+        }
     }
 
     // Haul's own rendering of the build's output (a terminal, a build command, nothing the user chose).

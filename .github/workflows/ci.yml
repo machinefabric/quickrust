@@ -26,6 +26,10 @@ jobs:
           rustup toolchain install nightly --profile minimal
           rustup target add wasm32-unknown-unknown --toolchain stable
           rustup default stable
+      # The fast-linker test runs only where wild is installed (Linux with glibc).
+      - name: wild
+        if: runner.os == 'Linux'
+        run: cargo install --locked wild-linker
       - name: Clippy
         run: cargo clippy --all-targets --workspace -- -D warnings
       - name: Tests

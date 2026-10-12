@@ -19,6 +19,8 @@ fast mode (compat mode adds nothing):
   unconditionally would compile under Haul where plain stable Cargo rejects it.
   Build scripts and the compiler probes they run never see it;
 - the artifact cache (below);
+- when the user has installed `wild`, linking with it: the binary found on `PATH` is
+  trusted like any tool there, through the link `~/.haul/linker/ld`;
 - calling the toolchain's Cargo directly instead of rustup's proxy, with exactly the
   variables the proxy sets, learned by running a probe once through the proxy: Cargo
   executes Haul itself as an external subcommand (`cargo haul-env-probe`, from
