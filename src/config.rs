@@ -87,6 +87,7 @@ const RESERVED_ENV: &[&str] = &[
     crate::ENV_WRAPPER_FAIL,
     crate::ENV_EXEC_GUARD,
     crate::engine::ENV_ENGINE,
+    crate::builddir::ENV_MANAGED,
     crate::ENV_HOME,
 ];
 

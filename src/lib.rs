@@ -8,6 +8,7 @@ pub mod analyze;
 pub mod archive;
 pub mod artifact_cache;
 pub mod bench;
+pub mod builddir;
 pub mod cache;
 pub mod cli;
 pub mod compare;

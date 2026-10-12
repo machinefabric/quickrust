@@ -70,6 +70,10 @@ pub struct Engine {
     /// The channel that chose the toolchain, when it can move to a newer release
     /// (`stable-<host>`; see `toolchain::start_update`).
     pub channel: Option<String>,
+    /// The workspace the command runs in (Cargo's account), for a Cargo command.
+    pub workspace_root: Option<PathBuf>,
+    /// Its target directory (see `builddir`), for a Cargo command in a workspace.
+    pub target: Option<crate::builddir::Target>,
     pub env: Vec<(String, String)>,
 }
 
@@ -103,11 +107,20 @@ impl Engine {
 }
 
 /// The engine for a Cargo command run in `cwd`: its toolchain (see `toolchain`), installed with
-/// the standard library of every `--target` it builds for.
+/// the standard library of every `--target` it builds for, and its workspace's target directory
+/// (see `builddir`).
 pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine, String> {
     let dir = inv.chdir.as_ref().map(|c| cwd.join(c)).unwrap_or_else(|| cwd.to_path_buf());
     let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).cloned().collect();
-    start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)
+    let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)?;
+    let root = crate::builddir::workspace_root(&engine, &crate::builddir::start_dir(inv, cwd))?;
+    let target = crate::builddir::choose(inv, cwd, root.as_deref());
+    if let Some(t) = &target {
+        engine.env.extend(crate::builddir::environment(t));
+    }
+    engine.workspace_root = root;
+    engine.target = target;
+    Ok(engine)
 }
 
 /// The engine for a toolchain program run through Haul's proxy (`rustc`, `rustfmt`, …), with the
@@ -138,7 +151,7 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     progress.finish(&tc);
     toolchain::mark_used(&tc);
     let env = environment(&tc);
-    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, env })
+    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, env })
 }
 
 /// The environment of commands run with toolchain `tc` (see the module notes).

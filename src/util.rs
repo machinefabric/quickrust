@@ -388,6 +388,35 @@ impl ExclusiveLock {
     }
 }
 
+/// A shared lock on a file, held until dropped, alongside other shared holders; an exclusive
+/// holder waits for all of them (Unix: `flock`). On Windows it holds the file open only.
+pub struct SharedLock {
+    _file: fs::File,
+}
+
+impl SharedLock {
+    pub fn acquire(path: &Path) -> io::Result<SharedLock> {
+        if let Some(dir) = path.parent() {
+            create_private_dir(dir)?;
+        }
+        let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0 {
+                    break;
+                }
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+        Ok(SharedLock { _file: file })
+    }
+}
+
 /// Private directories for Haul state (SEC-017).
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
