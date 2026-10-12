@@ -76,7 +76,9 @@ most ten seconds, and says so. `haul gc` collects now (`--dry-run` says what it 
 | `~/.haul/cache/usage.json`, `gc-log.jsonl` | the cache's last count, and what collections removed (`haul cache status`) | yes |
 | `~/.haul/toolchains/` | the Rust toolchains Haul installed (`haul toolchain list`); `channels.json` says which release each channel names, the default, and linked toolchains | `haul toolchain remove`; a deleted toolchain is installed again on its next use |
 | `~/.haul/cargo/` | Haul's Cargo home: `config.toml`, credentials, the registry index and sources, git checkouts | the registry and git directories are downloaded again; `config.toml` and `credentials.toml` are yours |
-| `~/.haul/bin/` | Haul as `cargo`, `rustc`, `rustfmt`, `cargo-clippy` and the other toolchain programs | recreated by the next build |
+| `~/.haul/bin/` | Haul as `cargo`, `rustc`, `rustfmt`, `cargo-clippy` and the other toolchain programs; programs `haul install` installed | the proxies are recreated by the next build; installed programs are lost |
+| `~/.haul/installs.json` | what `haul install` installed, by root and package (`haul install --list`) | `haul uninstall` instead |
+| `~/.haul/cache/src/` | sources of installed crates, copied from the Cargo home | yes |
 | `~/.haul/cache/downloads/` | toolchain archives being downloaded (resumed after an interruption) | yes |
 | `~/.haul/cache/memo/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
 | `~/.haul/cache/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |

@@ -1258,7 +1258,7 @@ fn cmd_fix(raw: &[OsString]) -> CmdResult {
 }
 
 fn version_of(program: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new(program).args(args).env(crate::ENV_EXEC_GUARD, format!("{}:doctor", std::process::id())).output().ok()?;
+    let out = crate::engine::toolchain_program(program).args(args).env(crate::ENV_EXEC_GUARD, format!("{}:doctor", std::process::id())).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string())
 }
 

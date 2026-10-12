@@ -273,7 +273,7 @@ pub fn downloads() -> Option<Downloads> {
 /// Cargo's collection of the downloads in `d.cargo_home`, down to `limit` (registry, git) bytes,
 /// or by Cargo's own ages. Cargo's summary line.
 fn cargo_gc(d: &Downloads, limit: Option<(u64, u64)>, dry_run: bool) -> Result<String, String> {
-    let mut c = std::process::Command::new(&d.cargo);
+    let mut c = crate::engine::toolchain_program(&d.cargo);
     c.args(["-Zgc", "clean", "gc"]).env("CARGO_HOME", &d.cargo_home).env("RUSTC_BOOTSTRAP", "1").env("CARGO_TERM_COLOR", "never").current_dir(&d.cargo_home).stdin(std::process::Stdio::null());
     if dry_run {
         c.arg("--dry-run");

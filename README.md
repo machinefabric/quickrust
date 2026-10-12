@@ -168,6 +168,10 @@ to Cargo unless you set `output = "haul"`.
 - In fast mode, the build settings above differ from Cargo's defaults and nothing
   else does; in compat mode the build is Cargo's own.
 - Unknown flags and commands are forwarded; Cargo decides whether they are valid.
+- `cargo install` / `haul install` are Haul's: Cargo's resolver picks the release (registries,
+  source replacement and the toolchain's Rust version count as in a build), Haul builds it like
+  any build and puts its binaries into `~/.haul/bin` (`--root` elsewhere), never over Haul's
+  own programs or another package's without `--force`; `--list` and `uninstall` as usual.
 - `cargo +toolchain`, `RUSTUP_TOOLCHAIN` and `rust-toolchain.toml` choose the toolchain
   in rustup's order; Haul installs it, its components and targets on first use. Builds
   use Haul's Cargo home (`~/.haul/cargo`) and never rustup.

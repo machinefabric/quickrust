@@ -229,6 +229,11 @@ impl Phase {
         let _ = writeln!(std::io::stderr(), "{} {}{}{}", mark, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
     }
 
+    /// Takes the status line off the screen (output of something else follows).
+    pub fn clear_line(&mut self) {
+        self.clear();
+    }
+
     /// A line printed above the status line.
     pub fn line(&mut self, text: &str) {
         self.clear();

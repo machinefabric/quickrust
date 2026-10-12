@@ -446,6 +446,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         return Err(format!("refusing to run Cargo: the toolchain's `cargo` is Haul itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
     }
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    // Haul installs programs itself.
+    if matches!(inv.command.as_deref(), Some("install" | "uninstall")) && spec.scenario.is_none() {
+        let code = crate::install::run(&spec.args, &inv, &cwd, &cfg)?;
+        return Ok(Outcome { exit: ExitInfo { code: Some(code), signal: None }, session_id: None, store: None, report: None, policy_exit: None });
+    }
     // The disk nearly full: Haul's cache gives back what it can first (for ten seconds at most).
     if let Some(freed) = crate::space::before_command(&cfg) {
         match freed {
