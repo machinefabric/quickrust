@@ -146,6 +146,12 @@ impl Sandbox {
         files.iter().map(|p| serde_json::from_slice(&fs::read(p).unwrap()).unwrap()).collect()
     }
 
+    /// The file of a session's record.
+    #[allow(dead_code)]
+    pub fn session_path(&self, id: &str) -> PathBuf {
+        self.store_dirs().into_iter().map(|d| d.join("sessions").join(format!("{}.json", id))).find(|p| p.is_file()).unwrap_or_else(|| panic!("no record of session {}", id))
+    }
+
     /// The report of the latest (or referenced) build run, as `haul report --format json` exports it.
     pub fn report(&self, cwd: &Path, reference: &str) -> serde_json::Value {
         let out = run(self.haul(cwd).args(["report", "--format", "json", "--run", reference]));
@@ -220,4 +226,23 @@ pub fn git(cwd: &Path, args: &[&str]) {
 pub fn make_executable(p: &Path) {
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[cfg(unix)]
+/// Wall time, peak resident memory, success and stdout of a command. The child is reaped with
+/// `wait4`, which reports its resource usage; `Child::wait` would discard it. The peak counts the
+/// child from its start: a child forked from a test process that holds much memory counts that
+/// memory until it executes, so each measurement lives in a test binary of its own.
+#[allow(clippy::zombie_processes)]
+pub fn measure(cmd: &mut Command) -> (f64, u64, bool, Vec<u8>) {
+    let started = std::time::Instant::now();
+    let child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn().unwrap();
+    let pid = child.id() as libc::pid_t;
+    let mut out = child.stdout.unwrap();
+    let mut stdout = Vec::new();
+    std::io::Read::read_to_end(&mut out, &mut stdout).unwrap();
+    let mut status = 0;
+    let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+    assert_eq!(unsafe { libc::wait4(pid, &mut status, 0, &mut usage) }, pid);
+    (started.elapsed().as_secs_f64(), usage.ru_maxrss as u64 * 1024, libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, stdout)
 }
