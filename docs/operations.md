@@ -235,15 +235,16 @@ that used a different toolchain than the rest are discarded and counted.
 
 ## Platform notes
 
-- **macOS**: fully supported; every test suite runs here.
-- **Linux**: every test suite passes on `x86_64-unknown-linux-gnu` (Debian 12, run by
-  hand, also as root; not yet in CI). aarch64 has not been run.
-- **Windows**: the code is written against a process abstraction and
-  type-checks for `x86_64-pc-windows-gnu`, but is not exercised by the test
-  suite. Known gaps: no forwarding of termination signals beyond what the
-  console delivers to the whole process group, no `--timeout` for benchmarks,
-  no hard-link de-duplication or allocated-size accounting in the inventory, no
-  active-build lock detection.
+- **macOS**: every test suite runs in CI (`macos-latest`, aarch64).
+- **Linux**: every test suite runs in CI (`ubuntu-latest`, x86_64, and Haul built with Rust
+  1.80, its minimum) and by hand on Debian 12, also as root. aarch64 has not been run.
+- **Windows**: a CI run sets Haul up from nothing (stable Rust from the dist server, the
+  compiler driver) and creates, builds, runs and tests a project through it; the integration
+  suites are Unix-only. Known gaps: no forwarding of termination signals beyond what the
+  console delivers to the whole process group, no `--timeout` for benchmarks, no hard-link
+  de-duplication or allocated-size accounting in the inventory, no active-build lock
+  detection; a test run's lines are Cargo's (no relayed terminal), and Cargo's help names the
+  file it runs as (`.haul-engine.exe`: Windows has no `argv[0]` apart from the program).
 - Filesystem type, CPU model and memory are reported on macOS and Linux and are
   `null` with a reason elsewhere.
 

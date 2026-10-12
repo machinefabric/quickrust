@@ -108,7 +108,10 @@ jobs:
           test "$(cargo run)" = "Hello, world!"
           cargo test
           haul driver status | grep "^built:"
-          haul doctor
+          # Paths as people write them, and no session outliving its command.
+          haul doctor | tee doctor.log
+          if grep -F '\\?\' doctor.log; then exit 1; fi
+          grep -E "active sessions +0$" doctor.log
       # Haul's background work, when something did not finish.
       - name: What Haul left running, and its logs
         if: failure() || cancelled()

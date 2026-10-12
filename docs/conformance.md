@@ -33,7 +33,7 @@ behaviour is asserted.
 | JSON sidecar schema | done | [report-schema.md](report-schema.md) |
 | CI regression budgets (FR-130) | done | `budgets_gate_ci…` |
 | Secret / path redaction | done | `secrets_never_reach…`, `qa021` |
-| Cross-platform process abstraction | done; Windows type-checked, not run | `src/proc.rs` |
+| Cross-platform process abstraction | done; on Windows a CI smoke run (setup, build, run, test) | `src/proc.rs` · `.github/workflows/ci.yml` |
 | Compatibility corpus QA-001…030 | done except QA-024 (Windows) | tests/compat.rs |
 | Performance-overhead test | done | `dispatch_overhead_stays_within_budget` |
 | Migration / uninstall documentation; `doctor`; escape hatch | done | [migration.md](migration.md) · `doctor_setup_and_uninstall` |
@@ -171,7 +171,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 | | Decision |
 |---|---|
 | OQ-001 minimum Rust/Cargo | Haul declares `rust-version = 1.80`, built and tested with exactly 1.80 in CI from the lockfile (`cargo install --locked`); it delegates to whatever Cargo is selected and needs only `cargo metadata` format 1 and `RUSTC_WRAPPER` |
-| OQ-002 platforms | macOS and Linux release-blocking; the suites pass on macOS and on Linux x86_64 (by hand, no CI yet); Windows is type-checked |
+| OQ-002 platforms | macOS and Linux release-blocking; the suites pass on macOS and Linux x86_64 in CI; Windows has a CI smoke run, the suites are Unix-only |
 | OQ-003 central service | none; all contracts are local files |
 | OQ-004 cache provider | whatever sccache is configured with |
 | OQ-005 fail-open vs fail-closed | `cache.fail`, default `open` |
