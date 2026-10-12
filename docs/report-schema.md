@@ -157,7 +157,8 @@ an argument file, or dependency binaries other than build scripts), `restore_tim
 have names outside the directory, such as Haul's artifact cache: deleting them here frees
 nothing, and `candidate_bytes` leaves them out), `symlinks_not_followed`, `complete`,
 `errors`, `categories` (by `final`, `dependency`, `metadata`, `incremental`,
-`debug`, `build-script-binary`, `build-script-output`, `proc-macro`,
+`debug`, `relink` (what Haul's compiler driver keeps of a binary to link it again: its
+`.rlink`, objects and record), `build-script-binary`, `build-script-output`, `proc-macro`,
 `fingerprint`, `documentation`, `package-output`, `unknown-generated`),
 `reclaimability` (by `required`, `reusable`, `rebuildable`, `uncertain`),
 `active`, `gc_plan` { `mode` (`dry-run`), `stale_days`, `candidate_groups`,

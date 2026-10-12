@@ -1326,6 +1326,7 @@ dependency
 metadata
 incremental
 debug
+relink
 build-script-binary
 build-script-output
 proc-macro

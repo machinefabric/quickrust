@@ -29,6 +29,8 @@ What fast mode does, and the settings that control it:
 | `~/.haul/cache/artifacts/` | the artifact cache (bounded by `cache.artifacts-max-size`) | yes; the next builds compile instead |
 | `~/.haul/toolchains.json`, `~/.haul/probe-bin/` | rustup's learned toolchain choices, and the link through which they are learned | yes; relearned on the next build |
 | `~/.haul/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
+| `~/.haul/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |
+| `<target>/<profile>/deps/<unit>.haul-svh`, `.rlink`, `.haul-objects/`, `.haul-relink` | a library's interface hash; a binary's kept objects and what they were compiled from, for relinking | yes, with the rest of the target directory (`cargo clean`) |
 | `~/.haul/workspaces/<id>/prebuilt/` | stamps of the build phase of `run` / `test` / `bench` in a terminal: the files it depended on, with sizes and times (at most 32 per workspace) | yes; the next such command builds before running |
 | `<target>/haul-bench/` | benchmark and experiment build directories | yes |
 | `<repo>/.haul/` | configuration, budgets, baselines — written only on request | it is yours |

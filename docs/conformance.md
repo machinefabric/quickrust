@@ -132,6 +132,23 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     nightly code paths; not on a nightly compiler; and no such lever applies when the
     user sets `RUSTC_BOOTSTRAP` themselves.
 
+13. **Haul's compiler driver compiles the units Cargo schedules (fast mode, `fast.early-cutoff`).**
+    The driver is the toolchain's own rustc (`librustc_driver`, its LLVM, its release) run
+    through Haul's callbacks, built once per rustup toolchain against its `rustc-dev`
+    component. With no callbacks active its outputs are rustc's byte for byte (test
+    `hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
+    things differ from upstream's builds, none of them in program behaviour:
+    a library's crate hash (SVH) is computed from what its dependents can observe, so
+    libraries' metadata and rlibs differ from rustc's (the hash is an identifier; nothing
+    compares it across compilers); outputs are linked before rustc saves its incremental
+    state, which it finishes after Cargo has moved on; and binaries' object files are kept
+    (hard links next to the output) so that a binary whose own code is unchanged is linked
+    again instead of compiled. Restored and relinked units are checked against building the
+    same source from nothing by `haul-bench cutoff` (random edits on the benchmark
+    workloads, byte for byte; recorded in `benchmarks/cutoff-gate.jsonl`). Programs Cargo
+    runs in rustc's place (clippy-driver as a workspace wrapper, a user's wrapper) run as
+    they are; a crate the driver fails on is compiled by rustc.
+
 ## Open decisions of the specification, as resolved here
 
 | | Decision |
