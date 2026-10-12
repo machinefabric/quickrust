@@ -311,6 +311,11 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
     upstream.sort_unstable_by_key(|&(id, _)| id);
     let mut source_file_names: Vec<_> = tcx.sess.source_map().files().iter().filter(|f| f.cnum == LOCAL_CRATE).map(|f| f.stable_id).collect();
     source_file_names.sort_unstable();
+    // Debug information that records each file's checksum (CodeView, DWARF 5) carries this
+    // crate's into the dependents that instantiate its code: then any edit counts.
+    let checksums = tcx.sess.opts.debuginfo != rustc_session::config::DebugInfo::None && (tcx.sess.target.is_like_msvc || tcx.sess.dwarf_version() >= 5);
+    let mut source_file_hashes: Vec<_> = if checksums { tcx.sess.source_map().files().iter().filter(|f| f.cnum == LOCAL_CRATE).map(|f| (f.stable_id, f.src_hash)).collect() } else { Vec::new() };
+    source_file_hashes.sort_unstable_by_key(|(id, _)| *id);
     let debugger_visualizers: Vec<_> = tcx.debugger_visualizers(LOCAL_CRATE).iter().map(|v| v.path_erased()).collect();
     // Macro expansions by number, where dependents refer to them by number: the tokens of a
     // macro definition carry the expansions they came from (a macro another macro defined), and
@@ -423,6 +428,9 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
         p.spans(Spans::Lines, |p| {
             upstream.stable_hash(p, &mut h);
             source_file_names.stable_hash(p, &mut h);
+            for (_, hash) in &source_file_hashes {
+                hash.stable_hash(p, &mut h);
+            }
             debugger_visualizers.stable_hash(p, &mut h);
             // Every definition by its number (dependents refer to them by number), with its
             // header's position where dependents can see it (diagnostics and debug information
@@ -446,6 +454,14 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
             unnumbered.sort_unstable();
             unnumbered.stable_hash(p, &mut h);
             expansions.stable_hash(p, &mut h);
+            // Positions in other crates' files that this crate's metadata records (re-exported
+            // names), by byte offset: dependents read them from it.
+            for (cnum, file, lo, hi) in foreign_child_spans(tcx) {
+                tcx.stable_crate_id(cnum).stable_hash(p, &mut h);
+                file.stable_hash(p, &mut h);
+                lo.stable_hash(p, &mut h);
+                hi.stable_hash(p, &mut h);
+            }
             // The symbols dependents may link against instead of instantiating their own: with
             // shared generics, the instances the bodies left out above instantiate. Hashed as a set.
             if tcx.sess.opts.output_types.should_codegen() {
@@ -474,14 +490,57 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
     svh
 }
 
+/// The names this crate's modules re-export with spans in other crates' files (a glob
+/// re-export takes the names' own spans): their crate, file and byte offsets in that file, which
+/// this crate's metadata records.
+fn foreign_child_spans(tcx: TyCtxt<'_>) -> Vec<(rustc_hir::def_id::CrateNum, rustc_span::StableSourceFileId, u32, u32)> {
+    let source_map = tcx.sess.source_map();
+    let mut out = Vec::new();
+    for owner in tcx.hir_crate_items(()).owners() {
+        if !matches!(tcx.def_kind(owner.def_id), DefKind::Mod) {
+            continue;
+        }
+        for child in tcx.module_children_local(owner.def_id) {
+            let span = child.ident.span.data_untracked();
+            if span.is_dummy() {
+                continue;
+            }
+            let file = source_map.lookup_source_file(span.lo);
+            if file.cnum != LOCAL_CRATE {
+                out.push((file.cnum, file.stable_id, (span.lo - file.start_pos).0, (span.hi - file.start_pos).0));
+            }
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
 /// Writes the crate hash next to the metadata, `lib<crate name><extra filename>.haul-svh`, for
 /// Haul's wrapper. Here rather than after analysis: the query runs (always, being `eval_always`)
 /// when rustc needs the hash, which it must not be asked for earlier; forcing it sooner would
 /// also force the work it depends on (the exported symbols) out of rustc's own order.
+///
+/// Also writes `lib<…>.haul-span-deps`: the artifacts of the crates whose spans this crate's
+/// metadata carries as byte offsets into their files (the names it re-exports from them), one
+/// per line. Those offsets move with any edit above them, which the interface hash of those
+/// crates leaves out (it hashes lines and columns), so Haul keys this crate by their content.
 fn record(tcx: TyCtxt<'_>, svh: Svh) {
     if let OutFileName::Real(metadata) = tcx.output_filenames(()).path(OutputType::Metadata) {
         let path = metadata.with_extension("haul-svh");
         if let Err(e) = std::fs::write(&path, format!("{}\n", svh)) {
+            tcx.dcx().fatal(format!("haul: cannot write {}: {}", path.display(), e));
+        }
+        let crates: BTreeSet<_> = foreign_child_spans(tcx).into_iter().map(|(cnum, ..)| cnum).collect();
+        let mut artifacts = BTreeSet::new();
+        for cnum in crates {
+            let source = tcx.used_crate_source(cnum);
+            for p in [&source.rmeta, &source.rlib, &source.dylib].into_iter().flatten() {
+                artifacts.insert(p.display().to_string());
+            }
+        }
+        let list: String = artifacts.into_iter().map(|a| a + "\n").collect();
+        let path = metadata.with_extension("haul-span-deps");
+        if let Err(e) = std::fs::write(&path, list) {
             tcx.dcx().fatal(format!("haul: cannot write {}: {}", path.display(), e));
         }
     }
@@ -493,7 +552,7 @@ fn main() -> std::process::ExitCode {
     rustc_driver::install_ice_hook("https://github.com/jowharshamshiri/haul/issues", |_| ());
     rustc_driver::install_ctrlc_handler();
     #[cfg(unix)]
-    let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok());
+    let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok()).inspect(|fd| early_link::keep_to_self(*fd));
     #[cfg(not(unix))]
     let ready_fd = None;
     let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), ready_fd };

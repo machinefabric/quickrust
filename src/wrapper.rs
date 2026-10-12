@@ -123,7 +123,7 @@ pub fn main() {
     // its first argument, and must run as it is.
     let is_rustc = Path::new(&rustc).file_stem().is_some_and(|s| s == "rustc");
     let mut driver: Option<PathBuf> = match (&settings, &inner, &compiler) {
-        (Some(s), None, Ok(vv)) if s.early_cutoff && is_rustc && is_cargo_unit(&lossy) => crate::driver::find(vv).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
+        (Some(s), None, Ok(_)) if s.early_cutoff && is_rustc && is_cargo_unit(&lossy) => rustc.to_str().and_then(|r| crate::driver::Compiler::of(r).ok()).and_then(|c| crate::driver::find(&c)).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
         _ => None,
     };
 
@@ -227,9 +227,10 @@ pub fn main() {
             Some(d) => {
                 let mut c = Command::new(d);
                 c.env(crate::driver::ENV_INTERFACE_HASH, "1");
-                if let Some(dir) = &keep_objects {
-                    c.env(crate::driver::ENV_KEEP_OBJECTS, dir);
-                }
+                match &keep_objects {
+                    Some(dir) => c.env(crate::driver::ENV_KEEP_OBJECTS, dir),
+                    None => c.env_remove(crate::driver::ENV_KEEP_OBJECTS),
+                };
                 c
             }
             None => Command::new(rustc),
@@ -264,7 +265,18 @@ pub fn main() {
         // The driver says when its outputs are written (see `run_teed`).
         None if job.is_ok() || driver.is_some() => {
             let hold = if driver.is_some() { Hold::Text } else { Hold::Nothing };
-            let compile = || run_teed(&mut direct(&rustc, &argv, &driver), hold, driver.is_some());
+            let compile = || {
+                // Only what this compilation keeps may be relinked from later.
+                if let (Some(_), Ok(j)) = (&keep_objects, &job) {
+                    j.forget_kept_objects();
+                }
+                match run_teed(&mut direct(&rustc, &argv, &driver), hold, driver.is_some()) {
+                    // A driver that cannot even be started (its toolchain gone) fails like one
+                    // that crashed: rustc compiles the unit.
+                    Err(e) if driver.is_some() => Ok(Teed { exit: ExitInfo { code: Some(127), signal: None }, usage: None, forwarded: Vec::new(), held: format!("cannot run Haul's compiler driver: {}\n", e).into_bytes(), artifact_notice: false, early: false }),
+                    r => r,
+                }
+            };
             let ran = match (&link_only, &relink) {
                 // Linked again from its last compilation's objects; a failure (they were changed
                 // after all) is not shown, and the unit is compiled after all.
@@ -354,7 +366,8 @@ pub fn main() {
         // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
         // critical path a clean rebuild waits on.
         (Ok(j), Some(_)) if exit.success() && j.is_local() && j.links() && settings.as_ref().map(|s| dur_ns < s.min_link_store_ns).unwrap_or(false) => {
-            if from_scratch {
+            // Quick to link again from kept objects is not quick to compile.
+            if from_scratch && relinked != Some(true) {
                 let _ = j.remember_quick();
             }
             json!({ "result": "miss", "not_stored": "quick to link" })
@@ -451,9 +464,10 @@ fn run_teed(cmd: &mut Command, hold: Hold, ready: bool) -> std::io::Result<Teed>
     #[cfg(not(unix))]
     let pipe: Option<(i32, i32)> = None;
     let _ = ready;
-    if let Some((_, w)) = pipe {
-        cmd.env(crate::driver::ENV_READY_FD, w.to_string());
-    }
+    match pipe {
+        Some((_, w)) => cmd.env(crate::driver::ENV_READY_FD, w.to_string()),
+        None => cmd.env_remove(crate::driver::ENV_READY_FD),
+    };
     cmd.stderr(std::process::Stdio::piped());
     let stderr_tx = tx.clone();
     let mut on_spawn = move |child: &mut std::process::Child| {
@@ -583,10 +597,13 @@ fn input_index(args: &[String]) -> Option<usize> {
     found
 }
 
-/// Whether a compiler ended by crashing (an internal compiler error, or a fatal signal other
-/// than one asking it to stop) rather than by reporting errors in the code.
+/// Whether a compiler ended by crashing (an internal compiler error, a program that could not be
+/// loaded, or a fatal signal other than one asking it to stop) rather than by reporting errors in
+/// the code.
 fn crashed(exit: &ExitInfo) -> bool {
-    if exit.code == Some(101) {
+    // 101: an internal compiler error; 127: the program could not be loaded (a driver whose
+    // toolchain's libraries are gone).
+    if exit.code == Some(101) || exit.code == Some(127) {
         return true;
     }
     #[cfg(unix)]

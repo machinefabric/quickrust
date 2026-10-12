@@ -158,7 +158,7 @@ pub fn record_link_inputs(root: &Path, args: &[String]) -> Result<(), String> {
     let rlib = Path::new(out_dir).join(format!("lib{}{}.rlib", name, extra));
     let Ok(md) = fs::metadata(&rlib) else { return Ok(()) };
     fs::create_dir_all(root.join("l")).map_err(|e| e.to_string())?;
-    util::write_json_fast(&link_memo_path(root, &md, &rlib), &json!({ "deps": deps })).map_err(|e| e.to_string())
+    util::write_json_fast(&link_memo_path(root, &md, &rlib), &json!({ "rlib": util::path_str(&rlib), "deps": deps })).map_err(|e| e.to_string())
 }
 
 /// What a unit that links the artifact at `path` links, by content: an rlib's (named directly or
@@ -178,12 +178,6 @@ fn link_identity(root: &Path, path: &Path, seen: &mut std::collections::HashMap<
     let id = if path.extension().is_some_and(|e| e == "rlib") {
         let memo_path = link_memo_path(root, &fs::metadata(&path).ok()?, &path);
         let memo = util::read_json(&memo_path)?;
-        // In use: eviction drops records not refreshed for two weeks, and this one cannot be
-        // learned again without compiling the rlib anew.
-        let day_ago = util::now_wall_ns().saturating_sub(86_400 * 1_000_000_000);
-        if fs::metadata(&memo_path).map(|m| util::mtime_ns(&m) < day_ago).unwrap_or(false) {
-            let _ = fs::File::options().write(true).open(&memo_path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
-        }
         let mut parts = vec![format!("content={}", content)];
         for dep in memo["deps"].as_array()? {
             let (n, p) = (dep[0].as_str()?, dep[1].as_str()?);
@@ -242,6 +236,29 @@ struct MirInlining {
 }
 
 impl MirInlining {
+    /// Takes in a `-C` option.
+    fn read_codegen(&mut self, v: &str) {
+        if let Some(level) = v.strip_prefix("opt-level=") {
+            self.opt_level = level.to_string();
+        }
+    }
+
+    /// Takes in a `-Z` option.
+    fn read_unstable(&mut self, v: &str) {
+        if let Some(level) = v.strip_prefix("mir-opt-level=") {
+            self.mir_opt_level = Some(level.to_string());
+        }
+        if let Some(inline) = v.strip_prefix("inline-mir=") {
+            self.inline_mir = Some(inline.to_string());
+        } else if v == "inline-mir" {
+            self.inline_mir = Some("yes".into());
+        }
+        // Passes switched on by name: the inliner among them inlines whatever the levels say.
+        if v.strip_prefix("mir-enable-passes=").is_some_and(|passes| passes.split(',').any(|p| p.starts_with('+') && p.contains("Inline"))) {
+            self.inline_mir = Some("yes".into());
+        }
+    }
+
     /// As rustc decides it (`Inline::is_enabled`); a setting it cannot read counts as inlining.
     fn inlines(&self, incremental: bool) -> bool {
         if let Some(v) = &self.inline_mir {
@@ -333,6 +350,8 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
     let mut test = false;
     let mut scheduled_by_cargo = false;
     let mut incremental = false;
+    // What the compilation writes (`--emit`); rustc links when none is given.
+    let mut emits: Option<String> = None;
     let (mut crate_name, mut out_dir, mut extra, mut types, mut externs) = (None, None, String::new(), Vec::new(), Vec::new());
     let mut mir = MirInlining::default();
     let mut i = 0;
@@ -371,21 +390,20 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
             if let Some(e) = v.strip_prefix("extra-filename=") {
                 extra = e.to_string();
             }
-            if let Some(level) = v.strip_prefix("opt-level=") {
-                mir.opt_level = level.to_string();
-            }
+            mir.read_codegen(v);
             scheduled_by_cargo |= v.starts_with("metadata=");
             key.push(format!("-C{}", v));
         } else if a.starts_with("-Zthreads") {
             // How many threads rustc's frontend uses does not change what it produces.
         } else if let Some(v) = value_of(args, &mut i, "-Z") {
-            if let Some(level) = v.strip_prefix("mir-opt-level=") {
-                mir.mir_opt_level = Some(level.to_string());
-            }
-            if let Some(inline) = v.strip_prefix("inline-mir=") {
-                mir.inline_mir = Some(inline.to_string());
-            }
+            mir.read_unstable(v);
             key.push(format!("-Z{}", v));
+        } else if a == "-O" {
+            mir.read_codegen("opt-level=3");
+            key.push(a.to_string());
+        } else if let Some(v) = value_of(args, &mut i, "--emit") {
+            emits = Some(v.to_string());
+            key.push(format!("--emit={}", v));
         } else if a == "--test" {
             test = true;
             key.push(a.to_string());
@@ -420,13 +438,15 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
     if let Some(o) = &out_dir_env {
         key.push(format!("OUT_DIR=sha:{}", tree_digest(Path::new(o)).ok_or("OUT_DIR is unreadable")?));
     }
-    let links = test || types.iter().any(|t| matches!(t.as_str(), "bin" | "proc-macro"));
+    // A unit that writes no linked output (`cargo check`'s binaries) links nothing.
+    let emits_link = emits.as_deref().map_or(true, |e| e.split(',').any(|k| k == "link" || k.starts_with("link=")));
+    let links = emits_link && (test || types.iter().any(|t| matches!(t.as_str(), "bin" | "proc-macro")));
     // The artifact each dependency resolves to: identical inputs, identical output. A unit that
     // links compiles the dependencies' code into its output, and the code of everything they
     // were compiled against: it is keyed by what it links.
     // A binary's own object code depends on what it compiles against, like any unit's: Haul's
     // driver compiles it apart from linking, so that the objects can be linked again alone.
-    let executable = test || types.iter().any(|t| t == "bin");
+    let executable = emits_link && (test || types.iter().any(|t| t == "bin"));
     let mut compile_key: Option<Vec<String>> = (executable && driver.is_some() && !mir.inlines(incremental)).then(|| {
         let mut k = key.clone();
         k.push("stage=objects".into());
@@ -468,8 +488,13 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args:
 
 /// Level 2: the values of the variables rustc read, and for workspace units the content of
 /// every input file it read. `None` when an input has gone (a miss, then a fresh compilation).
-fn level2(key1: &str, names: &[String], inputs: &[String], cwd: &Path) -> Option<String> {
+/// `span_deps`: the artifacts of the crates whose spans the unit's metadata carries as byte
+/// offsets (see `driver/`'s `record`), by content: their interface hash leaves offsets out.
+fn level2(root: &Path, key1: &str, names: &[String], inputs: &[String], span_deps: &[String], cwd: &Path) -> Option<String> {
     let mut parts = vec![env_digest(key1, names)];
+    for dep in span_deps {
+        parts.push(format!("spans-of={}", content_hash(root, Path::new(dep)).ok()?));
+    }
     for f in inputs {
         // Files below OUT_DIR are covered by its content digest in level 1.
         if f.starts_with("<OUT_DIR>") {
@@ -549,7 +574,7 @@ impl Job {
     pub fn lookup(&self) -> Lookup {
         let Some(m) = util::read_json(&self.manifest()) else { return Lookup::Miss };
         let list = |k: &str| -> Vec<String> { m[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
-        let Some(key2) = level2(&self.key1, &list("env_deps"), &list("inputs"), &self.cwd) else { return Lookup::Miss };
+        let Some(key2) = level2(&self.root, &self.key1, &list("env_deps"), &list("inputs"), &list("span_deps"), &self.cwd) else { return Lookup::Miss };
         let dir = self.entry_dir(&key2);
         let Some(entry) = util::read_json(&dir.join("entry.json")) else { return Lookup::Miss };
         let pairs = vec![
@@ -626,6 +651,25 @@ impl Job {
         Ok((names, inputs))
     }
 
+    /// What the compilation that started at `start_wall_ns` recorded of the crates whose spans
+    /// its metadata carries (Haul's driver writes `lib<stem>.haul-span-deps`); none when it wrote
+    /// no such record (rustc compiled it, or it has no metadata).
+    fn span_deps(&self, start_wall_ns: u64) -> Vec<String> {
+        let path = self.out_dir.join(format!("lib{}.haul-span-deps", self.stem));
+        match fs::metadata(&path) {
+            Ok(md) if util::mtime_ns(&md) + 1_000_000_000 >= start_wall_ns => fs::read_to_string(&path).unwrap_or_default().lines().filter(|l| !l.is_empty()).map(str::to_string).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Clears what an earlier compilation kept for relinking, before the driver compiles the
+    /// unit again: what is there afterwards is this compilation's, or nothing.
+    pub fn forget_kept_objects(&self) {
+        let _ = fs::remove_file(self.relink_marker());
+        let _ = fs::remove_file(self.rlink_path());
+        let _ = fs::remove_dir_all(self.kept_objects());
+    }
+
     /// Whether this unit's code can be linked again on its own (see `relink`).
     pub fn relinkable(&self) -> bool {
         self.compile_key1.is_some()
@@ -654,7 +698,7 @@ impl Job {
         let key1 = self.compile_key1.as_ref().ok_or("not relinkable")?;
         let _ = fs::remove_file(self.relink_marker());
         let (names, inputs) = self.read_inputs(start_wall_ns)?;
-        let key2 = level2(key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
+        let key2 = level2(&self.root, key1, &names, &inputs, &[], &self.cwd).ok_or("an input is unreadable")?;
         let rlink = self.rlink_path();
         let kept = self.kept_objects();
         let mut objects: Vec<String> = fs::read_dir(&kept).map_err(|e| format!("the driver kept no objects ({}: {})", kept.display(), e))?.filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned())).collect();
@@ -681,7 +725,7 @@ impl Job {
         let key1 = self.compile_key1.as_ref()?;
         let m = util::read_json(&self.root.join("m").join(format!("{}.json", key1)))?;
         let list = |k: &str| -> Vec<String> { m[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
-        let key2 = level2(key1, &list("env_deps"), &list("inputs"), &self.cwd)?;
+        let key2 = level2(&self.root, key1, &list("env_deps"), &list("inputs"), &[], &self.cwd)?;
         let marker = util::read_json(&self.relink_marker())?;
         if marker["key2"].as_str() != Some(key2.as_str()) {
             return None;
@@ -704,11 +748,12 @@ impl Job {
 
     pub fn store(&self, stderr: &[u8], start_wall_ns: u64) -> Result<(), String> {
         let (names, inputs) = self.read_inputs(start_wall_ns)?;
-        let key2 = level2(&self.key1, &names, &inputs, &self.cwd).ok_or("an input is unreadable")?;
+        let span_deps = self.span_deps(start_wall_ns);
+        let key2 = level2(&self.root, &self.key1, &names, &inputs, &span_deps, &self.cwd).ok_or("an input is unreadable")?;
         let dir = self.entry_dir(&key2);
         // The manifest always describes the latest compilation (its input list is what later
         // lookups hash), even when an identical entry was stored before.
-        let manifest = json!({ "env_deps": names, "inputs": inputs });
+        let manifest = json!({ "env_deps": names, "inputs": inputs, "span_deps": span_deps });
         if dir.join("entry.json").exists() {
             return util::write_json_fast(&self.manifest(), &manifest).map_err(|e| e.to_string());
         }
@@ -811,11 +856,19 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
             over = over.saturating_sub(bytes);
         }
     }
-    // Remembered hashes, link inputs and quick-unit markers are a few bytes each; those not refreshed for
-    // two weeks name files or units long gone, and a live one is simply learned again.
+    // Remembered hashes and quick-unit markers are a few bytes each; those not refreshed for two
+    // weeks name files or units long gone, and a live one is simply learned again.
     let cutoff = util::now_wall_ns().saturating_sub(14 * 86_400 * 1_000_000_000);
-    for e in ["h", "l", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
+    for e in ["h", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
         if e.metadata().map(|m| util::mtime_ns(&m) < cutoff).unwrap_or(false) {
+            let _ = fs::remove_file(e.path());
+        }
+    }
+    // A link-input record cannot be learned again without compiling its rlib anew: it stays as
+    // long as that rlib does, unchanged.
+    for e in fs::read_dir(root.join("l")).into_iter().flatten().flatten() {
+        let live = util::read_json(&e.path()).and_then(|r| r["rlib"].as_str().map(PathBuf::from)).and_then(|rlib| fs::metadata(&rlib).ok().map(|md| link_memo_path(root, &md, &rlib))).is_some_and(|expected| expected == e.path());
+        if !live {
             let _ = fs::remove_file(e.path());
         }
     }
@@ -851,6 +904,25 @@ mod tests {
         fs::write(dir.join("app-1a.rlink"), b"no objects").unwrap();
         assert!(linked_objects(&dir.join("app-1a.rlink"), &dir, "app-1a").is_err());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn every_way_of_asking_for_the_mir_inliner_is_seen() {
+        let inlines = |codegen: &[&str], unstable: &[&str]| {
+            let mut m = MirInlining::default();
+            codegen.iter().for_each(|v| m.read_codegen(v));
+            unstable.iter().for_each(|v| m.read_unstable(v));
+            m.inlines(true)
+        };
+        assert!(!inlines(&["opt-level=0"], &[]));
+        assert!(inlines(&[], &["inline-mir"]));
+        assert!(inlines(&[], &["inline-mir=yes"]));
+        assert!(inlines(&[], &["mir-enable-passes=-Foo,+Inline"]));
+        assert!(!inlines(&[], &["mir-enable-passes=-Inline"]));
+        assert!(!inlines(&["opt-level=3"], &[]), "incremental: rustc does not inline");
+        let mut m = MirInlining::default();
+        m.read_codegen("opt-level=3");
+        assert!(m.inlines(false));
     }
 
     #[test]

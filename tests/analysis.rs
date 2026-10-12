@@ -977,6 +977,58 @@ fn links(sb: &Sandbox) -> Vec<(String, String)> {
 }
 
 #[test]
+fn a_crate_that_reexports_another_is_compiled_again_after_any_edit_of_it() {
+    // `mid` re-exports `base`'s names: its metadata records where they are in `base`'s source, by
+    // byte offset, which an edit inside a body moves without changing `base`'s interface.
+    let sb = Sandbox::new("cutoff-reexport");
+    sb.file("w/Cargo.toml", "[workspace]\nmembers = [\"base\", \"mid\", \"app\"]\nresolver = \"2\"\n");
+    sb.file("w/base/Cargo.toml", "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    let base = sb.file("w/base/src/lib.rs", "fn private() -> u32 {\n    1\n}\n\npub fn shown() -> u32 {\n    private() + 1\n}\n");
+    sb.file("w/mid/Cargo.toml", "[package]\nname = \"mid\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nbase = { path = \"../base\" }\n");
+    sb.file("w/mid/src/lib.rs", "pub use base::*;\n");
+    sb.file("w/app/Cargo.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nmid = { path = \"../mid\" }\n");
+    sb.file("w/app/src/main.rs", "fn main() {\n    println!(\"{}\", mid::shown());\n}\n");
+    let w = sb.dir.join("w");
+    if build_driver(&sb, &w).is_none() {
+        return;
+    }
+    let cargo = || {
+        let mut c = sb.cargo(&w);
+        c.env("HAUL_EARLY_CUTOFF", "auto");
+        c
+    };
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "2\n");
+    fs::write(&base, fs::read_to_string(&base).unwrap().replace("    1\n", "    1000\n")).unwrap();
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "1001\n");
+    assert!(cache_results(&sb).iter().any(|(n, r)| n == "mid" && r != "hit"), "{:#?}", cache_details(&sb));
+}
+
+#[test]
+fn cargo_check_caches_binaries_too() {
+    // A binary `cargo check` checks writes no linked output: it is keyed as a unit that links nothing.
+    let sb = Sandbox::new("check-bins");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("check"));
+    assert!(cache_results(&sb).iter().all(|(_, r)| r == "stored"), "{:#?}", cache_details(&sb));
+    ok(sb.cargo(&p).arg("clean"));
+    ok(sb.cargo(&p).arg("check"));
+    assert!(cache_results(&sb).iter().all(|(_, r)| r == "hit"), "{:#?}", cache_details(&sb));
+}
+
+#[test]
+fn a_compiler_driver_that_cannot_be_loaded_never_fails_the_build() {
+    // As when the toolchain it was built in is gone: the loader fails with 127.
+    let sb = Sandbox::new("driver-unloadable");
+    let p = sb.package("p", "p");
+    let Some(driver) = build_driver(&sb, &p) else { return };
+    fs::write(&driver, "#!/bin/sh\necho \"haul-rustc-driver: error while loading shared libraries: librustc_driver.so: cannot open shared object file\" >&2\nexit 127\n").unwrap();
+    make_executable(&driver);
+    let out = ok(sb.cargo(&p).arg("build").env("HAUL_EARLY_CUTOFF", "auto"));
+    assert!(stderr(&out).contains("Haul's compiler driver failed on crate `p`; compiled with rustc instead"), "{}", stderr(&out));
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]).env("HAUL_EARLY_CUTOFF", "auto"))), "3\n");
+}
+
+#[test]
 fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
     let sb = Sandbox::new("driver-clippy");
     let p = sb.package("p", "p");

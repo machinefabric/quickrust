@@ -33,23 +33,41 @@ const BUILD_FAILED: &str = "build-failed";
 /// Next to where the driver would be, while a background build runs.
 const BUILDING: &str = ".building";
 
-/// Where the driver for the compiler with this `rustc -vV` lives, built or not.
-pub fn dir(version_verbose: &str) -> Result<PathBuf, String> {
-    let field = |k: &str| version_verbose.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).ok_or_else(|| format!("`rustc -vV` has no `{}` line", k.trim_end_matches(": ")));
-    let (commit, host) = (field("commit-hash: ")?, field("host: ")?);
-    let source = &util::digest_parts(std::iter::once(MANIFEST.to_string()).chain(SOURCES.iter().flat_map(|(name, text)| [name.to_string(), text.to_string()])))[..16];
-    Ok(util::haul_home().join("drivers").join(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, source)))
+/// A compiler as the driver is built for it: its own account (`rustc -vV`) and its toolchain
+/// (`--print sysroot`). Two toolchains can share a release and a commit (`stable` and a pinned
+/// `1.98.1`), but not their files: the driver loads `librustc_driver` and the standard library
+/// from the toolchain it was built in.
+pub struct Compiler {
+    pub version_verbose: String,
+    pub sysroot: PathBuf,
 }
 
-/// The driver for the compiler with this `rustc -vV`, when it has been built.
-pub fn find(version_verbose: &str) -> Option<PathBuf> {
-    let exe = dir(version_verbose).ok()?.join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
+impl Compiler {
+    /// The compiler at `rustc` (a path, or a name on `PATH`), asked once per binary.
+    pub fn of(rustc: &str) -> Result<Compiler, String> {
+        let memo = util::haul_home().join("rustc");
+        Ok(Compiler { version_verbose: crate::rustc_info::version_verbose(&memo, rustc)?, sysroot: crate::rustc_info::sysroot(&memo, rustc)? })
+    }
+}
+
+/// Where the driver for this compiler lives, built or not.
+pub fn dir(compiler: &Compiler) -> Result<PathBuf, String> {
+    let vv = &compiler.version_verbose;
+    let field = |k: &str| vv.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).ok_or_else(|| format!("`rustc -vV` has no `{}` line", k.trim_end_matches(": ")));
+    let (commit, host) = (field("commit-hash: ")?, field("host: ")?);
+    let source = util::digest_parts(std::iter::once(MANIFEST.to_string()).chain(SOURCES.iter().flat_map(|(name, text)| [name.to_string(), text.to_string()])).chain(std::iter::once(util::path_str(&util::canon(&compiler.sysroot)))));
+    Ok(util::haul_home().join("drivers").join(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, &source[..16])))
+}
+
+/// The driver for this compiler, when it has been built.
+pub fn find(compiler: &Compiler) -> Option<PathBuf> {
+    let exe = dir(compiler).ok()?.join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
     util::is_executable(&exe).then_some(exe)
 }
 
-/// Why the driver for the compiler with this `rustc -vV` could not be built, when it could not.
-pub fn build_failure(version_verbose: &str) -> Option<String> {
-    fs::read_to_string(dir(version_verbose).ok()?.join(BUILD_FAILED)).ok()
+/// Why the driver for this compiler could not be built, when it could not.
+pub fn build_failure(compiler: &Compiler) -> Option<String> {
+    fs::read_to_string(dir(compiler).ok()?.join(BUILD_FAILED)).ok()
 }
 
 /// Where failures of the driver at `exe` are recorded, per unit (see the wrapper).
@@ -85,17 +103,17 @@ fn rustup_toolchain(rustc: &Path) -> Option<(PathBuf, String)> {
     (dir.parent()?.file_name()? == "toolchains").then(|| (dir.to_path_buf(), name))
 }
 
-/// Starts building the driver for the compiler at `rustc` (whose `rustc -vV` is
-/// `version_verbose`) in the background, with `haul` (Haul's own binary) running `haul driver
+/// Starts building the driver for the compiler at `rustc` (described by `compiler`) in the
+/// background, with `haul` (Haul's own binary) running `haul driver
 /// build`, unless it is built, being built, or could not be built before (`haul driver build`
 /// tries again). Returns whether a build started.
 // The build outlives this process on purpose; init reaps it.
 #[allow(clippy::zombie_processes)]
-pub fn start_build(haul: &Path, rustc: &Path, version_verbose: &str) -> Result<bool, String> {
-    if find(version_verbose).is_some() {
+pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<bool, String> {
+    if find(compiler).is_some() {
         return Ok(false);
     }
-    let target = dir(version_verbose)?;
+    let target = dir(compiler)?;
     if target.join(BUILD_FAILED).exists() {
         return Ok(false);
     }
@@ -142,12 +160,12 @@ pub fn start_build(haul: &Path, rustc: &Path, version_verbose: &str) -> Result<b
 /// component through rustup when it is missing. A failure is recorded, and background builds
 /// (`start_build`) do not try again; this one always does.
 pub fn build(rustc: &Path) -> Result<PathBuf, String> {
-    let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &util::path_str(rustc))?;
-    let target = dir(&vv)?;
+    let compiler = Compiler::of(&util::path_str(rustc))?;
+    let target = dir(&compiler)?;
     let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
-    let result = match find(&vv) {
+    let result = match find(&compiler) {
         Some(exe) => Ok(exe),
-        None => build_locked(rustc, &vv, &target),
+        None => build_locked(rustc, &compiler.version_verbose, &target),
     };
     match &result {
         Ok(_) => {
@@ -221,6 +239,14 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn two_toolchains_of_one_release_get_drivers_of_their_own() {
+        let vv = "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\n".to_string();
+        let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
+        assert_ne!(at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"), at("/rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
+        assert_eq!(at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"), at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"));
+    }
 
     #[test]
     fn the_release_names_the_interface_the_driver_adapts_to() {
