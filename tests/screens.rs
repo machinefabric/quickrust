@@ -1,7 +1,8 @@
 //! What Haul shows in a terminal, screen by screen: each command's screen (after progress lines
 //! have been redrawn and cleared, as a terminal shows it) is compared whole with its snapshot in
-//! `tests/snapshots/`. Only what varies between runs is replaced: durations (`<time>`), sizes
-//! (`<size>`), the sandbox's paths (`<sandbox>`, `<home>`) and build-directory ids (`<id>`).
+//! `tests/snapshots/`. Only what varies between runs and hosts is replaced: durations
+//! (`<time>`), sizes (`<size>`), counts of files (`<count> files`), the sandbox's paths
+//! (`<sandbox>`, `<home>`) and build-directory ids (`<id>`).
 //! A missing or different snapshot fails the test and shows the screen; `HAUL_UPDATE_SNAPSHOTS=1`
 //! writes the screens as the new snapshots, for review in the diff.
 //!
@@ -113,6 +114,10 @@ fn quantity(s: &[char]) -> Option<(usize, &'static str)> {
         }
     }
     if s.get(j) == Some(&' ') {
+        // What a toolchain's own files add to a count of files removed differs between hosts.
+        if has(j + 1, "files") {
+            return Some((j + 6, "<count> files"));
+        }
         for unit in ["KiB", "MiB", "GiB", "TiB", "B"] {
             if has(j + 1, unit) {
                 return Some((j + 1 + unit.len(), "<size>"));
@@ -125,8 +130,8 @@ fn quantity(s: &[char]) -> Option<(usize, &'static str)> {
 #[test]
 fn placeholders_replace_only_what_varies() {
     let sb = Sandbox::new("normalize");
-    let line = format!("✓ Built 1.84s · 3 compiled · 45ms · 2m03.5s · 5.6 MiB · 12 B · {}/cache/builds/app-0123456789abcdef/debug/app · v1.2.3 · x86_64 · 10 warnings", sb.home.display());
-    assert_eq!(normalize(&line, &sb), "✓ Built <time> · 3 compiled · <time> · <time> · <size> · <size> · <home>/cache/builds/app-<id>/debug/app · v1.2.3 · x86_64 · 10 warnings");
+    let line = format!("✓ Built 1.84s · 3 compiled · 45ms · 2m03.5s · 5.6 MiB · 12 B · {}/cache/builds/app-0123456789abcdef/debug/app · v1.2.3 · x86_64 · 10 warnings · 174 files", sb.home.display());
+    assert_eq!(normalize(&line, &sb), "✓ Built <time> · 3 compiled · <time> · <time> · <size> · <size> · <home>/cache/builds/app-<id>/debug/app · v1.2.3 · x86_64 · 10 warnings · <count> files");
 }
 
 #[test]

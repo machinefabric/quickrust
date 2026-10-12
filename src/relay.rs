@@ -50,7 +50,10 @@ impl Relay {
         let mut size: libc::winsize = unsafe { std::mem::zeroed() };
         let sized = unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut size) } == 0;
         let (mut m, mut s) = (-1, -1);
-        let r = unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), std::ptr::null(), if sized { &size } else { std::ptr::null() }) };
+        // Pointers to constants on Linux, to mutables on macOS: `*mut` serves both.
+        let modes: *mut libc::termios = std::ptr::null_mut();
+        let size: *mut libc::winsize = if sized { &mut size } else { std::ptr::null_mut() };
+        let r = unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), modes, size) };
         if r != 0 {
             return Err(io::Error::last_os_error());
         }
