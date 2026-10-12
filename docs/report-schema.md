@@ -60,6 +60,10 @@ enforced on this build) }, `scenario` (benchmarks only),
 `build_script_compiler_time_ns`, `output_bytes_written`, `artifact_logical_bytes`,
 `artifact_allocated_bytes`.
 
+`cache.artifacts` gives `restored`, `stored`, `missed`, `not_cacheable`, `restore_time_ns` and
+`restored_with_foreign_out_dir`: restored units whose build-script-generated code was compiled
+under another target directory, which their panic locations and debug information name.
+
 `units_compiled` counts units rustc compiled; `units_restored` units Haul's artifact
 cache restored instead (Cargo asked for them; nothing was compiled). Compile time and
 CPU metrics cover compiled units only.

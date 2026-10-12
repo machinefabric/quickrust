@@ -404,18 +404,21 @@ fn fast_linker() -> Option<(PathBuf, PathBuf)> {
 }
 
 /// Units of this session restored from the artifact cache, from the wrapper's events.
-fn count_cache_hits(dir: &Path) -> u64 {
-    std::fs::read_dir(dir)
+/// Units restored from the artifact cache, and how many of those include build-script code
+/// built under another `OUT_DIR`.
+fn count_cache_hits(dir: &Path) -> (u64, u64) {
+    let hits: Vec<Value> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
         .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
         .filter_map(|e| util::read_json(&e.path()))
         .filter(|v| v["cache"]["result"] == json!("hit"))
-        .count() as u64
+        .collect();
+    let foreign = hits.iter().filter(|v| v["cache"]["foreign_out_dir"].is_string()).count() as u64;
+    (hits.len() as u64, foreign)
 }
 
-/// The user's arguments with `--config` overlays placed before the subcommand (after `+toolchain`).
 /// `args` with Haul's `--config` overlays in the group of `--config` arguments Cargo applies:
 /// before the subcommand, or after it when the user put theirs there (Cargo then ignores the
 /// ones before it).
@@ -619,8 +622,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // Drain the pipe; a lingering grandchild holding it open must not hang us.
     let mut messages = if tee { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { None };
     if let Some(live) = live {
-        let hits = plan.events_dir.as_deref().map(count_cache_hits).unwrap_or(0);
+        let (hits, foreign) = plan.events_dir.as_deref().map(count_cache_hits).unwrap_or((0, 0));
         let fin = live.finish(exit, duration_ns, hits);
+        if foreign > 0 {
+            crate::ui::notice_foreign_out_dir(foreign);
+        }
         if let Some(dir) = &plan.events_dir {
             let mut text = String::new();
             for l in &fin.log {

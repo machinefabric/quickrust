@@ -54,7 +54,9 @@ pub struct Job {
 
 pub enum Lookup {
     /// Outputs restored and stderr to replay.
-    Hit { stderr: Vec<u8>, entry: String },
+    /// `foreign_out_dir`: the unit includes code its build script generated, and was built
+    /// with this other `OUT_DIR`, which panic locations and debug information in that code name.
+    Hit { stderr: Vec<u8>, entry: String, foreign_out_dir: Option<String> },
     Miss,
 }
 
@@ -345,7 +347,10 @@ impl Job {
             Ok(stderr) => {
                 // Recency for eviction: the least recently used entries go first.
                 let _ = fs::File::options().write(true).open(dir.join("entry.json")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
-                Lookup::Hit { stderr, entry: key2 }
+                let built_in = util::vstr(&entry, "out_dir_env");
+                let reads_out_dir = entry["env_deps"].as_array().into_iter().flatten().any(|n| n == "OUT_DIR");
+                let foreign_out_dir = (reads_out_dir && !built_in.is_empty() && Some(&built_in) != self.out_dir_env.as_ref()).then_some(built_in);
+                Lookup::Hit { stderr, entry: key2, foreign_out_dir }
             }
             // A damaged entry is a miss; the compilation that follows overwrites the outputs and,
             // with the entry gone, stores it again.
