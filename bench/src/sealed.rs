@@ -1,41 +1,66 @@
 //! The sealed environment every timed command runs in.
 //!
-//! Commands start from an empty environment. Cargo gets its own `CARGO_HOME` without a
-//! `config.toml`, an explicit target directory and a pinned toolchain, so nothing from the
-//! machine's own Cargo configuration (a global `build.target-dir`, a rustc wrapper, profile
-//! overrides) can leak into a measurement or let two variants share build output.
+//! Commands start from an empty environment. The toolchain is pinned (`--toolchain`) and installed
+//! by Haul into the work directory's toolchain store, which every Haul home of the run links;
+//! plain Cargo runs that toolchain's own `cargo` directly. Cargo gets a Cargo home without a
+//! `config.toml` (`<work>/cargo-home`, which every Haul home of the run links as its own) and an
+//! explicit target directory, so nothing from the machine's own configuration (a global
+//! `build.target-dir`, a rustc wrapper, profile overrides) can leak into a measurement or let two
+//! variants share build output.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 pub struct Sealed {
     pub cargo_home: PathBuf,
-    pub rustup_home: PathBuf,
-    /// rustup's `cargo` proxy: upstream Cargo for the pinned toolchain.
+    /// Haul's toolchain store (`toolchains/` of a Haul home), shared by every Haul home of the run.
+    pub toolchains: PathBuf,
+    /// The pinned toolchain's directory.
+    pub toolchain_dir: PathBuf,
+    /// The pinned toolchain's own Cargo.
     pub cargo: PathBuf,
+    /// The pinned toolchain, as given.
     pub toolchain: String,
     path: String,
     home: String,
 }
 
-fn which(name: &str) -> Option<PathBuf> {
-    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(name)).find(|p| p.is_file())
-}
-
 impl Sealed {
-    pub fn new(work: &Path, toolchain: &str) -> Result<Sealed, String> {
+    /// Installs the pinned toolchain with `haul` (into `<work>/toolchain-home`) and seals the
+    /// environment around it.
+    pub fn new(work: &Path, toolchain: &str, haul: &Path) -> Result<Sealed, String> {
         let home = std::env::var("HOME").map_err(|_| "HOME is not set")?;
-        let rustup = which("rustup").ok_or("rustup is not on PATH; the benchmark pins toolchains through it")?;
-        let cargo = rustup.with_file_name("cargo");
-        if !cargo.is_file() {
-            return Err(format!("no rustup cargo proxy next to {}", rustup.display()));
+        let toolchain_home = work.join("toolchain-home");
+        let out = Command::new(haul)
+            .args(["toolchain", "which", "--toolchain", toolchain])
+            .env_clear()
+            .env("HOME", &home)
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env("HAUL_HOME", &toolchain_home)
+            .stdin(Stdio::null())
+            .stderr(Stdio::inherit())
+            .output()
+            .map_err(|e| format!("cannot run {}: {}", haul.display(), e))?;
+        if !out.status.success() {
+            return Err(format!("Haul could not install toolchain {}", toolchain));
         }
-        let rustup_home = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).unwrap_or_else(|| Path::new(&home).join(".rustup"));
-        // Only directories that hold rustup's proxies and ordinary system tools; never a Haul shim.
-        let mut dirs = vec![rustup.parent().unwrap_or(Path::new("/")).to_path_buf()];
-        dirs.extend(["/usr/local/bin", "/usr/bin", "/bin"].iter().map(PathBuf::from));
+        let toolchain_dir = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+        // Only the toolchain and ordinary system tools; never a Haul shim.
+        let dirs = [toolchain_dir.join("bin"), PathBuf::from("/usr/local/bin"), PathBuf::from("/usr/bin"), PathBuf::from("/bin")];
         let path = std::env::join_paths(dirs).map_err(|e| e.to_string())?.to_string_lossy().into_owned();
-        Ok(Sealed { cargo_home: work.join("cargo-home"), rustup_home, cargo, toolchain: toolchain.to_string(), path, home })
+        Ok(Sealed { cargo_home: work.join("cargo-home"), toolchains: toolchain_home.join("toolchains"), cargo: toolchain_dir.join("bin").join("cargo"), toolchain_dir, toolchain: toolchain.to_string(), path, home })
+    }
+
+    /// Makes `home` a Haul home of this run: it links the shared toolchain store and Cargo home.
+    pub fn haul_home(&self, home: &Path) -> Result<(), String> {
+        std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {}", home.display(), e))?;
+        std::fs::create_dir_all(&self.cargo_home).map_err(|e| format!("cannot create {}: {}", self.cargo_home.display(), e))?;
+        for (link, to) in [(home.join("toolchains"), &self.toolchains), (home.join("cargo"), &self.cargo_home)] {
+            if std::fs::symlink_metadata(&link).is_err() {
+                std::os::unix::fs::symlink(to, &link).map_err(|e| format!("cannot link {}: {}", link.display(), e))?;
+            }
+        }
+        Ok(())
     }
 
     /// A command with the sealed environment. `online` only for fetching.
@@ -46,6 +71,7 @@ impl Sealed {
             ("PATH", self.path.as_str()),
             ("HOME", self.home.as_str()),
             ("LANG", "C.UTF-8"),
+            // Haul selects the pinned toolchain by it; plain Cargo runs that toolchain's binary.
             ("RUSTUP_TOOLCHAIN", self.toolchain.as_str()),
             ("CARGO_TERM_COLOR", "never"),
             ("CARGO_TERM_PROGRESS_WHEN", "never"),
@@ -53,7 +79,7 @@ impl Sealed {
         ] {
             c.env(k, v);
         }
-        c.env("RUSTUP_HOME", &self.rustup_home).env("CARGO_HOME", &self.cargo_home).env("CARGO_TARGET_DIR", target_dir);
+        c.env("CARGO_HOME", &self.cargo_home).env("RUSTC", self.toolchain_dir.join("bin/rustc")).env("RUSTDOC", self.toolchain_dir.join("bin/rustdoc")).env("CARGO_TARGET_DIR", target_dir);
         if !online {
             c.env("CARGO_NET_OFFLINE", "true");
         }
@@ -63,9 +89,9 @@ impl Sealed {
         c
     }
 
-    /// First line of `program -V` under the sealed environment.
+    /// First line of `program -V` of the pinned toolchain.
     pub fn version(&self, program: &str, cwd: &Path) -> String {
-        let p = self.cargo.with_file_name(program);
+        let p = self.toolchain_dir.join("bin").join(program);
         self.command(&p, cwd, &cwd.join("target"), false)
             .arg("-V")
             .output()

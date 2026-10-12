@@ -129,11 +129,9 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-pub fn cargo_home() -> Option<PathBuf> {
-    std::env::var_os("CARGO_HOME")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|h| h.join(".cargo")))
+/// The Cargo home of every build Haul runs: `$HAUL_HOME/cargo` (see `engine`).
+pub fn cargo_home() -> PathBuf {
+    haul_home().join("cargo")
 }
 
 /// Haul's own state directory (`HAUL_HOME`, default `~/.haul`).
@@ -177,12 +175,7 @@ impl Tokenizer {
             add(ws.to_path_buf(), "$WORKSPACE");
         }
         if redact_home {
-            if let Some(c) = cargo_home() {
-                add(c, "$CARGO_HOME");
-            }
-            if let Some(r) = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| home_dir().map(|h| h.join(".rustup"))) {
-                add(r, "$RUSTUP_HOME");
-            }
+            add(cargo_home(), "$CARGO_HOME");
             add(haul_home(), "$HAUL_HOME");
             if let Some(h) = home_dir() {
                 add(h, "$HOME");
@@ -329,6 +322,39 @@ pub struct ExclusiveLock {
 }
 
 impl ExclusiveLock {
+    /// The lock if nobody holds it, `None` if somebody does.
+    pub fn try_acquire(path: &Path) -> io::Result<Option<ExclusiveLock>> {
+        if let Some(dir) = path.parent() {
+            create_private_dir(dir)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                    return Ok(Some(ExclusiveLock { _file: file }));
+                }
+                let e = io::Error::last_os_error();
+                match e.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock => return Ok(None),
+                    _ => return Err(e),
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            match fs::OpenOptions::new().create(true).truncate(false).write(true).share_mode(0).open(path) {
+                Ok(file) => Ok(Some(ExclusiveLock { _file: file })),
+                Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
     pub fn acquire(path: &Path) -> io::Result<ExclusiveLock> {
         if let Some(dir) = path.parent() {
             create_private_dir(dir)?;
@@ -545,6 +571,9 @@ mod tests {
         drop(held);
         assert!(rx.recv().unwrap() >= released);
         waiter.join().unwrap();
+        let again = ExclusiveLock::try_acquire(&path).unwrap().expect("free once released");
+        assert!(ExclusiveLock::try_acquire(&path).unwrap().is_none(), "taken while held");
+        drop(again);
         fs::remove_dir_all(&dir).ok();
     }
 

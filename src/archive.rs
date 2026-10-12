@@ -223,6 +223,11 @@ pub mod testing {
                 }
             };
             h.set_mtime(1_700_000_000);
+            if name.len() > 100 {
+                // A long name takes a GNU extension entry; such names are well-formed here.
+                b.append_data(&mut h, name, data).unwrap();
+                continue;
+            }
             // Raw name bytes: `set_path` would refuse `..` and absolute names.
             let raw = &mut h.as_old_mut().name;
             raw[..name.len()].copy_from_slice(name.as_bytes());

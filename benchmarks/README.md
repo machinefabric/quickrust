@@ -74,10 +74,12 @@ everything, 5 repetitions after one untimed warm-up repetition.
 
 ## Sealed environment
 
-Each command starts from an empty environment: rustup's proxies and system tools on
-`PATH`, a pinned toolchain (`--toolchain`, default `stable`), and a Cargo home of the
-benchmark's own (`<work-dir>/cargo-home`, no `config.toml`, populated by `fetch`, used
-offline). Every variant and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`.
+Each command starts from an empty environment: a pinned toolchain (`--toolchain`, default
+`stable`) that Haul installs into the work directory (`<work-dir>/toolchain-home`), whose `bin`
+and the system tools are all of `PATH`; plain Cargo is that toolchain's own `cargo`. Cargo
+gets a Cargo home of the benchmark's own (`<work-dir>/cargo-home`, no `config.toml`, populated
+by `fetch`, used offline), which every Haul home of the run links as its own. Every variant
+and checkout has its own `CARGO_TARGET_DIR` and `HAUL_HOME`.
 Nothing from the machine's Cargo configuration, such as a global `build.target-dir` or
 a rustc wrapper, can reach a measurement. The work directory (default
 `/mnt/shared/nvme2p3/haul-bench`, `--work-dir` or `HAUL_BENCH_DIR`) is refused if any parent

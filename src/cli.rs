@@ -71,6 +71,17 @@ POLICY AND REMEDIATION
     haul fix --dry-run [REC_ID] [--run REF] [--option ALTERNATIVE] [--patch] [--format text|json]
     haul fix --apply REMEDIATION_ID | --rollback REMEDIATION_ID
 
+TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-toolchain.toml choose)
+    haul toolchain list
+    haul toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
+    haul toolchain update                 bring stable, beta, nightly and 1.xx to their latest release
+    haul toolchain remove <TOOLCHAIN>…
+    haul toolchain default [<TOOLCHAIN>]
+    haul toolchain link <NAME> <DIR> | unlink <NAME>
+    haul toolchain which [<TOOL>] [--toolchain T]
+    haul toolchain component add|remove <NAME>… [--toolchain T]
+    haul toolchain target add|remove <TRIPLE>… [--toolchain T]
+
 INSTALLATION
     haul doctor
     haul install-shim [--dir DIR]
@@ -222,8 +233,8 @@ pub fn main() {
     if invoked_as == "cargo" {
         session::run_and_exit(args, Mode::Shim);
     }
-    if invoked_as == crate::toolchain_cache::PROBE_NAME {
-        crate::toolchain_cache::report_environment();
+    if crate::engine::PROXIES.contains(&invoked_as.as_str()) {
+        crate::engine::run_proxy(&invoked_as, args);
     }
     let command = args.first().map(|a| util::lossy(a)).unwrap_or_default();
     // The runner Haul sets while it builds what `cargo run` needs: the program is run afterwards,
@@ -250,6 +261,7 @@ pub fn main() {
         "runs" => cmd_runs(rest),
         "inspect" => cmd_inspect(rest),
         "driver" => cmd_driver(rest),
+        "toolchain" => cmd_toolchain(rest),
         "compare" => cmd_compare(rest),
         "benchmark" => cmd_benchmark(rest),
         "experiment" => cmd_experiment(rest),
@@ -420,15 +432,11 @@ fn live_snapshot(ctx: &Ctx) -> Result<Value, String> {
     }))
 }
 
-/// The compiler of the toolchain a build here would use, as Haul resolves it.
+/// The compiler of the toolchain a build here uses.
 fn toolchain_rustc() -> Result<PathBuf, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let cfg = crate::config::Config::load(&cwd)?;
-    let up = crate::resolve::resolve_upstream(&crate::resolve::classify(&[OsString::from("build")]), &cfg)?;
-    if !up.toolchain_cargo {
-        return Err(format!("Haul resolved {} ({}), not a toolchain's own Cargo; pass --rustc PATH", up.program.display(), up.rule));
-    }
-    Ok(up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX)))
+    Ok(crate::engine::for_command(&crate::resolve::classify(&[OsString::from("build")]), &cwd, &cfg)?.rustc())
 }
 
 fn cmd_driver(raw: &[OsString]) -> CmdResult {
@@ -457,6 +465,237 @@ fn cmd_driver(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         Some(other) => Err(format!("unknown `haul driver` action `{}` (status, build)", other)),
+    }
+}
+
+/// `haul toolchain …`: Haul's Rust toolchains.
+fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
+    use crate::toolchain::{self, file::Profile, spec::Spec, state, Layout, Needs, Selection, Source};
+    let mut a = Args::new(raw);
+    let action = match a.items.first() {
+        Some(x) if !x.starts_with('-') => a.items.remove(0),
+        _ => "list".to_string(),
+    };
+    let cwd = std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
+    let server = cfg.str("toolchain.dist-server").to_string();
+    let layout = Layout::current();
+    let positionals = |a: &mut Args| -> Vec<String> { std::iter::from_fn(|| a.positional()).collect() };
+    // The toolchain `--toolchain T` names, or the one this directory uses, installed.
+    let chosen = |a: &mut Args, needs: &Needs| -> Result<toolchain::Toolchain, String> {
+        let sel = match a.opt("--toolchain")? {
+            Some(t) => Selection { spec: Spec::parse(&t)?, source: Source::Plus, file: None },
+            None => toolchain::select(&layout, &cwd, None)?,
+        };
+        let mut progress = crate::ui::ToolchainProgress::new(&sel.spec.to_string());
+        match toolchain::ensure(&layout, &sel, needs, &server, &mut progress) {
+            Ok(tc) => {
+                progress.finish(&tc);
+                Ok(tc)
+            }
+            Err(e) => {
+                progress.fail(&e);
+                Err(e)
+            }
+        }
+    };
+    match action.as_str() {
+        "list" => {
+            a.finish()?;
+            let st = state::load(&layout.toolchains())?;
+            let active = toolchain::select(&layout, &cwd, None);
+            let host = toolchain::host();
+            let installed = toolchain::installed(&layout);
+            if installed.is_empty() && st.linked.is_empty() {
+                println!("No toolchains installed yet: the first build installs {}.", st.default);
+            }
+            for tc in &installed {
+                let rec = tc.record();
+                let channels: Vec<String> = st.channels.iter().filter(|(_, c)| c.toolchain == tc.id).map(|(k, _)| k.strip_suffix(&format!("-{}", host)).unwrap_or(k).to_string()).collect();
+                let targets: Vec<String> = rec.iter().flat_map(|r| r.components.iter().filter(|(p, t, _)| p == "rust-std" && *t != r.host).map(|(_, t, _)| t.clone())).collect();
+                let comps = rec.as_ref().map(|r| r.components.len()).unwrap_or(0);
+                println!("{:<44} Rust {:<18} {}{} components{}", tc.id, rec.as_ref().map(|r| r.version.as_str()).unwrap_or("?"), if channels.is_empty() { String::new() } else { format!("{} · ", channels.join(", ")) }, comps, if targets.is_empty() { String::new() } else { format!(" · targets {}", targets.join(", ")) });
+            }
+            for (name, dir) in &st.linked {
+                println!("{:<44} linked → {}", name, dir.display());
+            }
+            println!();
+            println!("default: {}", st.default);
+            match active {
+                Ok(sel) => println!("here:    {} (from {})", sel.spec, sel.source),
+                Err(e) => println!("here:    none: {}", e),
+            }
+            Ok(0)
+        }
+        "install" => {
+            let profile = a.opt("--profile")?.map(|p| Profile::parse(&p)).transpose()?;
+            let components = a.multi("--component")?;
+            let targets = a.multi("--target")?;
+            let specs = positionals(&mut a);
+            a.finish()?;
+            if specs.is_empty() {
+                return Err("`haul toolchain install` needs a toolchain, such as stable, 1.98 or nightly".into());
+            }
+            let needs = Needs { components, targets, profile };
+            for spec in specs {
+                let sel = Selection { spec: Spec::parse(&spec)?, source: Source::Plus, file: None };
+                let mut progress = crate::ui::ToolchainProgress::new(&spec);
+                match toolchain::ensure(&layout, &sel, &needs, &server, &mut progress) {
+                    Ok(tc) if !progress.worked() => println!("{} is installed: {}", spec, tc.id),
+                    Ok(tc) => progress.finish(&tc),
+                    Err(e) => {
+                        progress.fail(&e);
+                        return Err(e);
+                    }
+                }
+            }
+            Ok(0)
+        }
+        "update" => {
+            a.finish()?;
+            let mut progress = crate::ui::ToolchainProgress::new("update");
+            let moved = toolchain::update(&layout, &server, &mut progress);
+            let moved = match moved {
+                Ok(m) => m,
+                Err(e) => {
+                    progress.fail(&e);
+                    return Err(e);
+                }
+            };
+            drop(progress);
+            if moved.is_empty() {
+                println!("Every channel is at its latest release.");
+            }
+            for m in moved {
+                println!("{}: {} → {} (`haul toolchain remove {}` deletes the old one)", m.channel, m.from, m.to, m.from);
+            }
+            Ok(0)
+        }
+        "remove" => {
+            let ids = positionals(&mut a);
+            a.finish()?;
+            if ids.is_empty() {
+                return Err("`haul toolchain remove` needs a toolchain (`haul toolchain list` shows them)".into());
+            }
+            let st = state::load(&layout.toolchains())?;
+            for given in ids {
+                // A channel name removes the toolchain it names.
+                let id = st.channels.get(&format!("{}-{}", given, toolchain::host())).map(|c| c.toolchain.clone()).unwrap_or(given);
+                toolchain::remove(&layout, &id, &mut crate::ui::ToolchainProgress::new(&id))?;
+                println!("removed {}", id);
+            }
+            Ok(0)
+        }
+        "default" => {
+            let spec = a.positional();
+            a.finish()?;
+            match spec {
+                None => println!("{}", state::load(&layout.toolchains())?.default),
+                Some(s) => {
+                    let spec = Spec::parse(&s)?;
+                    if matches!(spec, Spec::Path(_)) {
+                        return Err("the default toolchain is a release, a channel or a linked toolchain's name".into());
+                    }
+                    state::update(&layout.toolchains(), |st| {
+                        if let Spec::Named(n) = &spec {
+                            if !st.linked.contains_key(n) {
+                                return Err(format!("no toolchain is named `{}` (`haul toolchain link {} <dir>` names one)", n, n));
+                            }
+                        }
+                        st.default = s.clone();
+                        Ok(())
+                    })?;
+                    println!("default toolchain: {}", s);
+                }
+            }
+            Ok(0)
+        }
+        "link" => {
+            let name = a.positional().ok_or("`haul toolchain link` needs a name and a directory")?;
+            let dir = a.positional().ok_or("`haul toolchain link` needs a name and a directory")?;
+            a.finish()?;
+            if !crate::toolchain::spec::is_link_name(&name) || !matches!(Spec::parse(&name), Ok(Spec::Named(_))) {
+                return Err(format!("`{}` cannot name a linked toolchain: use letters, digits, `-`, `_` and `.`, and not a channel or release name", name));
+            }
+            let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {}", dir, e))?;
+            let tc = toolchain::Toolchain { id: name.clone(), dir: dir.clone(), linked: true };
+            for tool in ["rustc", "cargo"] {
+                let bin = tc.bin(tool);
+                if !util::is_executable(&bin) {
+                    return Err(format!("{} is not a toolchain: it has no {}", dir.display(), bin.display()));
+                }
+                if std::env::current_exe().ok().and_then(|e| util::file_identity(&e)).is_some_and(|me| util::file_identity(&bin) == Some(me)) {
+                    return Err(format!("{} is Haul itself, not a toolchain's {}", bin.display(), tool));
+                }
+            }
+            state::update(&layout.toolchains(), |st| {
+                st.linked.insert(name.clone(), dir.clone());
+                Ok(())
+            })?;
+            println!("linked {} → {}", name, dir.display());
+            Ok(0)
+        }
+        "unlink" => {
+            let name = a.positional().ok_or("`haul toolchain unlink` needs a name")?;
+            a.finish()?;
+            state::update(&layout.toolchains(), |st| st.linked.remove(&name).map(|_| ()).ok_or_else(|| format!("no toolchain is linked as `{}`", name)))?;
+            println!("unlinked {}", name);
+            Ok(0)
+        }
+        "which" => {
+            let tc = chosen(&mut a, &Needs::default())?;
+            let tool = a.positional();
+            a.finish()?;
+            match tool {
+                Some(t) => {
+                    let bin = tc.bin(&t);
+                    if !bin.is_file() {
+                        return Err(format!("toolchain {} has no {}", tc.id, t));
+                    }
+                    println!("{}", bin.display());
+                }
+                None => println!("{}", tc.dir.display()),
+            }
+            Ok(0)
+        }
+        "component" | "target" => {
+            let verb = a.positional().ok_or_else(|| format!("`haul toolchain {}` needs add or remove", action))?;
+            let toolchain_opt = a.opt("--toolchain")?;
+            let names = positionals(&mut a);
+            a.finish()?;
+            if names.is_empty() {
+                return Err(format!("`haul toolchain {} {}` needs at least one {}", action, verb, if action == "target" { "target triple" } else { "component" }));
+            }
+            let mut b = Args { items: toolchain_opt.iter().flat_map(|t| ["--toolchain".to_string(), t.clone()]).collect(), passthrough: vec![] };
+            match verb.as_str() {
+                "add" => {
+                    let needs = if action == "target" { Needs { targets: names, ..Default::default() } } else { Needs { components: names, ..Default::default() } };
+                    let tc = chosen(&mut b, &needs)?;
+                    println!("{} has {}", tc.id, needs.components.iter().chain(&needs.targets).cloned().collect::<Vec<_>>().join(", "));
+                    Ok(0)
+                }
+                "remove" => {
+                    let tc = chosen(&mut b, &Needs::default())?;
+                    let rec = tc.record().ok_or_else(|| format!("toolchain {} is linked, and Haul does not change a linked toolchain", tc.id))?;
+                    let which: Vec<(String, String)> = names
+                        .iter()
+                        .map(|n| {
+                            if action == "target" {
+                                return Ok(("rust-std".to_string(), n.clone()));
+                            }
+                            let found = rec.components.iter().find(|(p, t, _)| (p == n || *p == format!("{}-preview", n)) && (*t == rec.host || t == "*"));
+                            found.map(|(p, t, _)| (p.clone(), t.clone())).ok_or_else(|| format!("{} has no component {}", tc.id, n))
+                        })
+                        .collect::<Result<_, String>>()?;
+                    let locked = toolchain::install::lock(&layout, &tc.id, &mut crate::ui::ToolchainProgress::new(&tc.id))?;
+                    toolchain::install::remove_components(&locked, &tc.dir, &which)?;
+                    println!("removed {} from {}", names.join(", "), tc.id);
+                    Ok(0)
+                }
+                other => Err(format!("unknown `haul toolchain {}` action `{}` (add, remove)", action, other)),
+            }
+        }
+        other => Err(format!("unknown `haul toolchain` action `{}` (list, install, update, remove, default, link, unlink, which, component, target)", other)),
     }
 }
 
@@ -937,16 +1176,20 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
             None
         }
     };
-    println!("Upstream");
-    match resolve::resolve_upstream(&resolve::classify(&[]), cfg.as_ref().unwrap_or(&Config::defaults())) {
-        Ok(up) => {
-            println!("  real Cargo path    {}  (selected by: {})", up.program.display(), up.rule);
-            match version_of(&up.program, &["-V"]) {
-                Some(v) => println!("  Cargo version      {}", v),
-                None => problem(format!("{} -V failed", up.program.display())),
+    println!("Toolchain");
+    match crate::engine::for_command(&resolve::classify(&[]), &cwd, cfg.as_ref().unwrap_or(&Config::defaults())) {
+        Ok(engine) => {
+            println!("  active toolchain   {}  (selected by: {})", engine.toolchain.id, engine.selected_by);
+            match version_of(&engine.cargo(), &["-V"]) {
+                Some(v) => println!("  Cargo              {}", v),
+                None => problem(format!("{} -V failed", engine.cargo().display())),
+            }
+            match version_of(&engine.rustc(), &["-V"]) {
+                Some(v) => println!("  rustc              {}", v),
+                None => problem(format!("{} -V failed", engine.rustc().display())),
             }
             if let Some(s) = &shim {
-                // The shim only takes effect if it precedes the real Cargo on PATH.
+                // The shim only takes effect if it precedes every other cargo on PATH.
                 if util::which("cargo").map(|first| util::canon(&first) != util::canon(s)).unwrap_or(false) {
                     problem(format!("{} is not the first `cargo` on PATH; another cargo shadows the shim", s.display()));
                 }
@@ -954,15 +1197,12 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
         }
         Err(e) => problem(e),
     }
-    match util::which("rustup").or_else(|| util::cargo_home().map(|h| h.join("bin").join("rustup")).filter(|p| util::is_executable(p))) {
-        Some(r) => {
-            println!("  rustup             {}  ({})", r.display(), version_of(&r, &["--version"]).unwrap_or_else(|| "version unavailable".into()));
-            println!("  active toolchain   {}", version_of(&r, &["show", "active-toolchain"]).unwrap_or_else(|| "unavailable".into()));
-        }
-        None => println!("  rustup             not found (supported, not required)"),
+    println!("  cargo home         {}", util::cargo_home().display());
+    if let Some(theirs) = std::env::var_os("CARGO_HOME").filter(|v| !v.is_empty() && std::path::Path::new(v) != util::cargo_home()) {
+        println!("  note               CARGO_HOME={} is set; builds run through Haul use {}", theirs.to_string_lossy(), util::cargo_home().display());
     }
     println!("Environment");
-    for k in ["CARGO", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", crate::ENV_REAL_CARGO, crate::ENV_HOME] {
+    for k in ["CARGO", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTUP_TOOLCHAIN", "CARGO_TARGET_DIR", "CARGO_INCREMENTAL", crate::ENV_HOME] {
         println!("  {:<24} {}", k, env(k));
     }
     let subset = resolve::cargo_config_subset(&cwd, &[]);
@@ -1042,16 +1282,15 @@ fn cmd_install(raw: &[OsString]) -> CmdResult {
     std::os::unix::fs::symlink(&exe, &shim).map_err(|e| format!("cannot create {}: {}", shim.display(), e))?;
     #[cfg(not(unix))]
     std::fs::hard_link(&exe, &shim).or_else(|_| std::fs::copy(&exe, &shim).map(|_| ())).map_err(|e| format!("cannot create {}: {}", shim.display(), e))?;
-    let upstream = resolve::resolve_upstream(&resolve::classify(&[]), &Config::defaults()).ok().map(|u| path_str(&u.program));
     util::write_json(&install_record(), &json!({
         "shim": path_str(&shim), "dir": path_str(&dir), "dir_created": dir_created, "target": path_str(&exe),
-        "upstream_cargo_at_install": upstream, "installed_at": util::iso8601(util::now_wall_ns()),
+        "installed_at": util::iso8601(util::now_wall_ns()),
     }))
     .map_err(|e| format!("the shim was created but the install record could not be written: {}", e))?;
     println!("Installed the Haul cargo shim at {}", shim.display());
     println!("Put its directory first on PATH to make `cargo` resolve to Haul:\n");
     println!("    export PATH=\"{}:$PATH\"\n", dir.display());
-    println!("Nothing else was changed: rustup, the real Cargo ({}) and your Cargo configuration are untouched.", upstream.unwrap_or_else(|| "not found".into()));
+    println!("Nothing else was changed."); 
     println!("Escape hatch: `haul upstream <args>`. Remove with `haul uninstall-shim`. Check with `haul doctor`.");
     Ok(0)
 }

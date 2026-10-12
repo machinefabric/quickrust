@@ -28,14 +28,16 @@ const BINARY: &str = "haul-rustc-driver";
 /// `--cfg haul_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
 /// between releases).
 const INTERFACE_BREAKS: &[u32] = &[99];
+/// How a failure to get the toolchain's `rustc-dev` component begins.
+pub const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 /// Next to where the driver would be: why it could not be built.
 const BUILD_FAILED: &str = "build-failed";
 /// Next to where the driver would be, while a background build runs.
 const BUILDING: &str = ".building";
 
 /// A compiler as the driver is built for it: its own account (`rustc -vV`) and its toolchain
-/// (`--print sysroot`). Two toolchains can share a release and a commit (`stable` and a pinned
-/// `1.98.1`), but not their files: the driver loads `librustc_driver` and the standard library
+/// (`--print sysroot`). Two toolchains can share a release and a commit (an installed release and
+/// a linked build of it), but not their files: the driver loads `librustc_driver` and the standard library
 /// from the toolchain it was built in.
 pub struct Compiler {
     pub version_verbose: String,
@@ -96,13 +98,6 @@ fn release_minor(version_verbose: &str) -> Option<u32> {
     release.trim().split('.').nth(1)?.parse().ok()
 }
 
-/// The toolchain directory of a rustup-managed compiler (`…/toolchains/<name>/bin/rustc`).
-fn rustup_toolchain(rustc: &Path) -> Option<(PathBuf, String)> {
-    let dir = rustc.parent()?.parent()?;
-    let name = dir.file_name()?.to_str()?.to_string();
-    (dir.parent()?.file_name()? == "toolchains").then(|| (dir.to_path_buf(), name))
-}
-
 /// Starts building the driver for the compiler at `rustc` (described by `compiler`) in the
 /// background, with `haul` (Haul's own binary) running `haul driver
 /// build`, unless it is built, being built, or could not be built before (`haul driver build`
@@ -155,9 +150,9 @@ pub fn start_build(haul: &Path, rustc: &Path, compiler: &Compiler) -> Result<boo
     }
 }
 
-/// Builds the driver for the compiler at `rustc` (a toolchain binary, not rustup's proxy) and
-/// installs it where `find` looks; one build at a time. Installs the toolchain's `rustc-dev`
-/// component through rustup when it is missing. A failure is recorded, and background builds
+/// Builds the driver for the compiler at `rustc` (a toolchain's own binary) and installs it where
+/// `find` looks; one build at a time. Adds the `rustc-dev` component to a toolchain Haul installed
+/// when it is missing; any other compiler must have it. A failure is recorded, and background builds
 /// (`start_build`) do not try again; this one always does.
 pub fn build(rustc: &Path) -> Result<PathBuf, String> {
     let compiler = Compiler::of(&util::path_str(rustc))?;
@@ -181,14 +176,24 @@ pub fn build(rustc: &Path) -> Result<PathBuf, String> {
 
 fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String> {
     let vv = vv.to_string();
-    let (toolchain, name) = rustup_toolchain(rustc).ok_or_else(|| format!("{} is not a rustup toolchain's compiler; the driver is built against rustup's rustc-dev component", rustc.display()))?;
-    let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).unwrap_or_default().trim().to_string();
-    let compiler_libs = toolchain.join("lib").join("rustlib").join(&host).join("lib");
-    let has_rustc_dev = fs::read_dir(&compiler_libs).into_iter().flatten().flatten().any(|e| e.file_name().to_string_lossy().starts_with("librustc_driver-") && e.file_name().to_string_lossy().ends_with(".rlib"));
-    if !has_rustc_dev {
-        let out = Command::new("rustup").args(["component", "add", "rustc-dev", "--toolchain", &name]).stdin(Stdio::null()).output().map_err(|e| format!("cannot run rustup to install rustc-dev: {}", e))?;
-        if !out.status.success() {
-            return Err(format!("rustup could not install rustc-dev for {}: {}", name, String::from_utf8_lossy(&out.stderr).trim()));
+    let toolchain = rustc.parent().and_then(Path::parent).ok_or_else(|| format!("{} is not in a toolchain's bin directory", rustc.display()))?.to_path_buf();
+    let name = util::lossy(toolchain.file_name().unwrap_or_default());
+    // The toolchain's rustc-dev component: added to a toolchain Haul installed (from its own
+    // release; nothing when it has it), required of any other (listed in its components).
+    let layout = crate::toolchain::Layout::current();
+    match crate::toolchain::owning(&layout, rustc) {
+        Some(tc) => {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let server = crate::config::Config::load(&cwd).map(|c| c.str("toolchain.dist-server").to_string()).unwrap_or_else(|_| crate::toolchain::dist::UPSTREAM.to_string());
+            let mut progress = crate::ui::ToolchainProgress::new(&tc.id);
+            crate::toolchain::ensure_components(&layout, &tc, &["rustc-dev".to_string()], &server, &mut progress).map_err(|e| format!("{} for {}: {}", NO_RUSTC_DEV, name, e))?;
+            progress.finish(&tc);
+        }
+        None => {
+            let listed = fs::read_to_string(toolchain.join("lib/rustlib/components")).unwrap_or_default();
+            if !listed.lines().any(|l| l.trim() == "rustc-dev") {
+                return Err(format!("{} for {}: the toolchain does not have it, and Haul only adds components to toolchains it installed", NO_RUSTC_DEV, name));
+            }
         }
     }
     // A scratch crate: the driver's sources, built with the toolchain's own Cargo.
@@ -244,8 +249,8 @@ mod tests {
     fn two_toolchains_of_one_release_get_drivers_of_their_own() {
         let vv = "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\n".to_string();
         let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
-        assert_ne!(at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"), at("/rustup/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
-        assert_eq!(at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"), at("/rustup/toolchains/stable-x86_64-unknown-linux-gnu"));
+        assert_ne!(at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/haul/toolchains/dev"));
+        assert_eq!(at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/haul/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
     }
 
     #[test]

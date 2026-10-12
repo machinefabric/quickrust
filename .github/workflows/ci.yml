@@ -18,14 +18,20 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
-      # The suites skip what is missing; installing it makes them run: `+toolchain` tests need
-      # a second toolchain, the cross-check test needs the wasm32 target.
-      - name: Toolchains
+      # Haul itself builds with the runner's rustup; the builds the suites observe use the
+      # toolchains Haul installs into its own store, kept between runs for a day (each day's
+      # first run installs them anew, from the dist server, through Haul).
+      - name: Toolchain
         run: |
           rustup toolchain install stable --profile minimal --component clippy
-          rustup toolchain install nightly --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain stable
           rustup default stable
+      - id: day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Haul's toolchain store
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/haul-test-toolchains
+          key: haul-toolchains-${{ runner.os }}-${{ steps.day.outputs.day }}
       # The fast-linker test runs only where wild is installed (Linux with glibc).
       - name: wild
         if: runner.os == 'Linux'
@@ -37,7 +43,7 @@ jobs:
 
   # Haul declares `rust-version = 1.80`: built and tested with exactly that compiler, from the
   # lockfile (newer releases of some dependencies need newer Rust). The builds the suites observe
-  # run on stable.
+  # use the toolchains Haul installs.
   msrv:
     name: test (Rust 1.80)
     runs-on: ubuntu-latest
@@ -48,6 +54,13 @@ jobs:
           rustup toolchain install 1.80 --profile minimal
           rustup toolchain install stable --profile minimal
           rustup default stable
+      - id: day
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+      - name: Haul's toolchain store
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/haul-test-toolchains
+          key: haul-toolchains-msrv-${{ runner.os }}-${{ steps.day.outputs.day }}
       - name: Tests
         run: cargo +1.80 test --locked --workspace
 

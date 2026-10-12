@@ -83,47 +83,84 @@ fn qa002_virtual_workspace_members_are_all_discovered() {
     assert_eq!(inspect["workspace"]["root"], "$WORKSPACE", "exported paths are tokenized");
 }
 
-fn toolchain_installed(sb: &Sandbox, name: &str) -> bool {
-    run(sb.upstream(&sb.dir).args([&format!("+{}", name), "--version"])).status.success()
+/// Links the toolchain `p` uses under another name, so that tests can tell selections apart
+/// without installing a second release.
+fn link_alias(sb: &Sandbox, p: &std::path::Path, name: &str) -> std::path::PathBuf {
+    let dir = sb.toolchain_dir(p);
+    ok(sb.haul(p).args(["toolchain", "link", name]).arg(&dir));
+    dir
+}
+
+fn toolchain_of_last_run(sb: &Sandbox) -> String {
+    sb.sessions().last().unwrap()["upstream"]["toolchain"].as_str().unwrap().to_string()
 }
 
 #[test]
-fn qa003_plus_toolchain_selects_the_same_toolchain_as_rustup() {
+fn qa003_toolchain_selection_plus_then_environment_then_file_then_default() {
     let sb = Sandbox::new("toolchain");
     let p = sb.package("p", "p");
-    for tc in ["stable", "beta", "nightly"] {
-        if !toolchain_installed(&sb, tc) {
-            eprintln!("skipping +{}: toolchain not installed", tc);
-            continue;
-        }
-        let arg = format!("+{}", tc);
-        assert_eq!(stdout(&ok(sb.cargo(&p).args([&arg, "--version"]))), stdout(&ok(sb.upstream(&p).args([&arg, "--version"]))));
-        ok(sb.cargo(&p).args([&arg, "check"]));
-        let report = sb.report(&p, "latest");
-        let expected = stdout(&ok(sb.upstream(&p).args([&arg, "rustc", "--lib", "--", "-V"]).env("CARGO_TARGET_DIR", sb.dir.join("oracle-target"))));
-        assert_eq!(report["toolchain"]["rustc_version"].as_str().unwrap(), expected.trim(), "rustc actually used under +{}", tc);
-    }
-    // An unknown toolchain fails exactly like upstream.
+    let stable = sb.toolchain_dir(&p);
+    let stable_id = stable.file_name().unwrap().to_string_lossy().into_owned();
+    link_alias(&sb, &p, "alt");
+    ok(sb.cargo(&p).arg("check"));
+    assert_eq!(toolchain_of_last_run(&sb), stable_id, "the default toolchain");
+    sb.file("p/rust-toolchain.toml", "[toolchain]\nchannel = \"alt\"\n");
+    ok(sb.cargo(&p).arg("check"));
+    assert_eq!(toolchain_of_last_run(&sb), "alt", "the toolchain file outranks the default");
+    ok(sb.cargo(&p).args(["+stable", "check"]));
+    assert_eq!(toolchain_of_last_run(&sb), stable_id, "`+toolchain` outranks the file");
+    ok(sb.cargo(&p).arg("check").env("RUSTUP_TOOLCHAIN", "stable"));
+    assert_eq!(toolchain_of_last_run(&sb), stable_id, "RUSTUP_TOOLCHAIN outranks the file");
+    ok(sb.cargo(&p).arg("check").env("RUSTUP_TOOLCHAIN", &stable));
+    assert_eq!(toolchain_of_last_run(&sb), stable.display().to_string(), "RUSTUP_TOOLCHAIN may name a toolchain directory, as editors do");
+    // `+toolchain` never reaches Cargo, and the compiler is the toolchain's.
+    let report = sb.report(&p, "latest");
+    let expected = stdout(&ok(std::process::Command::new(stable.join("bin/rustc")).arg("-V")));
+    assert_eq!(report["toolchain"]["rustc_version"].as_str().unwrap(), expected.trim());
+    // A toolchain that does not exist fails before anything runs.
     let a = run(sb.cargo(&p).args(["+no-such-toolchain-xyz", "check"]));
-    let b = run(sb.upstream(&p).args(["+no-such-toolchain-xyz", "check"]));
-    assert_eq!(a.status.code(), b.status.code());
-    assert_eq!(stderr(&a), stderr(&b));
+    assert_eq!(a.status.code(), Some(2));
+    assert!(stderr(&a).contains("no toolchain is named `no-such-toolchain-xyz`"), "{}", stderr(&a));
+    let b = run(sb.cargo(&p).args(["+1.98.1.4", "check"]));
+    assert_eq!(b.status.code(), Some(2));
+    assert!(stderr(&b).contains("is not a toolchain"), "{}", stderr(&b));
 }
 
 #[test]
-fn qa003_directory_override_file_is_honoured() {
-    let sb = Sandbox::new("override");
-    if !toolchain_installed(&sb, "nightly") {
-        eprintln!("skipping: nightly toolchain not installed");
-        return;
-    }
+fn builds_and_their_build_scripts_get_hauls_toolchain_and_cargo_home() {
+    let sb = Sandbox::new("engine-env");
     let p = sb.package("p", "p");
-    sb.file("p/rust-toolchain.toml", "[toolchain]\nchannel = \"nightly\"\n");
-    let wrapped = stdout(&ok(sb.cargo(&p).arg("--version")));
-    assert_eq!(wrapped, stdout(&ok(sb.upstream(&p).arg("--version"))));
-    assert!(wrapped.contains("nightly"), "{}", wrapped);
-    // `+stable` on the command line outranks the file, as rustup documents.
-    assert!(!stdout(&ok(sb.cargo(&p).args(["+stable", "--version"]))).contains("nightly"));
+    sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim())).unwrap();\n}\n");
+    let stable = sb.toolchain_dir(&p);
+    ok(sb.cargo(&p).arg("build").env("CARGO_HOME", sb.dir.join("theirs")));
+    let env_file = fs::read_dir(p.join("target/debug/build")).unwrap().flatten().map(|e| e.path().join("out/env.txt")).find(|f| f.is_file()).expect("the build script ran");
+    let lines: Vec<String> = fs::read_to_string(env_file).unwrap().lines().map(str::to_string).collect();
+    assert_eq!(lines[0], stable.file_name().unwrap().to_string_lossy(), "nested toolchain programs are pinned to the build's toolchain");
+    assert_eq!(lines[1], sb.cargo_home().display().to_string(), "Haul's Cargo home, whatever the environment says");
+    assert_eq!(lines[2], stable.join("bin/rustc").display().to_string());
+    assert_eq!(lines[3], stdout(&ok(std::process::Command::new(stable.join("bin/cargo")).arg("-V"))).trim());
+    assert!(!sb.dir.join("theirs").exists());
+}
+
+#[test]
+fn toolchain_programs_run_through_hauls_proxies() {
+    let sb = Sandbox::new("proxies");
+    let p = sb.package("p", "p");
+    let stable = sb.toolchain_dir(&p);
+    link_alias(&sb, &p, "alt");
+    let bin = sb.dir.join("proxies");
+    fs::create_dir_all(&bin).unwrap();
+    for tool in ["rustc", "rustfmt"] {
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_haul"), bin.join(tool)).unwrap();
+    }
+    let own = stdout(&ok(std::process::Command::new(stable.join("bin/rustc")).arg("-vV")));
+    assert_eq!(stdout(&ok(sb.with_shim(&bin.join("rustc").display().to_string(), &p).arg("-vV"))), own);
+    assert_eq!(stdout(&ok(sb.with_shim(&bin.join("rustc").display().to_string(), &p).args(["+alt", "-vV"]))), own);
+    sb.file("p/src/lib.rs", "pub fn add(x:u32,y:u32)->u32{x+y}\n");
+    ok(sb.with_shim(&bin.join("rustfmt").display().to_string(), &p).arg("src/lib.rs"));
+    assert_eq!(fs::read_to_string(p.join("src/lib.rs")).unwrap(), "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n", "the toolchain's rustfmt ran");
+    let missing = run(sb.with_shim(&bin.join("rustc").display().to_string(), &p).args(["+no-such-toolchain-xyz", "-V"]));
+    assert_eq!(missing.status.code(), Some(2));
 }
 
 #[test]
@@ -160,12 +197,9 @@ fn qa006_cross_target_check() {
     let sb = Sandbox::new("cross");
     let p = sb.package("p", "p");
     let target = "wasm32-unknown-unknown";
-    if !run(sb.upstream(&p).args(["check", "--lib", "--target", target])).status.success() {
-        eprintln!("skipping: target {} not installed", target);
-        return;
-    }
-    fs::remove_dir_all(p.join("target")).unwrap();
+    // The target's standard library is installed on first use.
     ok(sb.cargo(&p).args(["check", "--lib", "--target", target]));
+    assert!(sb.toolchain_dir(&p).join("lib/rustlib").join(target).join("lib").is_dir());
     assert!(p.join("target").join(target).join("debug").is_dir());
     let report = sb.report(&p, "latest");
     let lib = report["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap();
@@ -437,26 +471,25 @@ fn qa021_package_and_login_pass_through_and_secrets_never_reach_haul_state() {
     let p = sb.package("p", "p");
     let a = ok(sb.cargo(&p).args(["package", "--allow-dirty", "--no-verify", "--offline"]));
     assert!(p.join("target/package/p-0.1.0.crate").exists(), "{}", stderr(&a));
-    // `cargo login` against a mock registry, with an isolated CARGO_HOME that keeps rustup reachable.
-    let cargo_home = sb.dir.join("cargo-home");
-    fs::create_dir_all(&cargo_home).unwrap();
+    // `cargo login` against a mock registry: the token lands in Haul's Cargo home.
+    let cargo_home = sb.cargo_home();
     let index = sb.dir.join("mock-index");
     sb.file("mock-index/config.json", "{\"dl\":\"file:///nonexistent/dl\",\"api\":\"http://127.0.0.1:9\"}\n");
     git(&index, &["init", "-q"]);
     git(&index, &["add", "."]);
     git(&index, &["commit", "-q", "-m", "index"]);
-    sb.file("cargo-home/config.toml", &format!("[registries.mock]\nindex = \"file://{}\"\n", index.display()));
+    sb.file("haul-home/cargo/config.toml", &format!("[registries.mock]\nindex = \"file://{}\"\n", index.display()));
     let secret = "s3cr3t-token-0123456789abcdef";
     let login = |c: &mut std::process::Command| {
-        c.args(["login", "--registry", "mock", secret]).env("CARGO_HOME", &cargo_home).env("RUSTUP_HOME", std::env::var("RUSTUP_HOME").unwrap_or_else(|_| format!("{}/.rustup", std::env::var("HOME").unwrap())));
+        c.args(["login", "--registry", "mock", secret]);
     };
     let mut c = sb.cargo(&p);
     login(&mut c);
     let out = run(&mut c);
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(fs::read_to_string(cargo_home.join("credentials.toml")).unwrap().contains(secret), "Cargo stored the token: the command was delegated intact");
-    // AC-019: the credential must not appear anywhere in Haul's records.
-    for f in tree(&sb.home) {
+    // AC-019: the credential must not appear anywhere in Haul's records (Cargo's home aside).
+    for f in tree(&sb.home).into_iter().filter(|f| !f.starts_with("cargo/")) {
         let content = fs::read(sb.home.join(&f)).unwrap();
         assert!(!String::from_utf8_lossy(&content).contains(secret), "token leaked into {}", f);
     }
@@ -557,9 +590,13 @@ fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     // … unless strict reporting was requested.
     let strict = run(sb.cargo(&p).arg("build").env("HAUL_REPORT", blocker.join("report.json")).env("HAUL_MEASUREMENT_STRICT", "true"));
     assert_eq!(strict.status.code(), Some(2));
-    // NFR-020: an unusable state directory still builds, with a warning. A directory below a
-    // regular file cannot be created by anyone; a read-only directory would not stop root.
-    let unusable = blocker.join("haul-home");
+    // NFR-020: Haul's records cannot be written: the build still runs, with a warning. Here the
+    // records' directory is a regular file (a read-only directory would not stop root); the
+    // toolchains Haul installed are still there to build with.
+    let unusable = sb.dir.join("records-blocked");
+    fs::create_dir_all(&unusable).unwrap();
+    std::os::unix::fs::symlink(toolchain_store(), unusable.join("toolchains")).unwrap();
+    fs::write(unusable.join("workspaces"), "").unwrap();
     fs::remove_dir_all(p.join("target")).unwrap();
     let no_state = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &unusable));
     assert!(no_state.status.success(), "{}", stderr(&no_state));
@@ -595,30 +632,34 @@ fn help_version_and_list_are_pure_passthrough() {
 fn recursion_is_refused_with_a_diagnostic() {
     let sb = Sandbox::new("recursion");
     let p = sb.package("p", "p");
-    // Pointing the override at the shim itself.
-    let a = run(sb.cargo(&p).arg("build").env("HAUL_REAL_CARGO", sb.shim_dir.join("cargo")));
+    // A linked "toolchain" whose cargo is Haul: refused when linked if it is the same file.
+    let fake = sb.dir.join("fake-toolchain/bin");
+    fs::create_dir_all(&fake).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_haul"), fake.join("cargo")).unwrap();
+    std::os::unix::fs::symlink(sb.toolchain_dir(&p).join("bin/rustc"), fake.join("rustc")).unwrap();
+    let a = run(sb.haul(&p).args(["toolchain", "link", "loop"]).arg(sb.dir.join("fake-toolchain")));
     assert_eq!(a.status.code(), Some(2));
-    assert!(stderr(&a).contains("points at Haul itself"), "{}", stderr(&a));
+    assert!(stderr(&a).contains("is Haul itself"), "{}", stderr(&a));
     // A byte-for-byte copy has a different inode and path: only the session guard can catch it (COMP-022).
-    let copy_dir = sb.dir.join("copy");
-    fs::create_dir_all(&copy_dir).unwrap();
-    fs::copy(env!("CARGO_BIN_EXE_haul"), copy_dir.join("cargo")).unwrap();
-    let b = run(sb.cargo(&p).arg("build").env("HAUL_REAL_CARGO", copy_dir.join("cargo")));
+    fs::remove_file(fake.join("cargo")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_haul"), fake.join("cargo")).unwrap();
+    ok(sb.haul(&p).args(["toolchain", "link", "loop"]).arg(sb.dir.join("fake-toolchain")));
+    let b = run(sb.cargo(&p).args(["+loop", "build"]));
     assert_eq!(b.status.code(), Some(2), "{}", stderr(&b));
-    assert!(stderr(&b).contains("refusing to delegate"), "{}", stderr(&b));
+    assert!(stderr(&b).contains("refusing to run Cargo"), "{}", stderr(&b));
     assert!(!p.join("target").exists());
 }
 
 #[test]
-fn missing_upstream_cargo_is_a_clear_error() {
+fn an_unreachable_dist_server_is_a_clear_error() {
     let sb = Sandbox::new("nocargo");
     let p = sb.package("p", "p");
+    // A Haul home without the suite's toolchains.
     let empty = sb.dir.join("empty-home");
-    fs::create_dir_all(&empty).unwrap();
-    let out = run(sb.cargo(&p).arg("build").env("PATH", &sb.shim_dir).env("HOME", &empty).env("CARGO_HOME", empty.join(".cargo")));
+    let out = run(sb.cargo(&p).arg("build").env("HAUL_HOME", &empty).env("HAUL_DIST_SERVER", "http://127.0.0.1:9"));
     assert_eq!(out.status.code(), Some(2));
-    assert!(stderr(&out).contains("could not find an upstream Cargo"), "{}", stderr(&out));
-    assert!(stderr(&out).contains("HAUL_REAL_CARGO"));
+    assert!(stderr(&out).contains("toolchain stable (from default toolchain): could not download http://127.0.0.1:9/dist/channel-rust-stable.toml"), "{}", stderr(&out));
+    assert!(!p.join("target").exists());
 }
 
 #[test]
@@ -701,56 +742,6 @@ fn dispatch_overhead_stays_within_budget() {
     eprintln!("no-op build: upstream {:.1} ms, shim {:.1} ms, overhead {:.1} ms", native as f64 / 1000.0, wrapped as f64 / 1000.0, overhead_ms);
     assert!(overhead_ms < 100.0, "no-op overhead {:.1} ms exceeds the 100 ms budget (NFR-PERF-003)", overhead_ms);
 }
-
-#[test]
-fn fast_mode_learns_rustups_toolchain_once_and_skips_the_proxy() {
-    let sb = Sandbox::new("proxy");
-    let p = sb.package("p", "p");
-    ok(sb.cargo(&p).arg("build"));
-    let rule = |sb: &Sandbox| sb.sessions().last().unwrap()["upstream"]["rule"].as_str().unwrap().to_string();
-    if !rule(&sb).contains("rustup") {
-        eprintln!("skipped: Cargo is not managed by rustup here");
-        return;
-    }
-    assert_eq!(rule(&sb), "rustup's toolchain, resolved once (proxy skipped)");
-    assert!(sb.home.join("toolchains.json").is_file());
-    // The same choice rustup makes: `+toolchain` included, and the result is the same Cargo.
-    let direct = stdout(&ok(sb.cargo(&p).arg("-V")));
-    assert_eq!(direct, stdout(&ok(sb.upstream(&p).arg("-V"))));
-    let plus = ok(sb.cargo(&p).args(["+stable", "build"]));
-    assert!(plus.status.success());
-    // compat mode keeps the proxy.
-    ok(sb.cargo(&p).arg("build").env("HAUL_MODE", "compat"));
-    assert_eq!(rule(&sb), "first cargo on PATH");
-}
-
-#[test]
-fn a_cargo_that_is_not_a_proxy_is_used_directly_and_remembered_as_such() {
-    // A Cargo first on PATH that is not rustup's proxy (a distribution's, say) is what the shell
-    // would run: Haul runs it, and remembers there is no proxy to skip instead of probing again.
-    let sb = Sandbox::new("plain-cargo");
-    let p = sb.package("p", "p");
-    let Ok(out) = std::process::Command::new("rustup").args(["which", "cargo"]).output() else {
-        eprintln!("skipped: no rustup to find a toolchain Cargo with");
-        return;
-    };
-    let real = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    let dir = sb.dir.join("plain-bin");
-    fs::create_dir_all(&dir).unwrap();
-    std::os::unix::fs::symlink(&real, dir.join("cargo")).unwrap();
-    let path = std::env::join_paths(std::iter::once(sb.shim_dir.clone()).chain(std::iter::once(dir.clone())).chain(std::env::split_paths(&sb.path_with_shim()).skip(1))).unwrap();
-    for _ in 0..2 {
-        ok(sb.cargo(&p).arg("build").env("PATH", &path).env("RUSTUP_TOOLCHAIN", "stable"));
-        let s = sb.sessions().pop().unwrap();
-        assert_eq!(s["upstream"]["rule"], "first cargo on PATH");
-        assert_eq!(s["upstream"]["path"].as_str(), Some(dir.join("cargo").display().to_string().as_str()));
-    }
-    let learned: Value = serde_json::from_slice(&fs::read(sb.home.join("toolchains.json")).unwrap()).unwrap();
-    let entries: Vec<&Value> = learned.as_object().unwrap().values().collect();
-    assert_eq!(entries.len(), 1, "one probe for one set of inputs: {}", learned);
-    assert_eq!(entries[0]["proxy"], Value::Bool(false));
-}
-
 
 #[test]
 fn comp007_cargo_has_the_terminal_through_the_shim() {
@@ -871,9 +862,8 @@ fn hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     let ws = sb.workspace("ws");
     let Some(driver) = build_driver(&sb, &ws) else { return };
     let driver = driver.to_string_lossy().into_owned();
-    // The compiler the driver was built for: the sandbox's (a `cargo +toolchain test` running
-    // this suite sets RUSTUP_TOOLCHAIN for itself, not for the builds it observes).
-    let rustc = stdout(&ok(sb.with_shim("rustup", &ws).args(["which", "rustc"]))).trim().to_string();
+    // The compiler the driver was built for: the toolchain Haul uses here.
+    let rustc = sb.toolchain_dir(&ws).join("bin/rustc").display().to_string();
     let outputs = |compiler: &str| -> std::collections::BTreeMap<String, Vec<u8>> {
         let target = ws.join("target");
         let _ = fs::remove_dir_all(&target);

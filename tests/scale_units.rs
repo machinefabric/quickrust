@@ -51,7 +51,7 @@ fn analysis_of_a_build_of_ten_thousand_units() {
     let events = Path::new(session["events_dir"].as_str().unwrap()).to_path_buf();
     let start = session["started_wall_ns"].as_u64().unwrap();
     let deps_dir = p.join("target/debug/deps");
-    let registry = sb.dir.join("cargo-home/registry/src/fake-0000");
+    let registry = sb.dir.join("haul-home/cargo/registry/src/fake-0000");
 
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     // Unit i: name, hash, whether a proc macro, end time (ns after start) for scheduling.

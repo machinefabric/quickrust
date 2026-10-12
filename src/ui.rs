@@ -162,6 +162,141 @@ fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHa
     })
 }
 
+/// Something Haul does itself (installing a toolchain or a crate): a live status line while it
+/// runs, when stderr is a terminal, and one result line at the end, everywhere.
+pub struct Phase {
+    color: bool,
+    width: usize,
+    live: bool,
+    shown: bool,
+    started: Instant,
+    last_draw: Option<Instant>,
+}
+
+impl Default for Phase {
+    fn default() -> Self {
+        Phase::start()
+    }
+}
+
+impl Phase {
+    pub fn start() -> Phase {
+        let live = std::io::stderr().is_terminal();
+        let color = color() && (live || matches!(std::env::var("CARGO_TERM_COLOR").as_deref(), Ok("always")));
+        Phase { color, width: terminal_width(), live, shown: false, started: Instant::now(), last_draw: None }
+    }
+
+    fn paint(&self, code: &str, s: &str) -> String {
+        if self.color {
+            format!("\x1b[{}m{}\x1b[0m", code, s)
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// Replaces the status line (at most every 80 ms unless `force`).
+    pub fn status(&mut self, text: &str, force: bool) {
+        if !self.live || (!force && self.last_draw.is_some_and(|t| t.elapsed() < Duration::from_millis(80))) {
+            return;
+        }
+        self.last_draw = Some(Instant::now());
+        let max = self.width.saturating_sub(1).max(20);
+        let mut text = format!("  {}", text);
+        if text.chars().count() > max {
+            text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
+        }
+        let mut err = std::io::stderr().lock();
+        let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &text));
+        let _ = err.flush();
+        self.shown = true;
+    }
+
+    fn clear(&mut self) {
+        if self.shown {
+            let _ = write!(std::io::stderr(), "\r\x1b[2K");
+            self.shown = false;
+        }
+    }
+
+    pub fn elapsed_ns(&self) -> u64 {
+        self.started.elapsed().as_nanos() as u64
+    }
+
+    /// The result line: `✓ text · 1.24s` (or `✗` when `ok` is false).
+    pub fn finish(mut self, ok: bool, text: &str) {
+        self.clear();
+        let mark = if ok { self.paint("1;32", "✓") } else { self.paint("1;31", "✗") };
+        let _ = writeln!(std::io::stderr(), "{} {}{}{}", mark, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
+    }
+
+    /// A line printed above the status line.
+    pub fn line(&mut self, text: &str) {
+        self.clear();
+        let _ = writeln!(std::io::stderr(), "{}", text);
+    }
+}
+
+/// A 20-cell progress bar: `━━━━━━━━╺───────────`.
+pub fn bar(done: u64, total: u64) -> String {
+    const CELLS: u64 = 20;
+    let filled = (done.min(total) * CELLS).checked_div(total).unwrap_or(0) as usize;
+    let mut s = "━".repeat(filled);
+    if filled < CELLS as usize {
+        s.push('╺');
+        s.push_str(&"─".repeat(CELLS as usize - filled - 1));
+    }
+    s
+}
+
+/// The progress of a toolchain install, as a `Phase`.
+pub struct ToolchainProgress {
+    phase: Option<Phase>,
+    what: String,
+}
+
+impl ToolchainProgress {
+    /// `what`: how the toolchain was asked for (`stable`, `1.98`), shown while installing.
+    pub fn new(what: &str) -> ToolchainProgress {
+        ToolchainProgress { phase: None, what: what.to_string() }
+    }
+
+    fn phase(&mut self) -> &mut Phase {
+        self.phase.get_or_insert_with(Phase::start)
+    }
+
+    /// Something was installed (or waited for).
+    pub fn worked(&self) -> bool {
+        self.phase.is_some()
+    }
+
+    /// The result line, if anything was installed.
+    pub fn finish(self, tc: &crate::toolchain::Toolchain) {
+        if let Some(p) = self.phase {
+            let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
+            p.finish(true, &format!("Rust {} ready ({})", release, tc.id));
+        }
+    }
+
+    pub fn fail(self, why: &str) {
+        if let Some(p) = self.phase {
+            p.finish(false, &format!("Rust {} could not be installed: {}", self.what, why));
+        }
+    }
+}
+
+impl crate::toolchain::install::Report for ToolchainProgress {
+    fn waiting(&mut self, id: &str) {
+        let what = format!("Waiting for another Haul installing {}", id);
+        self.phase().status(&what, true);
+    }
+
+    fn progress(&mut self, done: usize, total: usize, bytes: u64, current: &str) {
+        let what = self.what.clone();
+        let text = format!("Installing Rust {} {}  {}/{} · {}{}", what, bar(done as u64, total as u64), done, total, util::human_bytes(bytes), if current.is_empty() { String::new() } else { format!(" · {}", current) });
+        self.phase().status(&text, done == total);
+    }
+}
+
 /// Once per Haul home: restored crates whose build-script code was compiled under another
 /// target directory name that directory in panic locations and debug information.
 pub fn notice_foreign_out_dir(units: u64) {

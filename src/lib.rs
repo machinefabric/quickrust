@@ -1,7 +1,8 @@
-//! Haul: a drop-in Cargo replacement that orchestrates upstream Cargo.
+//! Haul: a drop-in Cargo replacement that owns the Rust environment.
 //!
-//! Upstream Cargo and rustc stay the semantic executors; Haul owns the
-//! process boundary around them (policy, observation, lifecycle, budgets).
+//! Haul installs and selects toolchains, manages the build state of every project on the
+//! machine, and runs each command with the toolchain's Cargo and rustc as its engine, around
+//! which it applies policy, observation, caching and its own output.
 
 pub mod analyze;
 pub mod archive;
@@ -13,6 +14,7 @@ pub mod compare;
 pub mod config;
 pub mod discover;
 pub mod driver;
+pub mod engine;
 pub mod fast;
 pub mod inventory;
 pub mod net;
@@ -25,7 +27,7 @@ pub mod resolve;
 pub mod rustc_info;
 pub mod session;
 pub mod store;
-pub mod toolchain_cache;
+pub mod toolchain;
 pub mod ui;
 pub mod util;
 pub mod view;
@@ -39,7 +41,6 @@ pub const ENV_EVENT_DIR: &str = "HAUL_EVENT_DIR";
 pub const ENV_INNER_WRAPPER: &str = "HAUL_INNER_WRAPPER";
 pub const ENV_WRAPPER_FAIL: &str = "HAUL_WRAPPER_FAIL";
 pub const ENV_EXEC_GUARD: &str = "HAUL_EXEC_GUARD";
-pub const ENV_REAL_CARGO: &str = "HAUL_REAL_CARGO";
 pub const ENV_HOME: &str = "HAUL_HOME";
 
 /// Exit status used when Haul itself (not Cargo) fails before delegation.
