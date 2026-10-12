@@ -95,6 +95,13 @@ impl EarlyLink {
         }
     }
 
+    /// What rustc's own `join_codegen` gets for a compilation linked early: no modules (linked
+    /// already), and the work products of the code generation joined in `codegen_crate`.
+    fn handed_back(&self) -> (CompiledModules, WorkProductMap) {
+        let work_products = self.linked.lock().unwrap_or_else(|e| e.into_inner()).take().expect("the work products of the code generation joined early");
+        (CompiledModules { modules: vec![], allocator_module: None }, work_products)
+    }
+
     /// Tells the wrapper the outputs are written; from here on the build sees nothing of this
     /// process (rustc saving its incremental state).
     fn ready(&self) {
@@ -181,6 +188,9 @@ impl CodegenBackend for EarlyLink {
         let outputs = tcx.output_filenames(());
         let Some(metadata) = Self::metadata(tcx, outputs) else { return ongoing };
         let crate_info = CrateInfo::new(tcx, self.inner.target_cpu(sess));
+        #[cfg(haul_rustc_ge_99)]
+        let (compiled, work_products) = self.inner.join_codegen(ongoing, sess, tcx.incr_comp_session, outputs, &crate_info);
+        #[cfg(not(haul_rustc_ge_99))]
         let (compiled, work_products) = self.inner.join_codegen(ongoing, sess, outputs, &crate_info);
         sess.dcx().abort_if_errors();
         if let Some(dir) = &self.keep_objects {
@@ -194,12 +204,18 @@ impl CodegenBackend for EarlyLink {
         Box::new(Linked)
     }
 
+    #[cfg(haul_rustc_ge_99)]
+    fn join_codegen(&self, ongoing: Box<dyn Any>, sess: &Session, incremental: Option<&rustc_session::IncrCompSession>, outputs: &OutputFilenames, crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
+        match ongoing.downcast::<Linked>() {
+            Ok(_) => self.handed_back(),
+            Err(ongoing) => self.inner.join_codegen(ongoing, sess, incremental, outputs, crate_info),
+        }
+    }
+
+    #[cfg(not(haul_rustc_ge_99))]
     fn join_codegen(&self, ongoing: Box<dyn Any>, sess: &Session, outputs: &OutputFilenames, crate_info: &CrateInfo) -> (CompiledModules, WorkProductMap) {
         match ongoing.downcast::<Linked>() {
-            Ok(_) => {
-                let work_products = self.linked.lock().unwrap_or_else(|e| e.into_inner()).take().expect("the work products of the code generation joined early");
-                (CompiledModules { modules: vec![], allocator_module: None }, work_products)
-            }
+            Ok(_) => self.handed_back(),
             Err(ongoing) => self.inner.join_codegen(ongoing, sess, outputs, crate_info),
         }
     }

@@ -242,6 +242,24 @@ pub fn git(cwd: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
 }
 
+/// rustup's account of why it could not install `rustc-dev`, which Haul's compiler driver is built
+/// against, as `haul driver build` / `haul driver status` report it.
+pub const NO_RUSTC_DEV: &str = "rustup could not install rustc-dev";
+
+/// Builds Haul's compiler driver for the toolchain `cwd` uses; its path. `None` (with the reason
+/// on stderr) only where rustup cannot install the toolchain's `rustc-dev` component (a component
+/// conflict in some toolchains' packaging): the driver cannot exist there. Any other failure to
+/// build it fails the test.
+pub fn build_driver(sb: &Sandbox, cwd: &Path) -> Option<PathBuf> {
+    let built = run(sb.haul(cwd).args(["driver", "build"]));
+    if !built.status.success() && stderr(&built).contains(NO_RUSTC_DEV) {
+        eprintln!("not run: Haul's compiler driver cannot be built here: {}", stderr(&built).trim());
+        return None;
+    }
+    assert!(built.status.success(), "{}", stderr(&built));
+    Some(PathBuf::from(stdout(&built).trim()))
+}
+
 #[cfg(unix)]
 pub fn make_executable(p: &Path) {
     use std::os::unix::fs::PermissionsExt;
