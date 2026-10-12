@@ -1,21 +1,22 @@
 //! Haul's cache keeps itself within its space.
 //!
 //! Everything under `~/.haul/cache` can be rebuilt or downloaded again: workspaces' build
-//! directories, the artifact cache, compiler drivers, toolchain downloads, remembered answers.
+//! directories, the artifact cache, compiler drivers, sources of installed programs, toolchain
+//! downloads, remembered answers.
 //! Haul bounds it two ways (`cache.max-size`, `cache.min-free`): it uses at most so much, and
 //! leaves at least so much of the disk free. A collection removes, in order:
 //!
 //! 1. what nothing can use any more, whatever the space: build directories of workspaces that are
 //!    gone, drivers of toolchains that are gone, stale downloads and memos, leftovers;
-//! 2. while the cache is above its size or the disk below its free space, build directories and
-//!    artifact entries, least recently used first;
+//! 2. while the cache is above its size or the disk below its free space, build directories,
+//!    artifact entries and sources of installed programs, least recently used first;
 //! 3. crates and git checkouts downloaded into Haul's Cargo home: Cargo removes them itself
 //!    (`cargo -Zgc clean gc`, which knows when each was last used and waits for builds reading
 //!    them), unused for its usual ages at every collection, and down to what the bounds leave
 //!    when they are still exceeded. They come last: they need the network to come back.
 //!
 //! Nothing used in the last 15 minutes is removed, nor a build directory a command holds (its
-//! lock) or Cargo is building in (Cargo's locks). A removal renames the thing away first, so
+//! lock) or Cargo is building in (Cargo's locks), nor a source an install holds (its lock). A removal renames the thing away first, so
 //! a build never sees it half deleted; a build that finds it gone builds it again.
 //!
 //! Sizes are blocks allocated, and a file with several links (the artifact cache links what it
@@ -108,6 +109,8 @@ pub enum Kind {
     Leftover,
     /// Haul's Cargo home's registry and git downloads (removed by Cargo, see `cargo_gc`).
     Registry,
+    /// A copy of an installed program's source (`haul install`).
+    Source,
 }
 
 impl Kind {
@@ -120,6 +123,7 @@ impl Kind {
             Kind::Memo => "remembered answers",
             Kind::Leftover => "leftovers",
             Kind::Registry => "crate and git downloads",
+            Kind::Source => "program sources",
         }
     }
 }
@@ -358,6 +362,24 @@ pub fn scan(cache: &Path, now: u64) -> Scan {
         };
         add(Kind::Driver, p.clone(), vec![], mtime(&p), orphan);
     }
+    // Sources of installed programs, with their locks; copies that never finished.
+    let sources = cache.join("src");
+    for p in entries(&sources) {
+        let name = util::lossy(p.file_name().unwrap_or_default());
+        if name.starts_with('.') && name.ends_with(".part") {
+            let t = mtime(&p);
+            add(Kind::Leftover, p, vec![], t, (t + 3_600 * 1_000_000_000 < now).then(|| "a copy that never finished".to_string()));
+        } else if p.is_dir() {
+            // When an install last used it (an unfinished clone: when it was made).
+            let complete = p.join(crate::install::COMPLETE);
+            let used = if complete.is_file() { mtime(&complete) } else { mtime(&p) };
+            add(Kind::Source, p.clone(), vec![crate::install::copy_lock(&p)], used, None);
+        } else if let Some(stem) = name.strip_suffix(".lock") {
+            if !sources.join(stem).exists() {
+                add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the source it belonged to is gone".into()));
+            }
+        }
+    }
     // Downloads that never finished, remembered answers, leftovers of removals.
     for p in entries(&cache.join("downloads")) {
         let t = mtime(&p);
@@ -402,8 +424,9 @@ pub fn goal(policy: &Policy, total: u64, fs: &FsSpace) -> Goal {
     Goal { max_total: if total > policy.max_bytes { policy.max_bytes / 10 * 9 } else { u64::MAX }, min_free: if fs.available < policy.min_free { policy.min_free / 4 * 5 } else { 0 } }
 }
 
-/// Removes a build directory unless a command or Cargo uses it.
-fn remove_build_dir(cache: &Path, dir: &Path, companions: &[PathBuf]) -> Result<bool, String> {
+/// Removes a build directory unless a command or Cargo uses it, or a program's source unless an
+/// install uses it.
+fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], cargo_builds_in_it: bool) -> Result<bool, String> {
     let lock_path = companions.iter().find(|c| c.extension().is_some_and(|e| e == "lock"));
     let _ours = match lock_path {
         Some(l) => match util::ExclusiveLock::try_acquire(l).map_err(|e| e.to_string())? {
@@ -412,7 +435,7 @@ fn remove_build_dir(cache: &Path, dir: &Path, companions: &[PathBuf]) -> Result<
         },
         None => None,
     };
-    if cargo_building_in(dir) {
+    if cargo_builds_in_it && cargo_building_in(dir) {
         return Ok(false);
     }
     let doomed = cache.join("tmp").join(format!("{}.{}", util::lossy(dir.file_name().unwrap_or_default()), std::process::id()));
@@ -441,7 +464,8 @@ fn cargo_building_in(dir: &Path) -> bool {
 
 fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
     match unit.kind {
-        Kind::Build => remove_build_dir(cache, &unit.path, &unit.companions),
+        Kind::Build => remove_locked_dir(cache, &unit.path, &unit.companions, true),
+        Kind::Source => remove_locked_dir(cache, &unit.path, &unit.companions, false),
         Kind::Artifact => Ok(crate::artifact_cache::discard(&cache.join("artifacts"), &unit.path)),
         _ => {
             let md = fs::symlink_metadata(&unit.path).map_err(|e| e.to_string());
@@ -489,7 +513,7 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
     if let Some(m) = max_total {
         goal.max_total = goal.max_total.min(m);
     }
-    let mut candidates: Vec<Unit> = rest.into_iter().filter(|u| matches!(u.kind, Kind::Build | Kind::Artifact)).collect();
+    let mut candidates: Vec<Unit> = rest.into_iter().filter(|u| matches!(u.kind, Kind::Build | Kind::Artifact | Kind::Source)).collect();
     candidates.sort_by_key(|u| (u.last_used_ns, u.path.clone()));
     let mut available = fs_now().available;
     let mut freed_since_check = 0u64;
@@ -625,7 +649,7 @@ pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
 /// `before_command` for the cache at `cache` in Haul's home `home`.
 fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<Collected, String>> {
     let cache = cache.to_path_buf();
-    let empty = ["builds", "artifacts", "drivers"].iter().all(|d| !cache.join(d).exists());
+    let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
     if empty && usage(&cache).is_none() {
         if let Ok(fs) = fs_space(home) {
             let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": 1, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "counted": false })));
@@ -769,6 +793,39 @@ mod tests {
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
         assert!(done.removed.is_empty() && done.skipped_in_use == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn program_sources_count_and_go_least_recently_used_unless_an_install_holds_them() {
+        use crate::install::{copy_lock, COMPLETE};
+        let c = cache();
+        let a = workspace(&c, "a");
+        let build = build_dir(&c, "a-1", &a, 3 * 3600, 1000);
+        let source = |name: &str, ago_secs: u64| {
+            let d = c.join("src").join(name);
+            file(&d.join("src/main.rs"), 50_000);
+            file(&d.join(COMPLETE), 0);
+            age(&d.join(COMPLETE), ago_secs);
+            d
+        };
+        let old = source("tool-1.0.0-abcd1234", 5 * 3600);
+        let held = source("other-2.0.0-abcd1234", 7 * 3600);
+        let _install = util::ExclusiveLock::acquire(&copy_lock(&held)).unwrap();
+        // A copy that never finished, and the lock of a source that is gone.
+        let part = c.join("src/.tool-1.1.0-abcd1234.77.part");
+        file(&part.join("Cargo.toml"), 10);
+        age(&part, 2 * 3600);
+        let stray = c.join("src/gone-1.0.0-abcd1234.lock");
+        file(&stray, 0);
+        age(&stray, 2 * 3600);
+        let counted = scan(&c, util::now_wall_ns()).by_kind();
+        assert!(counted.iter().any(|&(k, n, b)| k == Kind::Source && n == 2 && b >= 100_000), "{:?}", counted);
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
+        assert_eq!(removed, [part.as_path(), stray.as_path(), old.as_path(), build.as_path()]);
+        assert!(!old.exists() && !copy_lock(&old).exists());
+        assert!(held.exists() && done.skipped_in_use == 1, "{:?}", done);
     }
 
     #[test]

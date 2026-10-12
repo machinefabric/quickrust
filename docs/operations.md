@@ -89,7 +89,7 @@ most ten seconds, and says so. `haul gc` collects now (`--dry-run` says what it 
 | `~/.haul/cargo/` | Haul's Cargo home: `config.toml`, credentials, the registry index and sources, git checkouts | the registry and git directories are downloaded again; `config.toml` and `credentials.toml` are yours |
 | `~/.haul/bin/` | Haul as `cargo`, `rustc`, `rustfmt`, `cargo-clippy` and the other toolchain programs; programs `haul install` installed | the proxies are recreated by the next build; installed programs are lost |
 | `~/.haul/installs.json` | what `haul install` installed, by root and package (`haul install --list`) | `haul uninstall` instead |
-| `~/.haul/cache/src/` | sources of installed crates, copied from the Cargo home | yes |
+| `~/.haul/cache/src/` (and `<…>.lock`) | sources of installed programs: crates copied from the Cargo home (their published lockfile kept aside as `.haul-published.lock`, used with `--locked`), `--git` clones; the lock that an install uses one | yes; least recently used first, never while an install holds it |
 | `~/.haul/cache/downloads/` | toolchain archives being downloaded (resumed after an interruption) | yes |
 | `~/.haul/cache/memo/rustc/` | each compiler's `rustc -vV`, asked once per binary | yes; asked again |
 | `~/.haul/cache/drivers/<commit>-<host>-<source>/` | Haul's compiler driver for one compiler and driver source (`haul driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on (compiled by rustc since) | yes; rebuilt in the background after the next build |

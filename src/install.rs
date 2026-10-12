@@ -9,8 +9,11 @@
 //!   Cargo home, copied into Haul's cache.
 //! - `--git` clones with the system `git`; `--path` builds the package where it is.
 //! - It is built like any build Haul runs (release profile unless `--debug` / `--profile`), with
-//!   Haul's output, artifact cache and build directories. The lockfile published with a crate is
-//!   used with `--locked`, as by `cargo install`.
+//!   Haul's output, artifact cache and build directories. As by `cargo install`, a crate's
+//!   dependencies are resolved afresh, and with `--locked` from the lockfile published with it
+//!   (kept aside in the copy as `.haul-published.lock`); `--path` builds the workspace with its own
+//!   `Cargo.lock`, as `cargo build` does. A copy is locked while it is prepared and built
+//!   (`<copy>.lock`), and the cache removes copies least recently used like build directories.
 //! - Its binaries (or `--bin`, `--example`) are put into the `bin` directory, never over one of
 //!   Haul's own names, nor over another package's or an unknown file without `--force`.
 //!   `installs.json` in Haul's home records what each package installed, for `--list`,
@@ -26,6 +29,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const RECORD: &str = "installs.json";
+/// The lockfile a crate was published with, in Haul's copy of it.
+const PUBLISHED_LOCK: &str = ".haul-published.lock";
+/// In a complete copy of a published package; its time is when an install last used the copy.
+pub const COMPLETE: &str = ".haul-complete";
 
 /// Names in Haul's `bin` that are Haul.
 fn reserved(name: &str) -> bool {
@@ -207,6 +214,16 @@ struct Source {
     dir: PathBuf,
     /// How the record names it: `{"kind": …, "display": …}`.
     record: Value,
+    /// The workspace of Haul's copy (registry, git), whose `Cargo.lock` the install chooses;
+    /// `None` for a workspace of the user's (`--path`).
+    copy_root: Option<PathBuf>,
+    /// The copy's lock, held until the install is done.
+    _lock: Option<util::ExclusiveLock>,
+}
+
+/// The lock of a copy in Haul's cache (`<copy>.lock`), which the cache's collection respects.
+pub fn copy_lock(dir: &Path) -> PathBuf {
+    dir.with_file_name(format!("{}.lock", util::lossy(dir.file_name().unwrap_or_default())))
 }
 
 fn install(r: &Request, inv: &Invocation, cwd: &Path, cfg: &Config, root: &Path) -> Result<i32, String> {
@@ -214,11 +231,13 @@ fn install(r: &Request, inv: &Invocation, cwd: &Path, cfg: &Config, root: &Path)
     let mut installed = 0;
     let targets: Vec<(String, Option<String>)> = if r.crates.is_empty() { vec![(String::new(), None)] } else { r.crates.clone() };
     let many = targets.len() > 1;
+    let all = crate::ui::Phase::start();
     for (name, req) in &targets {
+        let attempt = crate::ui::Phase::start();
         match install_one(r, name, req, inv, cwd, cfg, root) {
             Ok(_) => installed += 1,
             Err(e) if many => {
-                crate::ui::Phase::start().finish(false, &format!("{}: {}", if name.is_empty() { "the package" } else { name }, e));
+                attempt.finish(false, &format!("{}: {}", if name.is_empty() { "the package" } else { name }, e));
                 failed.push(name.clone());
             }
             Err(e) => return Err(e),
@@ -226,7 +245,7 @@ fn install(r: &Request, inv: &Invocation, cwd: &Path, cfg: &Config, root: &Path)
     }
     if many {
         let summary = format!("Installed {} of {}{}", installed, targets.len(), if failed.is_empty() { String::new() } else { format!(" · failed: {}", failed.join(", ")) });
-        crate::ui::Phase::start().finish(failed.is_empty(), &summary);
+        all.finish(failed.is_empty(), &summary);
     }
     Ok(if failed.is_empty() { 0 } else { 101 })
 }
@@ -236,7 +255,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     let mut phase = crate::ui::Phase::start();
     phase.status(&format!("Resolving {}", if name.is_empty() { "the package" } else { name }), true);
     let source = match (&r.path, &r.git) {
-        (Some(p), _) => local(&cwd.join(p), name, inv, cwd, cfg)?,
+        (Some(p), _) => local(&cwd.join(p), name, inv, cwd, cfg)?.0,
         (None, Some(url)) => git(url, r.git_ref.as_ref(), name, inv, cwd, cfg)?,
         (None, None) => registry(name, req, r, inv, cfg)?,
     };
@@ -272,12 +291,25 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     if let Some(t) = &r.target {
         build.extend(["--target".into(), t.into()]);
     }
-    if r.locked {
-        if source.dir.join("Cargo.lock").is_file() {
-            build.push("--locked".into());
-        } else {
-            phase.line(&format!("note: {} {} was published without a lockfile; --locked has nothing to hold it to", source.name, source.version));
+    match &source.copy_root {
+        // Haul's copy: Cargo resolves afresh, or with --locked from the published lockfile.
+        Some(root) => {
+            let lock = root.join("Cargo.lock");
+            match fs::remove_file(&lock) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("cannot remove {}: {}", lock.display(), e)),
+            }
+            let published = root.join(PUBLISHED_LOCK);
+            if r.locked && published.is_file() {
+                fs::copy(&published, &lock).map_err(|e| format!("cannot restore {}'s published lockfile: {}", source.name, e))?;
+                build.push("--locked".into());
+            } else if r.locked {
+                phase.line(&format!("note: {} {} was published without a lockfile; --locked has nothing to hold it to", source.name, source.version));
+            }
         }
+        None if r.locked => build.push("--locked".into()),
+        None => {}
     }
     build.extend(r.build_args.iter().map(OsString::from));
     phase.clear_line();
@@ -343,7 +375,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     }
     let home = util::home_dir();
     let tilde = |p: &Path| home.as_ref().and_then(|h| p.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| p.display().to_string());
-    crate::ui::Phase::start().finish(true, &format!("Installed {} {} · {} → {}", source.name, source.version, placed.join(", "), tilde(&bin_dir)));
+    phase.finish(true, &format!("Installed {} {} · {} → {}", source.name, source.version, placed.join(", "), tilde(&bin_dir)));
     Ok(())
 }
 
@@ -459,23 +491,25 @@ fn registry(name: &str, req: &Option<String>, r: &Request, inv: &Invocation, cfg
         let manifest = PathBuf::from(util::vstr(pkg, "manifest_path"));
         let from = manifest.parent().ok_or("no package directory")?;
         let src = util::cache_dir().join("src").join(format!("{}-{}-{}", name, version, &util::digest_parts([util::vstr(pkg, "source")])[..8]));
+        let lock = util::ExclusiveLock::acquire(&copy_lock(&src)).map_err(|e| format!("cannot lock {}: {}", src.display(), e))?;
         copy_package(from, &src)?;
         let display = match &r.registry {
             Some(reg) => format!("registry `{}`", reg),
             None => "crates.io".to_string(),
         };
-        Ok(Source { name: util::vstr(pkg, "name"), version, dir: src, record: json!({ "kind": "registry", "id": util::vstr(pkg, "source"), "display": display }) })
+        Ok(Source { name: util::vstr(pkg, "name"), version, dir: src.clone(), record: json!({ "kind": "registry", "id": util::vstr(pkg, "source"), "display": display }), copy_root: Some(src), _lock: Some(lock) })
     })();
     let _ = fs::remove_dir_all(&probe);
     out
 }
 
-/// A copy of a published package's source (complete or not there at all).
+/// A copy of a published package's source (complete or not there at all), its lockfile kept
+/// aside; marked used now.
 fn copy_package(from: &Path, to: &Path) -> Result<(), String> {
-    if to.join(".haul-complete").is_file() {
-        return Ok(());
+    if to.join(COMPLETE).is_file() {
+        return fs::write(to.join(COMPLETE), b"").map_err(|e| format!("cannot mark {} used: {}", to.display(), e));
     }
-    let staging = to.with_extension(format!("{}.part", std::process::id()));
+    let staging = to.with_file_name(format!(".{}.{}.part", util::lossy(to.file_name().unwrap_or_default()), std::process::id()));
     let _ = fs::remove_dir_all(&staging);
     let out = (|| -> std::io::Result<()> {
         let mut stack = vec![PathBuf::new()];
@@ -487,11 +521,12 @@ fn copy_package(from: &Path, to: &Path) -> Result<(), String> {
                 if md.is_dir() {
                     stack.push(r);
                 } else if md.is_file() && r != Path::new(".cargo-ok") {
-                    fs::copy(e.path(), staging.join(&r))?;
+                    let into = if r == Path::new("Cargo.lock") { staging.join(PUBLISHED_LOCK) } else { staging.join(&r) };
+                    fs::copy(e.path(), into)?;
                 }
             }
         }
-        fs::write(staging.join(".haul-complete"), b"")?;
+        fs::write(staging.join(COMPLETE), b"")?;
         if to.exists() {
             fs::remove_dir_all(to)?;
         }
@@ -507,7 +542,12 @@ fn copy_package(from: &Path, to: &Path) -> Result<(), String> {
 fn git(url: &str, git_ref: Option<&(String, String)>, name: &str, inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Source, String> {
     let git = util::which("git").ok_or("--git needs git on PATH")?;
     let dir = util::cache_dir().join("src").join(format!("git-{}", &util::digest_parts([url.to_string(), format!("{:?}", git_ref)])[..16]));
-    let _ = fs::remove_dir_all(&dir);
+    let lock = util::ExclusiveLock::acquire(&copy_lock(&dir)).map_err(|e| format!("cannot lock {}: {}", dir.display(), e))?;
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot remove the previous clone {}: {}", dir.display(), e)),
+    }
     let mut clone = std::process::Command::new(&git);
     clone.args(["clone", "--quiet", "--recurse-submodules"]);
     if let Some((kind, r)) = git_ref.filter(|(k, _)| k != "rev") {
@@ -526,13 +566,20 @@ fn git(url: &str, git_ref: Option<&(String, String)>, name: &str, inv: &Invocati
         }
     }
     let head = std::process::Command::new(&git).arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let mut s = local(&dir, name, inv, cwd, cfg)?;
+    let (mut s, root) = local(&dir, name, inv, cwd, cfg)?;
+    if root.join("Cargo.lock").is_file() {
+        fs::rename(root.join("Cargo.lock"), root.join(PUBLISHED_LOCK)).map_err(|e| format!("cannot keep {}'s lockfile aside: {}", url, e))?;
+    }
+    fs::write(dir.join(COMPLETE), b"").map_err(|e| format!("cannot mark {} complete: {}", dir.display(), e))?;
     s.record = json!({ "kind": "git", "url": url, "rev": head, "display": format!("{}#{}", url, &head[..head.len().min(8)]) });
+    s.copy_root = Some(root);
+    s._lock = Some(lock);
     Ok(s)
 }
 
-/// A package in a local directory (a workspace, or one of its members by `name`).
-fn local(dir: &Path, name: &str, inv: &Invocation, _cwd: &Path, cfg: &Config) -> Result<Source, String> {
+/// A package in a local directory (a workspace, or one of its members by `name`), and the root
+/// of its workspace.
+fn local(dir: &Path, name: &str, inv: &Invocation, _cwd: &Path, cfg: &Config) -> Result<(Source, PathBuf), String> {
     let _ = inv;
     let engine = crate::engine::for_command(&resolve::classify(&[]), dir, cfg)?;
     let meta = metadata(&engine, &dir.join("Cargo.toml"), true)?;
@@ -549,7 +596,8 @@ fn local(dir: &Path, name: &str, inv: &Invocation, _cwd: &Path, cfg: &Config) ->
         *members.iter().find(|p| p["name"] == json!(name)).ok_or_else(|| format!("{} has no package `{}`", dir.display(), name))?
     };
     let manifest = PathBuf::from(util::vstr(pkg, "manifest_path"));
-    Ok(Source { name: util::vstr(pkg, "name"), version: util::vstr(pkg, "version"), dir: manifest.parent().unwrap_or(dir).to_path_buf(), record: json!({ "kind": "path", "path": util::path_str(&util::canon(dir)), "display": util::path_str(&util::canon(dir)) }) })
+    let root = meta["workspace_root"].as_str().map(PathBuf::from).ok_or("cargo metadata named no workspace root")?;
+    Ok((Source { name: util::vstr(pkg, "name"), version: util::vstr(pkg, "version"), dir: manifest.parent().unwrap_or(dir).to_path_buf(), record: json!({ "kind": "path", "path": util::path_str(&util::canon(dir)), "display": util::path_str(&util::canon(dir)) }), copy_root: None, _lock: None }, root))
 }
 
 /// `haul uninstall <package>… [--bin NAME]… [--root DIR]`.
