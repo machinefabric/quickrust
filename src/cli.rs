@@ -1450,7 +1450,7 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
             let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
             let mut phase = crate::ui::Phase::start();
             phase.status("Looking for a newer Haul", true);
-            let u = crate::setup::self_update(cfg.str("self.update-url"))?;
+            let u = crate::setup::self_update(cfg.str("self.update-url")).inspect_err(|_| phase.clear_line())?;
             if u.from == u.to {
                 phase.finish(true, &format!("Haul {} is the latest", u.to));
             } else {

@@ -355,7 +355,11 @@ pub fn self_update(server: &str) -> Result<Updated, String> {
     let target = release_target().ok_or("Haul publishes no release for this platform; build it from source")?;
     let server = server.trim_end_matches('/');
     let client = crate::net::Client::new();
-    let latest = String::from_utf8_lossy(&client.get_bytes(&format!("{}/version.txt", server), &[]).map_err(|e| e.to_string())?).trim().to_string();
+    let latest = match client.get_bytes(&format!("{}/version.txt", server), &[]) {
+        Ok(text) => String::from_utf8_lossy(&text).trim().to_string(),
+        Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("no Haul release is published at {} yet", server)),
+        Err(e) => return Err(e.to_string()),
+    };
     let current = env!("CARGO_PKG_VERSION").to_string();
     let newer = match (semver::Version::parse(&latest), semver::Version::parse(&current)) {
         (Ok(l), Ok(c)) => l > c,

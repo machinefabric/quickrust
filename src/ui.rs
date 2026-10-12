@@ -251,6 +251,34 @@ impl Phase {
     }
 }
 
+/// What a build-family command did, for its summary: `cargo check` and Clippy compile no code
+/// to run, `cargo doc` documents.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Done {
+    #[default]
+    Built,
+    Checked,
+    Documented,
+}
+
+impl Done {
+    fn of(command: &str) -> Done {
+        match command {
+            "check" | "c" | "clippy" => Done::Checked,
+            "doc" | "d" | "rustdoc" => Done::Documented,
+            _ => Done::Built,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            Done::Built => "Built",
+            Done::Checked => "Checked",
+            Done::Documented => "Documented",
+        }
+    }
+}
+
 /// `text` cut to fit a terminal `width` wide (one column spare), with `…` where it was cut.
 fn truncate(text: &str, width: usize) -> String {
     let max = width.saturating_sub(1).max(20);
@@ -419,10 +447,12 @@ pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
 
 /// Starts rendering the output of a spawned Cargo. `prebuild`: the build of a `BuildFirst`
 /// command, whose "Running" and "Executable" lines name programs it does not run.
-pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static, prebuild: bool) -> Live {
+/// `command`: the Cargo command (or what an alias expands to), which names the result.
+pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'static, prebuild: bool, command: &str) -> Live {
     let (tx, rx) = channel();
     let readers = vec![reader(stdout, tx.clone(), true), reader(stderr, tx.clone(), false)];
-    let render = std::thread::spawn(move || Renderer { prebuild, ..Renderer::new() }.run(rx));
+    let done = Done::of(command);
+    let render = std::thread::spawn(move || Renderer { prebuild, done, ..Renderer::new() }.run(rx));
     Live { tx, readers, render }
 }
 
@@ -488,6 +518,8 @@ impl Live {
 #[derive(Default)]
 struct Renderer {
     prebuild: bool,
+    /// What the summary says the command did.
+    done: Done,
     color: bool,
     width: usize,
     status_shown: bool,
@@ -927,7 +959,7 @@ impl Renderer {
         self.clear_status(err);
         let dot = self.paint("2", " · ");
         if exit.success() {
-            let mut s = format!("{} {}", self.paint("1;32", "✓ Built"), human_dur(wall_ns));
+            let mut s = format!("{} {}", self.paint("1;32", &format!("✓ {}", self.done.word())), human_dur(wall_ns));
             s.push_str(&format!("{}{} compiled{}{} fresh", dot, self.compiled, dot, self.fresh));
             if cache_hits > 0 {
                 s.push_str(&format!("{}{} restored from Haul's cache", dot, cache_hits));
@@ -1196,6 +1228,13 @@ mod tests {
         ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 3);
         let text = String::from_utf8(sink).unwrap();
         assert!(text.contains("✓ Built 4.21s · 1 compiled · 1 fresh · 3 restored from Haul's cache"), "{}", text);
+        // What the command did: `cargo check` and Clippy build nothing to run.
+        for (command, says) in [("check", "✓ Checked "), ("clippy", "✓ Checked "), ("doc", "✓ Documented "), ("test", "✓ Built "), ("run", "✓ Built ")] {
+            let mut ren = Renderer { done: Done::of(command), ..r() };
+            let mut sink: Vec<u8> = Vec::new();
+            ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 0);
+            assert!(String::from_utf8(sink).unwrap().starts_with(says), "{}", command);
+        }
         assert_eq!(strip_ansi("\x1b[1m\x1b[31merror\x1b[0m: x"), "error: x");
     }
 

@@ -837,6 +837,10 @@ fn haul_updates_itself_from_its_releases_and_only_to_what_they_say() {
     };
     let update = || run(sb.haul(&sb.dir).args(["self", "update"]).env("HAUL_UPDATE_URL", &server.url));
     let current = env!("CARGO_PKG_VERSION");
+    // Nothing published yet.
+    let none = update();
+    assert_eq!(none.status.code(), Some(2));
+    assert!(stderr(&none).contains(&format!("no Haul release is published at {} yet", server.url)), "{}", stderr(&none));
     let before = fs::read(&haul).unwrap();
     // Not newer: nothing to do.
     publish(current, "haul old", None);
