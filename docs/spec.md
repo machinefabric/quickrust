@@ -499,20 +499,13 @@ Haul's strongest contract is behavioral transparency.
 
 **COMP-012 [I]** `cargo +toolchain ...` shall preserve rustup's documented override precedence. citeturn15view15
 
-**COMP-013 [C]** `haul upstream ...` shall be an explicit escape hatch that invokes upstream Cargo without optimization policy or instrumentation except minimum recursion prevention.
+**COMP-013 [C]** `haul upstream ...` shall be an explicit escape hatch that invokes the toolchain's Cargo without optimization policy or instrumentation except minimum recursion prevention.
 
-**Upstream Cargo resolution**
+**Toolchains and the engine** (revised 2026-10-12: Haul manages toolchains itself)
 
-**COMP-020 [R]** Resolve real Cargo in this order:
+**COMP-020 [R]** Haul shall install Rust toolchains from the Rust dist server into its home, verified against the published checksums, and select the toolchain of a command in this order: `+toolchain`; `RUSTUP_TOOLCHAIN`; the nearest `rust-toolchain.toml` / `rust-toolchain`; the default toolchain. The toolchain, the components and targets its file lists and the standard library of each `--target` shall be installed on first use. Every command shall run that toolchain's own Cargo (the engine) with Haul's Cargo home; Haul shall fail with a diagnostic rather than execute itself recursively.
 
-1. explicit `HAUL_REAL_CARGO`;
-2. rustup-selected Cargo corresponding to an explicit `+toolchain`;
-3. rustup-selected current directory toolchain;
-4. configured absolute binary;
-5. `PATH` search excluding the current shim inode/path;
-6. fail with a diagnostic rather than recursively execute itself.
-
-**COMP-021 [I]** The resolver shall record the upstream Cargo canonical path and version.
+**COMP-021 [I]** The session record shall name the toolchain, how it was selected, and the canonical path of the Cargo that ran.
 
 **COMP-022 [I]** The resolver shall reject obvious self-recursion using a session identifier and executable identity, not only a path string.
 

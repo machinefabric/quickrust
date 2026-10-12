@@ -782,9 +782,8 @@ fn expand_argfiles(args: Vec<String>) -> Vec<String> {
 
 /// Registry, git-checkout and toolchain sources are immutable for our purposes.
 pub fn is_external_source(p: &Path) -> bool {
-    let s = util::path_str(p);
-    let under = |root: Option<PathBuf>, sub: &str| root.map(|r| s.starts_with(&util::path_str(&r.join(sub)))).unwrap_or(false);
-    under(util::cargo_home(), "registry") || under(util::cargo_home(), "git") || s.contains("/.rustup/toolchains/") || s.contains("/lib/rustlib/")
+    let home = util::cargo_home();
+    p.starts_with(home.join("registry")) || p.starts_with(home.join("git")) || p.starts_with(util::haul_home().join("toolchains")) || util::path_str(p).contains("/lib/rustlib/")
 }
 
 /// Splits one Makefile-style dep-info rule body into paths (`\ ` escapes a space).

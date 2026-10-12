@@ -117,6 +117,7 @@ impl Ctx {
     fn fresh_haul_home(&self, v: &Variant, w: &Workload) {
         let home = self.variant_dir(v, w).join("haul-home");
         let _ = fs::remove_dir_all(&home);
+        self.sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
         if let (Base::Haul, Ok(drivers)) = (&v.base, &self.drivers) {
             copy_tree(drivers, &home.join("drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver into {}: {}", home.display(), e)));
         }
@@ -373,7 +374,8 @@ fn main() {
     fs::create_dir_all(&opts.work).unwrap_or_else(|e| fail(&format!("cannot create {}: {}", opts.work.display(), e)));
     let work = fs::canonicalize(&opts.work).unwrap_or(opts.work.clone());
     sealed::check_no_ancestor_config(&work).unwrap_or_else(|e| fail(&e));
-    let sealed = Sealed::new(&work, &opts.toolchain).unwrap_or_else(|e| fail(&e));
+    let haul = haul_binary(opts.haul.as_deref());
+    let sealed = Sealed::new(&work, &opts.toolchain, &haul).unwrap_or_else(|e| fail(&e));
     match cmd.as_str() {
         "fetch" => {
             for w in &chosen {
@@ -388,12 +390,18 @@ fn main() {
     }
 }
 
-/// The binaries under test and fetched workloads, or a hard error saying what is missing.
-fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> Ctx {
-    let haul = opts.haul.clone().unwrap_or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("haul"))).unwrap_or_default());
+/// Haul under test (`--haul`, or the one built beside this harness), or a hard error.
+fn haul_binary(given: Option<&Path>) -> PathBuf {
+    let haul = given.map(Path::to_path_buf).unwrap_or_else(|| std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("haul"))).unwrap_or_default());
     if !haul.is_file() || !haul.with_file_name("haul-rustc-wrapper").is_file() {
         fail(&format!("{} (and haul-rustc-wrapper next to it) not found: build with `cargo build --release --workspace`, or pass --haul", haul.display()));
     }
+    haul
+}
+
+/// The binaries under test and fetched workloads, or a hard error saying what is missing.
+fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> Ctx {
+    let haul = haul_binary(opts.haul.as_deref());
     for w in workloads {
         if !workload::is_fetched(work, w) {
             fail(&format!("workload {} is not fetched; run `haul-bench fetch` first", w.name));
@@ -402,6 +410,7 @@ fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> 
     // Haul's compiler driver, built once for the pinned toolchain (online: it may install the
     // toolchain's rustc-dev component).
     let home = work.join("driver-home");
+    sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
     let probe = work.join("probe");
     let _ = fs::create_dir_all(&probe);
     let built = sealed.command(&haul, &probe, &probe.join("target"), true).env("HAUL_HOME", &home).args(["driver", "build"]).output();

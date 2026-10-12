@@ -1,12 +1,13 @@
 # Haul
 
-Haul is a drop-in replacement for the `cargo` command. It does not reimplement
-Cargo: every invocation is delegated, argument for argument, to the real
-upstream Cargo and rustc. Haul owns the process boundary around them and uses
-it to observe, explain and police builds.
+Haul is a drop-in replacement for the `cargo` command, and the only thing you install:
+it downloads and manages the Rust toolchains itself (`+toolchain`, `RUSTUP_TOOLCHAIN` and
+`rust-toolchain.toml` choose, as with rustup). Every invocation runs, argument for
+argument, the toolchain's own Cargo and rustc as Haul's engine. Haul owns everything
+around them and uses it to speed up, observe, explain and police builds.
 
 ```text
-developer / IDE / CI ──► cargo (Haul shim) ──► upstream Cargo ──► haul-rustc-wrapper ──► [your wrapper / sccache] ──► rustc
+developer / IDE / CI ──► cargo (Haul shim) ──► toolchain's Cargo ──► haul-rustc-wrapper ──► [your wrapper / sccache] ──► rustc
                               │                                          │
                               └── session record                         └── one event per rustc invocation
 ```
@@ -32,8 +33,9 @@ cargo install --locked --path . # installs `haul` and `haul-rustc-wrapper`; neve
 haul doctor                     # shows what Haul resolved and whether anything is wrong
 ```
 
-Requires a Rust toolchain (rustup or a plain Cargo on `PATH`); Haul itself builds with
-Rust 1.80 or newer. `--locked` uses the tested dependency versions: without it Cargo
+Haul installs the toolchains it builds with into `~/.haul/toolchains` on first use (from
+static.rust-lang.org, or `toolchain.dist-server`); `haul toolchain` manages them. Haul
+itself builds with Rust 1.80 or newer. `--locked` uses the tested dependency versions: without it Cargo
 picks the newest, and some of those need a newer Rust than 1.80. sccache and Git are
 optional.
 
@@ -42,7 +44,7 @@ optional.
 Three ways in, from least to most invasive (see [docs/migration.md](docs/migration.md)):
 
 ```bash
-haul upstream build             # upstream Cargo, nothing else — the escape hatch, always available
+haul upstream build             # the toolchain's Cargo, nothing else — the escape hatch, always available
 haul build                      # Cargo syntax, through Haul
 haul install-shim               # then put the printed directory first on PATH: `cargo build` is now Haul
 ```
@@ -164,8 +166,9 @@ to Cargo unless you set `output = "haul"`.
 - In fast mode, the build settings above differ from Cargo's defaults and nothing
   else does; in compat mode the build is Cargo's own.
 - Unknown flags and commands are forwarded; Cargo decides whether they are valid.
-- `cargo +toolchain`, `rust-toolchain.toml` and every other rustup rule are
-  honoured by delegating to rustup's own proxy.
+- `cargo +toolchain`, `RUSTUP_TOOLCHAIN` and `rust-toolchain.toml` choose the toolchain
+  in rustup's order; Haul installs it, its components and targets on first use. Builds
+  use Haul's Cargo home (`~/.haul/cargo`) and never rustup.
 - An existing `RUSTC_WRAPPER` (from the environment or `.cargo/config.toml`) and
   `RUSTC_WORKSPACE_WRAPPER` keep working; Haul's wrapper runs outside them.
 - `cargo clean` is upstream `cargo clean`. Haul never deletes build output.

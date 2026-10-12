@@ -50,7 +50,6 @@ const KEYS: &[Key] = &[
     Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("HAUL_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
     Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested `cargo` invocations that reach the shim: record them (orchestrator) or hand straight to upstream" },
     Key { name: "compatibility.unknown-command", kind: Kind::Enum(&["delegate", "instrument"]), default: "delegate", env: None, help: "external subcommands: plain delegation or rustc-wrapper instrumentation" },
-    Key { name: "compatibility.real-cargo", kind: Kind::Str, default: "", env: None, help: "absolute path of the upstream Cargo binary (resolution rule 4)" },
     Key { name: "measurement.enabled", kind: Kind::Bool, default: "true", env: None, help: "observe rustc invocations through the Haul rustc wrapper" },
     Key { name: "measurement.report", kind: Kind::Str, default: "", env: Some("HAUL_REPORT"), help: "sidecar report path; `{session}` expands to the run id" },
     Key { name: "measurement.finalize", kind: Kind::Enum(&["lazy", "sync"]), default: "lazy", env: None, help: "analyse runs on demand (lazy) or right after each build (sync)" },
@@ -62,7 +61,7 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
     Key { name: "fast.frontend-threads", kind: Kind::Threads, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
-    Key { name: "fast.early-cutoff", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: Some("HAUL_EARLY_CUTOFF"), help: "fast mode with the artifact cache: compile with Haul's compiler driver (rustc built against the toolchain's rustc-dev component, built once per rustup toolchain in the background) so that an edit inside a function body its dependents cannot observe does not rebuild them" },
+    Key { name: "fast.early-cutoff", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: Some("HAUL_EARLY_CUTOFF"), help: "fast mode with the artifact cache: compile with Haul's compiler driver (rustc built against the toolchain's rustc-dev component, built once per toolchain in the background) so that an edit inside a function body its dependents cannot observe does not rebuild them" },
     Key { name: "fast.linker", kind: Kind::Enum(&["auto", "off"]), default: "auto", env: None, help: "fast mode on Linux (glibc): link with wild when it is on PATH (cargo install wild-linker), unless a linker is configured" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-min-link-ms", kind: Kind::Int, default: "300", env: None, help: "linked workspace outputs (binaries, tests, proc-macros) that compiled faster than this are not stored: copying them on every edit costs about what it saves" },
@@ -73,6 +72,7 @@ const KEYS: &[Key] = &[
     Key { name: "ci.budget-policy", kind: Kind::Str, default: ".haul/budgets.toml", env: None, help: "budget file, relative to the workspace root" },
     Key { name: "ci.baseline", kind: Kind::Str, default: "main", env: None, help: "default baseline name for budget evaluation" },
     Key { name: "ci.enforce-on-build", kind: Kind::Bool, default: "false", env: None, help: "evaluate budgets after ordinary build commands and fail on violations" },
+    Key { name: "toolchain.dist-server", kind: Kind::Str, default: "https://static.rust-lang.org", env: Some("HAUL_DIST_SERVER"), help: "where Haul downloads Rust releases from (a mirror of static.rust-lang.org)" },
     Key { name: "security.persist-environment", kind: Kind::Enum(&["allowlist", "none"]), default: "allowlist", env: None, help: "which environment values may be persisted in run records" },
     Key { name: "security.redact-path-home", kind: Kind::Bool, default: "true", env: None, help: "tokenise home/workspace paths in exported reports" },
     Key { name: "benchmark.allow-mutation", kind: Kind::Bool, default: "false", env: None, help: "allow synthetic source edits without interactive confirmation" },
@@ -85,7 +85,7 @@ const RESERVED_ENV: &[&str] = &[
     crate::ENV_INNER_WRAPPER,
     crate::ENV_WRAPPER_FAIL,
     crate::ENV_EXEC_GUARD,
-    crate::ENV_REAL_CARGO,
+    crate::engine::ENV_ENGINE,
     crate::ENV_HOME,
 ];
 

@@ -1,6 +1,9 @@
-//! Shared harness for the integration suites: isolated state, a shim directory
-//! in front of the real Cargo, and small fixture workspaces without registry
-//! dependencies so the suites run offline.
+//! Shared harness for the integration suites: isolated state, a shim directory with Haul as
+//! `cargo`, and small fixture workspaces without registry dependencies.
+//!
+//! Every sandbox has a Haul home of its own, except for its toolchains: those come from one store
+//! shared by every test run (`HAULTEST_TOOLCHAINS`, default `~/.cache/haul-test-toolchains`),
+//! which Haul fills itself the first time a test needs a toolchain (that needs the network).
 
 #![allow(dead_code)]
 
@@ -16,6 +19,14 @@ pub struct Sandbox {
     upstream_path: OsString,
 }
 
+/// Where the suites' toolchains are kept between runs.
+pub fn toolchain_store() -> PathBuf {
+    match std::env::var_os("HAULTEST_TOOLCHAINS").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache/haul-test-toolchains"),
+    }
+}
+
 static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// Environment that would make the wrapped and unwrapped runs differ for reasons
@@ -23,7 +34,7 @@ static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new
 const SCRUB: &[&str] = &[
     "CARGO", "RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_TARGET_DIR", "CARGO_BUILD_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS",
     "CARGO_INCREMENTAL", "RUSTUP_TOOLCHAIN", "CARGO_MAKEFLAGS", "MAKEFLAGS", "CARGO_MANIFEST_DIR", "CARGO_PKG_NAME", "CARGO_PKG_VERSION", "CARGO_PRIMARY_PACKAGE", "CARGO_CRATE_NAME", "OUT_DIR", "CI", "GITHUB_ACTIONS",
-    "RUST_RECURSION_COUNT", "CARGO_BUILD_TARGET",
+    "RUST_RECURSION_COUNT", "CARGO_BUILD_TARGET", "CARGO_HOME", "RUSTDOC",
 ];
 
 impl Sandbox {
@@ -39,7 +50,13 @@ impl Sandbox {
         #[cfg(unix)]
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_haul"), shim_dir.join("cargo")).unwrap();
         let upstream_path = std::env::var_os("PATH").unwrap();
-        Sandbox { home: dir.join("haul-home"), shim_dir, upstream_path, dir }
+        let home = dir.join("haul-home");
+        fs::create_dir_all(&home).unwrap();
+        let store = toolchain_store();
+        fs::create_dir_all(&store).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&store, home.join("toolchains")).unwrap();
+        Sandbox { home, shim_dir, upstream_path, dir }
     }
 
     fn base(&self, program: &Path, cwd: &Path) -> Command {
@@ -55,11 +72,26 @@ impl Sandbox {
         // Early cut-off builds Haul's compiler driver in the background when it is missing: the
         // tests that need the driver turn it on and build it themselves.
         c.env("HAUL_EARLY_CUTOFF", "off");
-        // A Cargo home of the sandbox's own: the machine's `$CARGO_HOME/config.toml` (a global
-        // `build.target-dir`, a rustc wrapper, profile overrides) must not reach the fixtures, and
-        // `cargo login` in the suite must not touch real credentials. The fixtures need no registry.
-        c.env("CARGO_HOME", self.dir.join("cargo-home"));
         c
+    }
+
+    /// Haul's Cargo home in this sandbox (registry sources, credentials).
+    pub fn cargo_home(&self) -> PathBuf {
+        self.home.join("cargo")
+    }
+
+    /// The toolchain Haul uses in `cwd` (installed into the shared store on first use).
+    pub fn toolchain_dir(&self, cwd: &Path) -> PathBuf {
+        let out = run(self.haul(cwd).args(["toolchain", "which"]));
+        assert!(out.status.success(), "no toolchain: {}", String::from_utf8_lossy(&out.stderr));
+        PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
+    }
+
+    /// The oracle's environment: the toolchain's own Cargo, as Haul runs it, without Haul.
+    fn oracle_path(&self, cwd: &Path) -> (PathBuf, OsString) {
+        let tc = self.toolchain_dir(cwd);
+        let path = std::env::join_paths(std::iter::once(tc.join("bin")).chain(std::env::split_paths(&self.upstream_path))).unwrap();
+        (tc, path)
     }
 
     pub fn path_with_shim(&self) -> OsString {
@@ -75,11 +107,21 @@ impl Sandbox {
         c
     }
 
-    /// The real Cargo with no Haul anywhere on PATH: the compatibility oracle.
+    /// The toolchain's own Cargo with no Haul anywhere: the compatibility oracle. It gets the
+    /// Cargo home, compiler and PATH Haul gives the Cargo it runs.
     pub fn upstream(&self, cwd: &Path) -> Command {
-        let mut c = self.base(Path::new("cargo"), cwd);
-        c.env("PATH", &self.upstream_path);
+        let (tc, path) = self.oracle_path(cwd);
+        let mut c = self.base(&tc.join("bin/cargo"), cwd);
+        Self::oracle_env(&mut c, &tc, &self.cargo_home());
+        c.env("PATH", path);
         c
+    }
+
+    /// What Haul sets for the Cargo it runs, set for the oracle too.
+    fn oracle_env(c: &mut Command, tc: &Path, cargo_home: &Path) {
+        c.env("CARGO_HOME", cargo_home).env("RUSTC", tc.join("bin/rustc")).env("RUSTDOC", tc.join("bin/rustdoc"));
+        c.env("RUSTUP_TOOLCHAIN", tc.file_name().unwrap()).env("CARGO_CACHE_AUTO_CLEAN_FREQUENCY", "never");
+        c.env(if cfg!(target_os = "macos") { "DYLD_FALLBACK_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" }, tc.join("lib"));
     }
 
     /// `cargo ARGS` through the shim, run inside a pseudo-terminal (util-linux `script`), as a
@@ -88,9 +130,12 @@ impl Sandbox {
         self.in_terminal(cwd, args, &self.path_with_shim())
     }
 
-    /// The same with the real Cargo and no Haul on PATH: the oracle for terminal behaviour.
+    /// The same with the toolchain's own Cargo and no Haul: the oracle for terminal behaviour.
     pub fn upstream_in_terminal(&self, cwd: &Path, args: &str) -> Option<Command> {
-        self.in_terminal(cwd, args, &self.upstream_path)
+        let (tc, path) = self.oracle_path(cwd);
+        let mut c = self.in_terminal(cwd, args, &path)?;
+        Self::oracle_env(&mut c, &tc, &self.cargo_home());
+        Some(c)
     }
 
     fn in_terminal(&self, cwd: &Path, args: &str, path: &OsString) -> Option<Command> {
@@ -206,7 +251,7 @@ pub fn stderr(o: &Output) -> String {
     String::from_utf8_lossy(&o.stderr).into_owned()
 }
 
-/// Every regular file below `root`, relative, sorted.
+/// Every regular file below `root`, relative, sorted (links are not followed or listed).
 pub fn tree(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -215,7 +260,7 @@ pub fn tree(root: &Path) -> Vec<String> {
             let md = fs::symlink_metadata(e.path()).unwrap();
             if md.is_dir() {
                 stack.push(e.path());
-            } else {
+            } else if md.is_file() {
                 out.push(e.path().strip_prefix(root).unwrap().to_string_lossy().into_owned());
             }
         }
@@ -242,14 +287,14 @@ pub fn git(cwd: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
 }
 
-/// rustup's account of why it could not install `rustc-dev`, which Haul's compiler driver is built
-/// against, as `haul driver build` / `haul driver status` report it.
-pub const NO_RUSTC_DEV: &str = "rustup could not install rustc-dev";
+/// How Haul reports that the toolchain's `rustc-dev` component, which its compiler driver is
+/// built against, cannot be installed (`haul driver build` / `haul driver status`).
+pub const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 
 /// Builds Haul's compiler driver for the toolchain `cwd` uses; its path. `None` (with the reason
-/// on stderr) only where rustup cannot install the toolchain's `rustc-dev` component (a component
-/// conflict in some toolchains' packaging): the driver cannot exist there. Any other failure to
-/// build it fails the test.
+/// on stderr) only where the toolchain's `rustc-dev` component cannot be installed (its files
+/// clash with another component's in some releases' packaging): the driver cannot exist there.
+/// Any other failure to build it fails the test.
 pub fn build_driver(sb: &Sandbox, cwd: &Path) -> Option<PathBuf> {
     let built = run(sb.haul(cwd).args(["driver", "build"]));
     if !built.status.success() && stderr(&built).contains(NO_RUSTC_DEV) {

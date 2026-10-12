@@ -22,10 +22,11 @@ fast mode (compat mode adds nothing):
 - the artifact cache (below);
 - when the user has installed `wild`, linking with it: the binary found on `PATH` is
   trusted like any tool there, through the link `~/.haul/linker/ld`;
-- calling the toolchain's Cargo directly instead of rustup's proxy, with exactly the
-  variables the proxy sets, learned by running a probe once through the proxy: Cargo
-  executes Haul itself as an external subcommand (`cargo haul-env-probe`, from
-  `~/.haul/probe-bin`) to report its environment.
+- installing toolchains: manifests and archives from the dist server
+  (`toolchain.dist-server`, HTTPS to static.rust-lang.org by default), each manifest checked
+  against its published SHA-256 and each archive against the manifest's; archives are
+  unpacked with nothing allowed outside their directory (no absolute paths, `..`, links
+  leading out, or entries beneath links).
 
 The wrapper writes one event file per invocation into the session's private event
 directory, and the build's output is stored next to them.
@@ -99,8 +100,8 @@ no rendered output.
 
 State under `~/.haul` keeps real local paths (directories are created with mode
 0700). Everything exported — `HAUL_REPORT`, `--format json`, HTML, baselines —
-replaces the workspace root, the home directory, `CARGO_HOME` and `RUSTUP_HOME`
-with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$RUSTUP_HOME`
+replaces the workspace root, the home directory, Haul's Cargo home and Haul's home
+with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$HAUL_HOME`
 (`security.redact-path-home`, on by default).
 
 ## Deleting

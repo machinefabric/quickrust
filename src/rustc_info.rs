@@ -9,7 +9,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// `rustc -vV` of `rustc` (a path, or a bare name looked up on `PATH` as Cargo may pass it),
-/// remembered in `memo_dir` per binary identity and rustup toolchain selection.
+/// remembered in `memo_dir` per binary identity. Haul's own `rustc` proxy picks a toolchain on
+/// every call, so its answers are not remembered.
 pub fn version_verbose(memo_dir: &Path, rustc: &str) -> Result<String, String> {
     let text = ask(memo_dir, rustc, "-vV")?;
     if !text.starts_with("rustc ") {
@@ -32,10 +33,11 @@ pub fn sysroot(memo_dir: &Path, rustc: &str) -> Result<PathBuf, String> {
 fn ask(memo_dir: &Path, rustc: &str, arg: &str) -> Result<String, String> {
     let path = if rustc.contains(std::path::MAIN_SEPARATOR) || rustc.contains('/') { PathBuf::from(rustc) } else { util::which(rustc).ok_or_else(|| format!("{} is not on PATH", rustc))? };
     let md = fs::metadata(&path).map_err(|e| format!("cannot inspect {}: {}", path.display(), e))?;
-    let env = |k: &str| std::env::var(k).unwrap_or_default();
-    let memo = memo_dir.join(util::digest_parts([util::path_str(&util::canon(&path)), md.len().to_string(), util::mtime_ns(&md).to_string(), env("RUSTUP_TOOLCHAIN"), env("RUSTUP_HOME"), arg.to_string()]));
+    let canonical = util::canon(&path);
+    let proxy = canonical == crate::resolve::self_identity().0;
+    let memo = memo_dir.join(util::digest_parts([util::path_str(&canonical), md.len().to_string(), util::mtime_ns(&md).to_string(), arg.to_string()]));
     if let Ok(text) = fs::read_to_string(&memo) {
-        if !text.is_empty() {
+        if !text.is_empty() && !proxy {
             return Ok(text);
         }
     }
@@ -44,7 +46,9 @@ fn ask(memo_dir: &Path, rustc: &str, arg: &str) -> Result<String, String> {
     if !out.status.success() || text.trim().is_empty() {
         return Err(format!("{} {} failed", path.display(), arg));
     }
-    util::create_private_dir(memo_dir).and_then(|_| util::write_atomic_fast(&memo, text.as_bytes())).map_err(|e| e.to_string())?;
+    if !proxy {
+        util::create_private_dir(memo_dir).and_then(|_| util::write_atomic_fast(&memo, text.as_bytes())).map_err(|e| e.to_string())?;
+    }
     Ok(text)
 }
 

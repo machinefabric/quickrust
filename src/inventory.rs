@@ -519,7 +519,8 @@ pub fn scan_flat(root: &Path, category: &'static str) -> Option<Value> {
     Some(v)
 }
 
-/// Shared caches outside the workspace: sccache, Cargo registry and git checkouts.
+/// Shared caches outside the workspace: sccache, the registry and git checkouts of Haul's Cargo
+/// home.
 pub fn scan_global_caches() -> Vec<Value> {
     let mut out = Vec::new();
     let sccache = std::env::var_os("SCCACHE_DIR").map(PathBuf::from).or_else(|| {
@@ -528,10 +529,9 @@ pub fn scan_global_caches() -> Vec<Value> {
     if let Some(v) = sccache.and_then(|d| scan_flat(&d, "compiler-cache")) {
         out.push(v);
     }
-    if let Some(home) = util::cargo_home() {
-        out.extend(scan_flat(&home.join("registry"), "cargo-registry-cache"));
-        out.extend(scan_flat(&home.join("git"), "cargo-git-cache"));
-    }
+    let home = util::cargo_home();
+    out.extend(scan_flat(&home.join("registry"), "cargo-registry-cache"));
+    out.extend(scan_flat(&home.join("git"), "cargo-git-cache"));
     out
 }
 

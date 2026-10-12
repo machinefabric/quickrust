@@ -8,8 +8,8 @@ behaviour is asserted.
 | Item | Status | Where |
 |---|---|---|
 | `cargo` compatibility shim; `haul` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
-| Recursion-safe real-Cargo resolver (COMP-020…022) | done | `src/resolve.rs` · `recursion_is_refused…`, `missing_upstream…` |
-| rustup `+toolchain` and directory overrides | done: compat mode delegates to rustup's proxy; fast mode learns the proxy's choice once per set of inputs and calls that Cargo directly | `qa003_*`, `fast_mode_learns_rustups_toolchain…`, `environment_reaches_build_scripts_unchanged` |
+| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is Haul is refused | `src/engine.rs` · `recursion_is_refused…`, `an_unreachable_dist_server…` |
+| Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: Haul installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `toolchain_programs_run_through_hauls_proxies`, `builds_and_their_build_scripts_get_hauls_toolchain…`, `environment_reaches_build_scripts_unchanged` |
 | argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |
 | Cargo config / environment non-interference | done | `environment_reaches_build_scripts_unchanged`, `no_rebuild_when_alternating…` |
@@ -82,12 +82,14 @@ and listed in `toolchain.capabilities`; nothing depends on them.
    (`invoked.timestamp`, then `stderr` / `root-output`). Cargo back-dates
    `output` to the invocation time, so it cannot be used.
 
-6. **Resolution follows `PATH`, not COMP-020's rustup preference.** The specification
-   prefers rustup's proxy even over a different `cargo` earlier on `PATH`; a drop-in
-   must run what the shell would have run without it, so Haul takes the first `cargo`
-   on `PATH` that is not Haul (normally rustup's proxy, which then applies rustup's
-   precedence itself). Guessing the proxy's location from the first `rustup` on `PATH`
-   failed on macOS, where Homebrew's `rustup` is not next to the proxies.
+6. **Haul manages the toolchains (decision of 2026-10-12), not rustup (COMP-020).** The
+   specification resolves an upstream Cargo through `PATH` and rustup. Haul instead
+   installs toolchains from the Rust dist server into `~/.haul/toolchains` and selects
+   them in rustup's documented order (`+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain file,
+   default; rustup's per-directory overrides have no equivalent). Every command runs that
+   toolchain's own Cargo with Haul's Cargo home (`~/.haul/cargo`). `HAUL_REAL_CARGO` and
+   `compatibility.real-cargo` no longer exist: a toolchain built elsewhere is used with
+   `haul toolchain link`.
 
 7. **Configuration errors apply to every command.** An invalid
    `.haul/config.toml` stops `cargo --version` as well as `cargo build`, with the
@@ -113,8 +115,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 11. **Fast by default (spec revision of 2026-10-11).** In the default `mode =
     "fast"`, Haul changes what upstream Cargo would build in ways that keep program
     behaviour identical: debug-information settings, rustc's parallel frontend for
-    units compiled from scratch, a global artifact cache, rustup's proxy skipped, and its
-    own terminal output. `mode = "compat"` builds exactly upstream's builds; the
+    units compiled from scratch, a global artifact cache, and its own terminal output. `mode = "compat"` builds exactly upstream's builds; the
     compatibility corpus's byte-for-byte oracle tests run in compat mode, and fast
     mode has tests of its own (settings yield to the user, the parallel frontend
     never reaches an incremental rebuild, `#![feature]` stays rejected on a stable
@@ -134,7 +135,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 
 13. **Haul's compiler driver compiles the units Cargo schedules (fast mode, `fast.early-cutoff`).**
     The driver is the toolchain's own rustc (`librustc_driver`, its LLVM, its release) run
-    through Haul's callbacks, built once per rustup toolchain against its `rustc-dev`
+    through Haul's callbacks, built once per toolchain against its `rustc-dev`
     component. With no callbacks active its outputs are rustc's byte for byte (test
     `hauls_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
     things differ from upstream's builds, none of them in program behaviour:

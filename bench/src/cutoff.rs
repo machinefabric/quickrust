@@ -230,6 +230,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
         let fresh_home = |name: &str| -> PathBuf {
             let home = base.join(name);
             let _ = fs::remove_dir_all(&home);
+            ctx.sealed.haul_home(&home).unwrap_or_else(|e| fail(&e));
             crate::copy_tree(drivers, &home.join("drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver: {}", e)));
             if name != "home-incremental" {
                 fs::write(home.join("config.toml"), "[fast]\nfrontend-threads = \"off\"\nlinker = \"off\"\n").unwrap_or_else(|e| fail(&e.to_string()));

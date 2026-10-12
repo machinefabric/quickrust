@@ -10,9 +10,9 @@
 //! - `cargo run` / `cargo test` (built first, then run; see `ui::Rendering`): the build phase is
 //!   skipped and the command runs at once. Cargo still checks freshness in it, so a stamp that
 //!   missed an input only means that build is shown in Cargo's words.
-//! - A build alone: Haul's verdict is the answer and Cargo is not started. Given only when Haul
-//!   runs a toolchain's own Cargo, whose identity is in the key (rustup's proxy picks anew on
-//!   every call). A test checks Haul's verdict against Cargo's after every kind of change.
+//! - A build alone: Haul's verdict is the answer and Cargo is not started. The toolchain's Cargo
+//!   is in the key, and the files that choose the toolchain are stamped. A test checks Haul's
+//!   verdict against Cargo's after every kind of change.
 
 use crate::util;
 use serde_json::{json, Value};
@@ -145,7 +145,7 @@ pub struct Built<'a> {
 /// Records the stamp of a successful build from its Cargo messages.
 pub fn record(store_dir: &Path, key: &str, built: &Built) {
     let Built { messages, cwd, ws_root, cargo, units, warnings_line } = *built;
-    let immutable: Vec<PathBuf> = util::cargo_home().map(|h| vec![h.join("registry"), h.join("git")]).unwrap_or_default();
+    let immutable: Vec<PathBuf> = vec![util::cargo_home().join("registry"), util::cargo_home().join("git")];
     let base = ws_root.unwrap_or(cwd);
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
     for m in messages {
@@ -175,21 +175,17 @@ pub fn record(store_dir: &Path, key: &str, built: &Built) {
         files.insert(root.join("Cargo.lock"));
     }
     // Cargo's configuration: present or not, in every directory it is read from.
-    // And the toolchain: rustup's choice (toolchain files, its settings) and the compiler.
+    // And the toolchain: the files that choose it, which release each channel names, the compiler.
     for dir in cwd.ancestors() {
         files.insert(dir.join(".cargo/config.toml"));
         files.insert(dir.join(".cargo/config"));
         files.insert(dir.join("rust-toolchain.toml"));
         files.insert(dir.join("rust-toolchain"));
     }
-    if let Some(rustup) = std::env::var_os("RUSTUP_HOME").map(PathBuf::from).or_else(|| util::home_dir().map(|h| h.join(".rustup"))) {
-        files.insert(rustup.join("settings.toml"));
-    }
+    files.insert(crate::toolchain::state::path(&crate::toolchain::Layout::current().toolchains()));
     files.insert(cargo.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX)));
-    if let Some(home) = util::cargo_home() {
-        files.insert(home.join("config.toml"));
-        files.insert(home.join("config"));
-    }
+    files.insert(util::cargo_home().join("config.toml"));
+    files.insert(util::cargo_home().join("config"));
     let files: Vec<Value> = files.iter().filter(|f| !immutable.iter().any(|i| f.starts_with(i))).map(|f| file_state(f)).collect();
     let stamp = json!({ "format": FORMAT, "units": units, "warnings_line": warnings_line, "files": files });
     let dir = store_dir.join("prebuilt");

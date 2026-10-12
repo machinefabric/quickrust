@@ -129,12 +129,10 @@ fn toolchain_change_is_reported_as_compiler_drift() {
     // FR-040 acceptance.
     let sb = Sandbox::new("drift");
     let p = sb.package("p", "p");
-    if !run(sb.upstream(&p).args(["+nightly", "--version"])).status.success() {
-        eprintln!("skipping: nightly toolchain not installed");
-        return;
-    }
+    // A second compiler: a pinned release, installed once into the suites' toolchain store.
+    ok(sb.haul(&p).args(["toolchain", "install", "1.80.0", "--profile", "minimal"]));
     ok(sb.cargo(&p).args(["check", "--lib"]));
-    ok(sb.cargo(&p).args(["+nightly", "check", "--lib"]));
+    ok(sb.cargo(&p).args(["+1.80.0", "check", "--lib"]));
     let r = sb.report(&p, "latest");
     assert_eq!(reasons(&r), vec![("p".into(), "lib".into(), "compiler".into())]);
     // FR-160 acceptance: comparing the two runs states the compiler difference before any delta.
@@ -623,7 +621,7 @@ fn doctor_install_and_uninstall() {
     let sb = Sandbox::new("install");
     let p = sb.package("p", "p");
     let doctor = stdout(&ok(sb.haul(&p).arg("doctor")));
-    for item in ["shim path", "real Cargo path", "rustup", "active toolchain", "CARGO ", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "target directory", "build directory", "cache policy", "capabilities", "No problems found."] {
+    for item in ["shim path", "active toolchain", "selected by: default toolchain", "  Cargo  ", "  rustc  ", "cargo home", "CARGO ", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "target directory", "build directory", "cache policy", "capabilities", "No problems found."] {
         assert!(doctor.contains(item), "doctor output lacks `{}`:\n{}", item, doctor);
     }
     let dir = sb.dir.join("installed-shim");
@@ -810,9 +808,9 @@ fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
 #[test]
 fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
     let sb = Sandbox::new("rewritten");
-    let dep = sb.dir.join("cargo-home/registry/src/fake-0000/greet-1.0.0");
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n");
+    let dep = sb.dir.join("haul-home/cargo/registry/src/fake-0000/greet-1.0.0");
+    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n");
     sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
     sb.file("app/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
     let app = sb.dir.join("app");
@@ -842,9 +840,9 @@ fn compiler_probes_run_by_build_scripts_are_never_cached() {
     // Like autocfg: a build script compiles small programs with the same rustc (through the
     // wrapper Cargo hands it) to learn what the compiler supports. Probes must run every time and
     // may fail by design; neither outcome is an artifact to keep.
-    sb.file("cargo-home/registry/src/fake-0000/probed-1.0.0/Cargo.toml", "[package]\nname = \"probed\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("haul-home/cargo/registry/src/fake-0000/probed-1.0.0/Cargo.toml", "[package]\nname = \"probed\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
     sb.file(
-        "cargo-home/registry/src/fake-0000/probed-1.0.0/build.rs",
+        "haul-home/cargo/registry/src/fake-0000/probed-1.0.0/build.rs",
         r#"use std::process::Command;
 
 fn probe(name: &str, code: &str) -> bool {
@@ -868,8 +866,8 @@ fn main() {
 }
 "#,
     );
-    sb.file("cargo-home/registry/src/fake-0000/probed-1.0.0/src/lib.rs", "#[cfg(probed)]\npub fn probed() -> bool {\n    true\n}\n");
-    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprobed = {{ path = {:?} }}\n\n[profile.dev.package.probed]\nincremental = false\n", sb.dir.join("cargo-home/registry/src/fake-0000/probed-1.0.0").display().to_string()));
+    sb.file("haul-home/cargo/registry/src/fake-0000/probed-1.0.0/src/lib.rs", "#[cfg(probed)]\npub fn probed() -> bool {\n    true\n}\n");
+    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nprobed = {{ path = {:?} }}\n\n[profile.dev.package.probed]\nincremental = false\n", sb.dir.join("haul-home/cargo/registry/src/fake-0000/probed-1.0.0").display().to_string()));
     sb.file("app/src/main.rs", "fn main() {\n    assert!(probed::probed());\n}\n");
     let app = sb.dir.join("app");
 
@@ -1111,12 +1109,12 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let sb = Sandbox::new("artifacts");
     // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.
     // Its warning must reach the user on every build, cached or not.
-    let dep = sb.dir.join("cargo-home/registry/src/fake-0000/greet-1.0.0");
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    let dep = sb.dir.join("haul-home/cargo/registry/src/fake-0000/greet-1.0.0");
+    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
     // Like serde: a build script generates code that the library includes through OUT_DIR,
     // whose path differs in every target directory.
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
-    sb.file("cargo-home/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    let unused = 1;\n    GREETING\n}\n");
+    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
+    sb.file("haul-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    let unused = 1;\n    GREETING\n}\n");
     let app = |rel: &str| {
         // A path dependency is compiled incrementally, which a registry one never is.
         sb.file(&format!("{}/Cargo.toml", rel), &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));

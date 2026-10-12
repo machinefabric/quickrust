@@ -1,6 +1,6 @@
 //! Workspace, toolchain and environment discovery (FR-010). Read-only.
 //!
-//! Workspace facts come from upstream `cargo metadata --format-version 1`;
+//! Workspace facts come from the toolchain's `cargo metadata --format-version 1`;
 //! Haul never resolves dependencies itself and never lets discovery touch the
 //! network or the lockfile (`--locked --offline`).
 
@@ -12,18 +12,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// A Command for the upstream Cargo selected for `cwd`, guarded against recursion.
+/// A Command for the Cargo of the toolchain `cwd` uses (or `toolchain`), guarded against
+/// recursion.
 pub fn cargo_command(cfg: &Config, cwd: &Path, toolchain: Option<&str>) -> Result<Command, String> {
     let args: Vec<std::ffi::OsString> = toolchain.map(|t| format!("+{}", t).into()).into_iter().collect();
     let inv = resolve::classify(&args);
-    let up = resolve::resolve_upstream(&inv, cfg)?;
-    let mut cmd = Command::new(&up.program);
-    if !up.strip_toolchain_arg {
-        cmd.args(&args);
-    }
-    for (k, v) in &up.env {
-        cmd.env(k, v);
-    }
+    let engine = crate::engine::for_command(&inv, cwd, cfg)?;
+    let mut cmd = engine.command(&args, &inv);
     cmd.current_dir(cwd).env(crate::ENV_EXEC_GUARD, format!("{}:discover", std::process::id())).stdin(Stdio::null());
     Ok(cmd)
 }
@@ -215,17 +210,11 @@ fn probe_toolchain(cfg: &Config, cwd: &Path, toolchain: Option<&str>, rustc_hint
             (cargo_v, direct(rustc, &["-vV"]), "rustc path observed by the wrapper")
         }
         None => {
-            let cargo_v = cargo_command(cfg, cwd, toolchain).and_then(|mut c| {
-                c.arg("-V");
-                run_capture(c)
-            });
-            let rustc = std::env::var_os("RUSTC").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("rustc"));
-            let mut c = Command::new(rustc);
-            if let Some(t) = toolchain {
-                c.arg(format!("+{}", t));
+            let args: Vec<std::ffi::OsString> = toolchain.map(|t| format!("+{}", t).into()).into_iter().collect();
+            match crate::engine::for_command(&resolve::classify(&args), cwd, cfg) {
+                Ok(engine) => (direct(&engine.cargo(), &["-V"]), direct(&engine.rustc(), &["-vV"]), "toolchain selected for the working directory at analysis time"),
+                Err(e) => (Err(e.clone()), Err(e), "toolchain selected for the working directory at analysis time"),
             }
-            c.arg("-vV").current_dir(cwd).stdin(Stdio::null());
-            (cargo_v, run_capture(c), "toolchain selected for the working directory at analysis time")
         }
     };
     let verbose = rustc_vv.as_deref().unwrap_or("");

@@ -7,13 +7,13 @@ manifest, a lockfile or `.cargo/config.toml` (MIG-003, MIG-004, MIG-005).
 
 ```bash
 haul doctor
-haul upstream build        # exactly upstream Cargo
+haul upstream build        # exactly the toolchain's Cargo
 haul build                 # the same build, recorded
 haul analyze
 ```
 
-`haul doctor` prints the shim path, the real Cargo path and how it was selected,
-rustup and the active toolchain, the `CARGO`, `RUSTC`, `RUSTC_WRAPPER` and
+`haul doctor` prints the shim path, the active toolchain and what selected it, its
+Cargo and rustc, Haul's Cargo home, the `CARGO`, `RUSTC`, `RUSTC_WRAPPER` and
 `RUSTC_WORKSPACE_WRAPPER` values, target and build directories, cache policy and
 the capability set, and exits non-zero if something is wrong.
 
@@ -42,23 +42,23 @@ Put the shim directory first on `PATH` in your shell profile. Haul never
 replaces rustup's own `~/.cargo/bin/cargo`: `install-shim` refuses to overwrite
 any existing `cargo`.
 
-## How the shim finds the real Cargo
+## Which toolchain runs
 
-Haul runs the Cargo the shell would have run without it, never itself:
+Haul installs and selects toolchains itself, in rustup's order:
 
-1. `HAUL_REAL_CARGO`, if set;
-2. `compatibility.real-cargo` in Haul's configuration, if set;
-3. the first `cargo` on `PATH` that is not Haul — normally rustup's proxy;
-4. if Haul itself occupies that position and no other `cargo` exists (Haul installed in
-   rustup's proxy slot), `rustup which cargo`;
-5. otherwise an error — never a recursive call.
+1. `+<toolchain>` as the first argument;
+2. `RUSTUP_TOOLCHAIN` (the name editors and tools set; a toolchain directory is accepted);
+3. `rust-toolchain.toml` or `rust-toolchain` in the directory or the nearest one above;
+4. the default (`haul toolchain default`, `stable` until set).
 
-rustup's proxy applies rustup's own precedence (`+toolchain`, `RUSTUP_TOOLCHAIN`,
-directory override, `rust-toolchain.toml`, default). In fast mode Haul learns the proxy's
-choice once per set of inputs (by running a probe through it) and then calls that
-toolchain's Cargo directly with the variables the proxy would set; compat mode always goes
-through the proxy. If the resolved "Cargo" turns out to be another copy of Haul, the
-nested copy detects it and stops with a diagnostic.
+A toolchain is `stable`, `beta`, `nightly` (optionally dated), a release (`1.98` or
+`1.98.1`), or a name given with `haul toolchain link`. It is installed on first use into
+`~/.haul/toolchains`, with the components and targets the toolchain file lists and the
+standard library of every `--target`. Haul then runs that toolchain's own Cargo with Haul's
+Cargo home (`~/.haul/cargo`), `RUSTUP_TOOLCHAIN` naming the toolchain for nested calls, and
+`~/.haul/bin` (Haul as `cargo`, `rustc`, `rustfmt`, …) first on `PATH`. If a linked
+toolchain's `cargo` turns out to be another copy of Haul, the nested copy detects it and
+stops with a diagnostic. rustup and `~/.cargo` are never used.
 
 ## Uninstalling
 

@@ -206,7 +206,7 @@ struct Plan {
 }
 
 /// Decides wrapper composition and cache/incremental policy for one session.
-fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, store: &WsStore, id: &str, artifact_cache: &Path) -> Result<Plan, String> {
+fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, store: &WsStore, id: &str, artifact_cache: &Path, engine: &crate::engine::Engine) -> Result<Plan, String> {
     let mut p = Plan {
         env_set: Vec::new(),
         env_remove: Vec::new(),
@@ -334,7 +334,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 // RUSTC_BOOTSTRAP themselves.
                 let unlockable = cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none();
                 let threads = if unlockable { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
-                let linker = if unlockable && cfg.str("fast.linker") == "auto" { fast_linker() } else { None };
+                let linker = if unlockable && cfg.str("fast.linker") == "auto" { fast_linker(engine) } else { None };
                 let settings = crate::wrapper::Settings {
                     artifact_cache: artifacts.then(|| artifact_cache.to_path_buf()),
                     frontend_threads: threads,
@@ -375,24 +375,15 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
     Ok(p)
 }
 
-fn upstream_command(up: &resolve::Upstream, args: &[OsString], inv: &Invocation) -> Command {
-    let mut cmd = Command::new(&up.program);
-    let skip = usize::from(up.strip_toolchain_arg && inv.toolchain.is_some());
-    cmd.args(&args[skip..]);
-    for (k, v) in &up.env {
-        cmd.env(k, v);
-    }
-    cmd
-}
-
-/// The fast linker for this machine: wild on PATH (or in Cargo's bin directory), for Linux with
+/// The fast linker for this machine: wild in Haul's `bin` or on PATH, for a Linux host with
 /// glibc. Returns the directory whose `ld` is wild — handed to the compiler driver with `-B` —
 /// and wild itself. `None` when wild is not installed or the link cannot be maintained.
-fn fast_linker() -> Option<(PathBuf, PathBuf)> {
-    if !cfg!(all(target_os = "linux", target_env = "gnu")) {
+fn fast_linker(engine: &crate::engine::Engine) -> Option<(PathBuf, PathBuf)> {
+    let _ = engine;
+    if !crate::toolchain::host().ends_with("-linux-gnu") {
         return None;
     }
-    let wild = util::which("wild").or_else(|| util::cargo_home().map(|h| h.join("bin").join("wild")).filter(|p| util::is_executable(p)))?;
+    let wild = util::exe_candidates(&crate::engine::bin_dir(), "wild").into_iter().find(|p| util::is_executable(p)).or_else(|| util::which("wild"))?;
     let wild = util::canon(&wild);
     let dir = util::haul_home().join("linker");
     let ld = dir.join("ld");
@@ -439,20 +430,20 @@ fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Ve
     out
 }
 
-/// `haul upstream …`: upstream Cargo with no policy and no instrumentation (COMP-013).
+/// `haul upstream …`: the toolchain's Cargo with no policy and no instrumentation (COMP-013).
+/// Haul's configuration is not read: the escape hatch works when it is broken.
 pub fn exec_upstream(args: Vec<OsString>) -> ! {
     let inv = resolve::classify(&args);
     if resolve::recursion_detected() {
-        fail("refusing to delegate: the resolved upstream Cargo is Haul itself");
+        fail("refusing to run Cargo: the toolchain's `cargo` is Haul itself");
     }
-    let up = match resolve::resolve_upstream(&inv, &Config::defaults()) {
-        Ok(u) => u,
-        Err(e) => fail(&e),
-    };
-    let mut cmd = upstream_command(&up, &args, &inv);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let cfg = Config::defaults();
+    let engine = crate::engine::for_command(&inv, &cwd, &cfg).unwrap_or_else(|e| fail(&e));
+    let mut cmd = engine.command(&args, &inv);
     cmd.env(crate::ENV_EXEC_GUARD, format!("{}:upstream", std::process::id()));
     let err = proc::exec(&mut cmd);
-    fail(&format!("could not execute upstream Cargo {}: {}", up.program.display(), err))
+    fail(&format!("could not execute Cargo {}: {}", engine.cargo().display(), err))
 }
 
 pub fn fail(msg: &str) -> ! {
@@ -462,18 +453,11 @@ pub fn fail(msg: &str) -> ! {
 
 /// Runs one Cargo invocation. `Err` means Haul could not delegate at all.
 /// The triple a `cargo run` builds for: its `--target`, or the host of the compiler.
-fn target_triple(inv: &Invocation, up: &resolve::Upstream) -> Option<String> {
+fn target_triple(inv: &Invocation, engine: &crate::engine::Engine) -> Option<String> {
     if let Some(t) = inv.targets.first() {
         return Some(t.clone());
     }
-    let rustc = std::env::var("RUSTC").ok().filter(|r| !r.is_empty()).unwrap_or_else(|| {
-        let beside = up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
-        if beside.is_file() {
-            path_str(&beside)
-        } else {
-            "rustc".into()
-        }
-    });
+    let rustc = engine.env.iter().find(|(k, _)| k == "RUSTC").map(|(_, v)| v.clone()).or_else(|| std::env::var("RUSTC").ok().filter(|r| !r.is_empty())).unwrap_or_else(|| path_str(&engine.rustc()));
     let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &rustc).ok()?;
     vv.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
 }
@@ -486,14 +470,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     };
     let mut inv = resolve::classify(&spec.args);
     if resolve::recursion_detected() {
-        return Err(format!(
-            "refusing to delegate: the Cargo that Haul resolved is Haul itself (session guard {}).\n  fix: set {} to the real Cargo binary, or remove the shim from the toolchain's bin directory",
-            std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default(),
-            crate::ENV_REAL_CARGO
-        ));
+        return Err(format!("refusing to run Cargo: the toolchain's `cargo` is Haul itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
     }
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid Haul configuration: {}", e))?;
-    let up = resolve::resolve_upstream(&inv, &cfg)?;
+    let engine = crate::engine::for_command(&inv, &cwd, &cfg)?;
     let parent = std::env::var(crate::ENV_SESSION).ok().filter(|v| !v.is_empty());
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
 
@@ -509,10 +489,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
 
     // Queries, help output and opted-out nested invocations: replace ourselves with Cargo.
     if spec.scenario.is_none() && (inv.command.is_none() || inv.family == Family::Query || nested_upstream) {
-        let mut cmd = upstream_command(&up, &spec.args, &inv);
+        let mut cmd = engine.command(&spec.args, &inv);
         cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
         let err = proc::exec(&mut cmd);
-        return Err(format!("could not execute upstream Cargo {}: {}", up.program.display(), err));
+        return Err(format!("could not execute Cargo {}: {}", engine.cargo().display(), err));
     }
 
     let ws_root = resolve::guess_workspace_root(&start_dir);
@@ -520,7 +500,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let store_ok = store.ensure().is_ok();
     let id = util::new_id();
     let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::haul_home().join("cache").join("artifacts"));
-    let mut plan = plan(&inv, &cfg, &subset, &store, &id, &artifact_cache)?;
+    let mut plan = plan(&inv, &cfg, &subset, &store, &id, &artifact_cache, &engine)?;
     if !store_ok {
         plan.instrumented = false;
     }
@@ -546,7 +526,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // The command as it reaches Cargo, with fast mode's settings.
     let mut args = with_overlays(&spec.args, &inv, &fast.args);
     if let Rendering::BuildFirst(how) = rendering {
-        match target_triple(&inv, &up) {
+        match target_triple(&inv, &engine) {
             Some(target) => {
                 // The command's own arguments (what follows `--` is for the program) and what
                 // keeps it from running anything.
@@ -563,7 +543,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
     }
     let command = |args: &[OsString]| -> Command {
-        let mut cmd = upstream_command(&up, args, &inv);
+        let mut cmd = engine.command(args, &inv);
         cmd.current_dir(&cwd);
         for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
             cmd.env(k, v);
@@ -594,14 +574,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
 
     // A build Haul renders is skipped when its stamp shows nothing it depends on changed (see
     // prebuilt.rs). For `run` / `test` the command itself still checks freshness; for a build
-    // alone Haul's verdict is the answer, so it is only given when Haul runs a toolchain's own
-    // Cargo (not rustup's proxy, whose choice could change without a file Haul stamps).
-    let judged = match rendering {
-        Rendering::BuildFirst(_) => true,
-        Rendering::Build => up.toolchain_cargo,
-        Rendering::Off => false,
-    };
-    let prebuilt_key = (judged && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &up.program, &up.env));
+    // alone Haul's verdict is the answer.
+    let judged = rendering != Rendering::Off;
+    let prebuilt_key = (judged && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &engine.cargo(), &engine.env));
     let known_fresh = prebuilt_key.as_deref().and_then(|k| crate::prebuilt::fresh(&store.dir, k));
 
     let started_wall = util::now_wall_ns();
@@ -627,7 +602,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
                 }
             });
             let duration_ns = started.elapsed().as_nanos() as u64;
-            let (exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+            let (exit, _usage) = run.map_err(|e| format!("could not execute Cargo {}: {}", engine.cargo().display(), e))?;
             (exit, duration_ns)
         }
     };
@@ -648,16 +623,16 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
         }
         if let (Some(key), true) = (&prebuilt_key, exit.success()) {
-            let built = crate::prebuilt::Built { messages: &fin.messages, cwd: &cwd, ws_root: ws_root.as_deref(), cargo: &up.program, units: fin.units, warnings_line: fin.warnings_line.as_deref() };
+            let built = crate::prebuilt::Built { messages: &fin.messages, cwd: &cwd, ws_root: ws_root.as_deref(), cargo: &engine.cargo(), units: fin.units, warnings_line: fin.warnings_line.as_deref() };
             crate::prebuilt::record(&store.dir, key, &built);
         }
         messages = Some(fin.messages);
     }
     // Early cut-off needs Haul's compiler driver for this toolchain: built once, in the
     // background, after the build that found it missing (not alongside it, competing for the
-    // processor). Only for a toolchain's own Cargo, whose compiler is known.
-    if plan.early_cutoff && up.toolchain_cargo {
-        let rustc = up.program.with_file_name(format!("rustc{}", std::env::consts::EXE_SUFFIX));
+    // processor).
+    if plan.early_cutoff {
+        let rustc = engine.rustc();
         let started = crate::driver::Compiler::of(&path_str(&rustc)).and_then(|c| crate::driver::start_build(&resolve::self_identity().0, &rustc, &c).map(|s| (s, c.version_verbose)));
         match started {
             Ok((true, vv)) if render => crate::ui::notice_driver_build(vv.lines().find_map(|l| l.strip_prefix("release: ")).unwrap_or("this toolchain")),
@@ -678,7 +653,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             second = crate::ui::with_arg(second, "--quiet");
         }
         let again = Instant::now();
-        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
+        let (e, _) = proc::run(&mut command(&second), true).map_err(|e| format!("could not execute Cargo {}: {}", engine.cargo().display(), e))?;
         exit = e;
         duration_ns += again.elapsed().as_nanos() as u64;
     }
@@ -744,7 +719,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         "cwd": path_str(&cwd),
         "workspace_root": ws_root.as_ref().map(|w| path_str(w)),
         "workspace_id": store.id,
-        "upstream": { "path": path_str(&up.program), "canonical": path_str(&canon(&up.program)), "rule": up.rule },
+        "upstream": { "path": path_str(&engine.cargo()), "canonical": path_str(&canon(&engine.cargo())), "toolchain": engine.toolchain.id, "rule": engine.selected_by.to_string() },
         "result": { "exit_code": exit.code, "signal": exit.signal },
         "instrumented": plan.instrumented,
         "events_in_parent": plan.events_in_parent,

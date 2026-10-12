@@ -13,7 +13,7 @@ Rules (API-001 … API-004):
 - Durations are nanoseconds (`*_ns`), sizes are bytes (`*_bytes`); wall-clock
   instants are RFC 3339 UTC strings (`*_at`) with the raw value in `*_wall_ns`.
 - Exported documents carry tokenized paths (`$WORKSPACE`, `$HOME`,
-  `$CARGO_HOME`, `$RUSTUP_HOME`).
+  `$CARGO_HOME`, `$HAUL_HOME`).
 - A stored report is immutable.
 
 ## Top level
