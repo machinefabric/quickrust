@@ -27,6 +27,7 @@
 
 #![feature(rustc_private)]
 
+extern crate rustc_ast;
 extern crate rustc_codegen_ssa;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
@@ -95,6 +96,8 @@ impl rustc_driver::Callbacks for Callbacks {
 struct Private {
     bodies: BTreeSet<ItemLocalId>,
     defs: HashSet<LocalDefId>,
+    /// Every HIR node inside those bodies: their numbers move with every node added before them.
+    ids: HashSet<ItemLocalId>,
 }
 
 /// What of `def_id` its dependents cannot observe, or `None` when they observe all of it.
@@ -110,7 +113,7 @@ fn private_part(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<Private> {
         return None;
     }
     let body = tcx.hir_node_by_def_id(def_id).body_id()?;
-    let mut walker = BodyWalker { tcx, private: Private { bodies: BTreeSet::new(), defs: HashSet::new() } };
+    let mut walker = BodyWalker { tcx, private: Private { bodies: BTreeSet::new(), defs: HashSet::new(), ids: HashSet::new() } };
     walker.visit_nested_body(body);
     Some(walker.private)
 }
@@ -125,6 +128,9 @@ impl<'tcx> Visitor<'tcx> for BodyWalker<'tcx> {
     type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
     fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
         self.tcx
+    }
+    fn visit_id(&mut self, id: rustc_hir::HirId) {
+        self.private.ids.insert(id.local_id);
     }
     fn visit_nested_body(&mut self, id: BodyId) {
         self.private.bodies.insert(id.hir_id.local_id);
@@ -276,6 +282,20 @@ impl StableHashCtxt for Positions<'_, '_, '_> {
     }
 }
 
+/// The spans of every token in `tokens`, delimiters included.
+fn token_spans(tokens: &rustc_ast::tokenstream::TokenStream, out: &mut Vec<Span>) {
+    for tree in tokens.iter() {
+        match tree {
+            rustc_ast::tokenstream::TokenTree::Token(token, _) => out.push(token.span),
+            rustc_ast::tokenstream::TokenTree::Delimited(dspan, _, _, inner) => {
+                out.push(dspan.open);
+                out.push(dspan.close);
+                token_spans(inner, out);
+            }
+        }
+    }
+}
+
 fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
     // rustc's own hash where dependents observe every body, or check no crate hash at all: a
     // procedural macro's bodies run inside its dependents' compilations, and binaries and build
@@ -292,22 +312,41 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
     let mut source_file_names: Vec<_> = tcx.sess.source_map().files().iter().filter(|f| f.cnum == LOCAL_CRATE).map(|f| f.stable_id).collect();
     source_file_names.sort_unstable();
     let debugger_visualizers: Vec<_> = tcx.debugger_visualizers(LOCAL_CRATE).iter().map(|v| v.path_erased()).collect();
-    // The crate's macro expansions by number, which is how dependents refer to them (the tokens
-    // of a macro another macro defined carry them): what each one is, not where it was called,
-    // which moves with every line added above it. Desugarings (`?`, `for`, `async`, …) are
-    // numbered while lowering, after every macro expansion and in an order the parallel frontend
-    // and incremental sessions vary; dependents see them only through MIR inlined across crates,
-    // and Haul's wrapper keys dependents that inline it by content instead.
-    let local_prefix = format!("{:?}::{{{{expn", LOCAL_CRATE);
-    let local_expansions = rustc_span::hygiene::debug_hygiene_data(false).lines().filter(|l| l.starts_with(&local_prefix)).count();
-    let expansions: Vec<(u32, ExpnKind, Option<DefId>, Option<u32>)> = (1..local_expansions as u32)
-        .filter_map(|i| {
-            let data = LocalExpnId::from_u32(i).expn_data();
-            if matches!(data.kind, ExpnKind::Desugaring(_)) {
-                return None;
+    // Macro expansions by number, where dependents refer to them by number: the tokens of a
+    // macro definition carry the expansions they came from (a macro another macro defined), and
+    // a dependent that expands it records them as this crate's expansion number so-and-so. What
+    // each one is counts, not where it was called (which moves with every line added above it).
+    // Every other expansion (a `println!` in a body) reaches dependents only through spans hashed
+    // by what they are (see `Positions`), or through MIR inlined across crates, for which Haul's
+    // wrapper keys dependents by content instead.
+    let mut numbered = BTreeSet::new();
+    for owner in items.owners() {
+        if !matches!(tcx.def_kind(owner.def_id), DefKind::Macro(_)) {
+            continue;
+        }
+        if let rustc_hir::Node::Item(item) = tcx.hir_node_by_def_id(owner.def_id) {
+            if let rustc_hir::ItemKind::Macro(_, def, _) = item.kind {
+                let mut spans = vec![def.body.dspan.open, def.body.dspan.close];
+                token_spans(&def.body.tokens, &mut spans);
+                for span in spans {
+                    for (expn, _) in span.ctxt().marks() {
+                        let mut at = expn;
+                        while let Some(local) = at.as_local() {
+                            if !numbered.insert(local.as_u32()) {
+                                break;
+                            }
+                            at = local.expn_data().parent;
+                        }
+                    }
+                }
             }
-            let parent = data.parent.as_local().map(|p| p.as_u32());
-            Some((i, data.kind, data.macro_def_id, parent))
+        }
+    }
+    let expansions: Vec<(u32, ExpnKind, Option<DefId>, Option<u32>)> = numbered
+        .into_iter()
+        .map(|i| {
+            let data = LocalExpnId::from_u32(i).expn_data();
+            (i, data.kind, data.macro_def_id, data.parent.as_local().map(|p| p.as_u32()))
         })
         .collect();
 
@@ -319,12 +358,36 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
         for owner in items.owners() {
             let Some(info) = tcx.lower_to_hir(owner.def_id).as_owner() else { continue };
             let left_out = private[&owner.def_id].as_ref();
+            let none = HashSet::new();
+            let inside = left_out.map(|part| &part.ids).unwrap_or(&none);
             if matches!(tcx.def_kind(owner.def_id), DefKind::Macro(_)) {
                 // Expanded in dependents, its tokens carry their positions into them, which their
                 // metadata records as offsets into this crate's source file.
                 p.spans(Spans::WithOffsets, |p| info.nodes.node().stable_hash(p, &mut h));
             } else {
-                p.spans(Spans::Off, |p| info.nodes.node().stable_hash(p, &mut h));
+                p.spans(Spans::Off, |p| match (left_out, info.nodes.node()) {
+                    // A function whose bodies are left out: all of it but its body's number, which
+                    // rustc gives the body after lowering its contents.
+                    (Some(_), rustc_hir::OwnerNode::Item(&rustc_hir::Item { owner_id, kind: rustc_hir::ItemKind::Fn { sig, ident, generics, body: _, has_body }, span, vis_span, eii })) => {
+                        owner_id.stable_hash(p, &mut h);
+                        sig.stable_hash(p, &mut h);
+                        ident.stable_hash(p, &mut h);
+                        generics.stable_hash(p, &mut h);
+                        has_body.stable_hash(p, &mut h);
+                        span.stable_hash(p, &mut h);
+                        vis_span.stable_hash(p, &mut h);
+                        eii.stable_hash(p, &mut h);
+                    }
+                    (Some(_), rustc_hir::OwnerNode::ImplItem(&rustc_hir::ImplItem { ident, owner_id, generics, kind: rustc_hir::ImplItemKind::Fn(sig, _), impl_kind, span })) => {
+                        ident.stable_hash(p, &mut h);
+                        owner_id.stable_hash(p, &mut h);
+                        generics.stable_hash(p, &mut h);
+                        sig.stable_hash(p, &mut h);
+                        impl_kind.stable_hash(p, &mut h);
+                        span.stable_hash(p, &mut h);
+                    }
+                    (_, node) => node.stable_hash(p, &mut h),
+                });
             }
             for (id, body) in info.nodes.bodies.iter() {
                 if !left_out.is_some_and(|part| part.bodies.contains(id)) {
@@ -334,12 +397,23 @@ fn interface_hash(tcx: TyCtxt<'_>, krate: LocalCrate) -> Svh {
                 }
             }
             p.spans(Spans::Off, |p| {
-                // The attributes themselves: their precomputed hash includes positions.
-                info.attrs.map.stable_hash(p, &mut h);
+                // The attributes themselves (their precomputed hash includes positions), and of the
+                // maps keyed by HIR node, the entries outside left-out bodies.
+                let attrs: Vec<_> = info.attrs.map.iter().filter(|(id, _)| !inside.contains(id)).collect();
+                attrs.stable_hash(p, &mut h);
                 info.attrs.define_opaque.stable_hash(p, &mut h);
-                info.parenting.stable_hash(p, &mut h);
-                info.trait_map.stable_hash(p, &mut h);
-                info.children.stable_hash(p, &mut h);
+                let mut parenting: Vec<_> = info.parenting.items().filter(|(_, parent)| !inside.contains(parent)).map(|(def, parent)| (tcx.def_path_hash(def.to_def_id()), *parent)).into_sorted_stable_ord();
+                parenting.sort_unstable();
+                parenting.stable_hash(p, &mut h);
+                let ids: Vec<ItemLocalId> = info.trait_map.items().map(|(id, _)| *id).filter(|id| !inside.contains(id)).into_sorted_stable_ord();
+                for id in ids {
+                    id.stable_hash(p, &mut h);
+                    info.trait_map[&id].stable_hash(p, &mut h);
+                }
+                // Owners lowering made on the side are hashed as owners of their own.
+                let mut children: Vec<_> = info.children.keys().map(|def| tcx.def_path_hash(def.to_def_id())).into_sorted_stable_ord();
+                children.sort_unstable();
+                children.stable_hash(p, &mut h);
                 if left_out.is_some() {
                     // Parameter names come from the body's patterns; metadata records them.
                     tcx.fn_arg_idents(owner.def_id.to_def_id()).stable_hash(p, &mut h);

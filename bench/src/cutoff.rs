@@ -1,7 +1,8 @@
 //! The early cut-off gate: restoring a crate's dependents instead of compiling them, after an
 //! edit that leaves its interface hash unchanged, must give exactly what compiling them gives.
 //!
-//! For random literal edits inside the function bodies of a workload's own crates: (A) the
+//! For random edits inside the function bodies of a workload's own crates (a literal changed,
+//! or a macro call added in front of a statement, on the same line): (A) the
 //! workload is built, the edit applied and the workload built again with the same Haul state,
 //! as in a developer's loop; (B) the edited source is built from nothing with empty Haul state,
 //! at the same path. Every library, metadata file and executable must be byte-identical.
@@ -73,9 +74,10 @@ fn compiled_sources(co: &Path, target: &Path) -> Vec<String> {
     files.into_iter().collect()
 }
 
-/// Literal edits inside function bodies of `file`: a string literal made longer, or an integer
-/// made one larger, on lines indented as statements are, outside test modules, constants and
-/// statics, attributes and comments. Edits that turn out not to compile are skipped later.
+/// Edits inside function bodies of `file`: a string literal made longer, an integer made one
+/// larger, or `debug_assert!(true);` put in front of a statement, on lines indented as
+/// statements are, outside test modules, constants and statics, attributes and comments. Edits
+/// that turn out not to compile are skipped later.
 fn literal_edits(co: &Path, file: &str) -> Vec<LiteralEdit> {
     let text = fs::read_to_string(co.join(file)).unwrap_or_default();
     let mut out = Vec::new();
@@ -87,6 +89,10 @@ fn literal_edits(co: &Path, file: &str) -> Vec<LiteralEdit> {
         let skipped = ["//", "#", "const ", "static ", "pub const ", "pub static ", "pub(crate) const ", "pub(crate) static "];
         if !line.starts_with("        ") || skipped.iter().any(|p| s.starts_with(p)) {
             continue;
+        }
+        // A macro call in front of a statement.
+        if s.ends_with(';') && !s.starts_with('}') && !s.starts_with("let") && !s.starts_with("return") && !s.starts_with("fn ") && !s.starts_with("use ") && !s.starts_with("type ") {
+            out.push(LiteralEdit { file: file.to_string(), line: i + 1, from: s.to_string(), to: format!("debug_assert!(true); {}", s) });
         }
         // String literals of words and spaces.
         let bytes = line.as_bytes();
@@ -311,11 +317,11 @@ mod tests {
     fn edits_stay_inside_bodies_and_change_one_literal() {
         let dir = std::env::temp_dir().join(format!("haul-bench-cutoff-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
-        let src = "const LIMIT: u32 = 10;\n\nfn f(x: u32) -> String {\n        let a = [0u8; 16];\n        let n = x + 42;\n        match n { 7 => {} _ => {} }\n        // \"not this\"\n        format!(\"value is\", n)\n}\n\n#[cfg(test)]\nmod tests {\n        let t = \"in tests\";\n}\n";
+        let src = "const LIMIT: u32 = 10;\n\nfn f(x: u32) -> String {\n        let a = [0u8; 16];\n        let n = x + 42;\n        match n { 7 => {} _ => {} }\n        // \"not this\"\n        log(n);\n        format!(\"value is\", n)\n}\n\n#[cfg(test)]\nmod tests {\n        let t = \"in tests\";\n}\n";
         fs::write(dir.join("lib.rs"), src).unwrap();
         let edits = literal_edits(&dir, "lib.rs");
         let found: Vec<(usize, &str, &str)> = edits.iter().map(|e| (e.line, e.from.as_str(), e.to.as_str())).collect();
-        assert_eq!(found, vec![(5, "42", "43"), (8, "\"value is\"", "\"value is haul\"")]);
+        assert_eq!(found, vec![(5, "42", "43"), (8, "log(n);", "debug_assert!(true); log(n);"), (9, "\"value is\"", "\"value is haul\"")]);
         let applied = edits[0].apply(src).unwrap();
         assert_eq!(applied.lines().nth(4), Some("        let n = x + 43;"));
         assert_eq!(applied.lines().count(), src.lines().count());
