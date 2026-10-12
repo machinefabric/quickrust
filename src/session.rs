@@ -97,34 +97,6 @@ fn wrapper_binary() -> Option<PathBuf> {
     util::exe_candidates(dir, "haul-rustc-wrapper").into_iter().find(|p| util::is_executable(p))
 }
 
-/// Path of a `cargo`-named entry point that is Haul, if one is reachable.
-///
-/// Nested Cargo invocations stay inside Haul when they find this shim through
-/// `PATH`. `CARGO` is deliberately left alone: a Cargo binary named `cargo`
-/// always exports its own path and ignores an inherited value, so pointing it
-/// at the shim would change nothing for build scripts or subcommands.
-pub fn shim_path() -> Option<PathBuf> {
-    let (exe, id) = resolve::self_identity();
-    let same = |p: &Path| canon(p) == exe || (id.is_some() && util::file_identity(p) == id);
-    if let Ok(cur) = std::env::current_exe() {
-        if cur.file_stem().map(|s| s == "cargo").unwrap_or(false) {
-            return Some(cur);
-        }
-    }
-    if let Some(path) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&path) {
-            for c in util::exe_candidates(&dir, "cargo") {
-                if c.exists() && same(&c) {
-                    return Some(c);
-                }
-            }
-        }
-    }
-    let install = util::read_json(&util::haul_home().join("install.json"))?;
-    let p = PathBuf::from(install["shim"].as_str()?);
-    (p.exists() && same(&p)).then_some(p)
-}
-
 /// Compact record of one Cargo JSON message, kept for analysis.
 pub(crate) fn summarize_message(line: &[u8]) -> Option<Value> {
     if !line.starts_with(b"{\"reason\"") {

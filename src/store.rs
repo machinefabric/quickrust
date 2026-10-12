@@ -4,7 +4,7 @@
 //! ```text
 //! $HAUL_HOME/
 //!   config.toml
-//!   install.json
+//!   setup.json
 //!   active/<session>.json                 live-session locks (GC safety)
 //!   workspaces/<id>/
 //!     workspace.json                      root path, last seen
