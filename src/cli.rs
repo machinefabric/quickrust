@@ -1392,19 +1392,18 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let opts = crate::setup::Options { modify_path, toolchain: (toolchain != "none").then_some(toolchain) };
     let phase = crate::ui::Phase::start();
     let done = crate::setup::setup(&opts)?;
-    let tilde = |p: &Path| util::home_dir().and_then(|h| p.strip_prefix(&h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| p.display().to_string());
-    phase.finish(true, &format!("Haul {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, tilde(&done.bin), done.proxies.saturating_sub(4)));
+    phase.finish(true, &format!("Haul {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
     match (&done.path_edits[..], modify_path) {
-        (_, false) => println!("  PATH left alone (--no-modify-path): put {} first on PATH yourself", tilde(&done.bin)),
+        (_, false) => println!("  PATH left alone (--no-modify-path): put {} first on PATH yourself", util::tilde(&done.bin)),
         ([], true) => println!("  PATH: already set up"),
-        (files, true) => println!("  PATH: {} first, from {}", tilde(&done.bin), files.iter().map(|f| tilde(f)).collect::<Vec<_>>().join(", ")),
+        (files, true) => println!("  PATH: {} first, from {}", util::tilde(&done.bin), files.iter().map(|f| util::tilde(f)).collect::<Vec<_>>().join(", ")),
     }
     if let Some((from, imported, skipped)) = &done.import {
         if !imported.is_empty() {
-            println!("  imported from {}: {}", tilde(from), imported.join(", "));
+            println!("  imported from {}: {}", util::tilde(from), imported.join(", "));
         }
         if !skipped.is_empty() {
-            println!("  not imported: {} (builds of projects under your home still read {}/config.toml)", skipped.join(", "), tilde(from));
+            println!("  not imported: {} (builds of projects under your home still read {}/config.toml)", skipped.join(", "), util::tilde(from));
         }
     }
     if let Some(spec) = &opts.toolchain {

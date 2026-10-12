@@ -1,0 +1,2 @@
+✓ Checked <time> · 1 compiled · 1 fresh
+⚠ 2 warnings in app (bin): clippy::len_zero ×1, clippy::useless_vec ×1 · `haul warnings` to show them

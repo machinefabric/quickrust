@@ -1,0 +1,7 @@
+── app (bin)
+error[E0425]: cannot find function `greeting` in crate `greet`
+ --> src/main.rs:2:27
+  |
+2 |     println!("{}", greet::greeting());
+  |                           ^^^^^^^^ not found in `greet`
+✗ Build failed after <time> · 1 error in app (bin) · first at src/main.rs:2:27

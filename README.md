@@ -148,10 +148,25 @@ haul log [--raw]                    # everything, in order
 ```
 
 `cargo run`, `cargo test` and `cargo bench` get the same build output, and then the
-program, the tests or the benchmarks run with the terminal to themselves: Haul first builds
-exactly what the command needs (`test --no-run`; for `run`, Cargo's own selection of the
-binary, with a runner that does not run it), then runs the command, which finds everything
-fresh. Their output is never touched, and the warnings Cargo would replay are not repeated.
+program, the tests or the benchmarks run: Haul first builds exactly what the command needs
+(`test --no-run`; for `run`, Cargo's own selection of the binary, with a runner that does
+not run it), then runs the command, which finds everything fresh. The program's output is
+never touched, and the warnings Cargo would replay are not repeated. Tests and benchmarks
+run in a terminal of their own that Haul relays as it comes (colours, `isatty` and the order
+of their output are a terminal's), showing Cargo's lines its way and closing with the counts
+of every test program added up:
+
+```text
+✓ Built 0.42s · 1 compiled · 1 fresh
+  ▸ unittests src/lib.rs
+running 132 tests
+…
+test result: ok. 132 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.31s
+  ▸ tests/cli.rs
+…
+✓ 140 passed · 2 ignored · 1.12s
+```
+
 When nothing the last such build depended on has changed, Haul says so (`✓ Up to date`)
 and goes straight to the command, which still checks freshness itself.
 
@@ -168,7 +183,9 @@ Downloads, lock waits and index updates show in the same status line, then as on
 (`↓ Downloaded 38 crates · 5.6 MiB · 1.84s`). Commands that do not build speak the same
 language: `cargo update` lists what moved (`↑ serde  1.0.209 → 1.0.210`, `+ hashbrown
 0.15.0`, `− autocfg 1.3.0`) and sums it up, `cargo add` shows the dependency with its
-features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line.
+features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line, and
+`haul install` shows its build's progress and one line for the result. What a terminal shows
+for each command is kept in snapshots (`tests/snapshots/`), compared whole in the test suite.
 
 Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
 are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and

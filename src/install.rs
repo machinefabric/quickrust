@@ -315,6 +315,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
     phase.clear_line();
     let mut spec = crate::session::Spec::new(build, crate::session::Mode::Explicit);
     spec.cwd = Some(source.dir.clone());
+    spec.step = true;
     let out = crate::session::execute(&spec)?;
     if !out.exit.success() {
         return Err(format!("{} {} did not build", source.name, source.version));
@@ -373,9 +374,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
         entry[&source.name] = json!({ "version": source.version, "source": source.record, "features": features, "profile": r.profile, "target": r.target, "bins": placed, "toolchain": engine.toolchain.id, "installed_at": util::iso8601(util::now_wall_ns()) });
         save_record(&record)?;
     }
-    let home = util::home_dir();
-    let tilde = |p: &Path| home.as_ref().and_then(|h| p.strip_prefix(h).ok().map(|r| format!("~/{}", r.display()))).unwrap_or_else(|| p.display().to_string());
-    phase.finish(true, &format!("Installed {} {} · {} → {}", source.name, source.version, placed.join(", "), tilde(&bin_dir)));
+    phase.finish(true, &format!("Installed {} {} · {} → {}", source.name, source.version, placed.join(", "), util::tilde(&bin_dir)));
     Ok(())
 }
 
@@ -639,12 +638,15 @@ fn uninstall(args: &[String], cwd: &Path) -> Result<i32, String> {
         }
         let left: Vec<String> = had.into_iter().filter(|b| !gone.contains(b)).collect();
         let pkgs_of_root = record["roots"][&key].as_object_mut().ok_or("the install record has no such root")?;
+        let what = format!("{} {}", pkg, util::vstr(&entry, "version"));
+        let from = util::tilde(&root.join("bin"));
         if left.is_empty() {
             pkgs_of_root.remove(pkg);
+            crate::ui::Phase::start().done(&format!("Uninstalled {} · {} removed from {}", what, gone.join(", "), from));
         } else {
             pkgs_of_root[pkg]["bins"] = json!(left);
+            crate::ui::Phase::start().done(&format!("Removed {} of {} from {} · {} stays", gone.join(", "), what, from, left.join(", ")));
         }
-        crate::ui::Phase::start().done(&format!("Removed {} ({})", pkg, gone.join(", ")));
     }
     save_record(&record)?;
     Ok(0)
