@@ -350,6 +350,7 @@ const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b] [
        haul-bench cutoff [--workload a,b] [--edits N] [--seed S] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
 
 fn main() {
+    measure::adopt_orphans();
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let Some(cmd) = argv.first() else { fail(USAGE) };
     let opts = parse_opts(&argv[1..]);

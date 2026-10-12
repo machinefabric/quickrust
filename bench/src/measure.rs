@@ -9,7 +9,9 @@ use std::time::Instant;
 #[derive(Debug, Clone, Default)]
 pub struct Sample {
     pub wall_ns: u64,
-    /// User + system CPU of the command and every descendant it waited for (rustc included).
+    /// User + system CPU of the command and every descendant: those it waited for (rustc
+    /// included) and those that outlived it (Haul's driver finishing rustc's incremental save
+    /// after its outputs were written), which the bench adopts (`adopt_orphans`).
     pub cpu_ns: u64,
     /// Largest resident set of any single process in the tree (not the tree's sum).
     pub max_rss_bytes: u64,
@@ -27,7 +29,19 @@ pub fn pressure(resource: &str) -> Option<f64> {
     line.split_whitespace().find_map(|f| f.strip_prefix("avg10=")).and_then(|v| v.parse().ok())
 }
 
-/// Runs `cmd` to completion. `Err` carries the tail of stderr when the command failed.
+/// Makes this process the one that orphaned descendants of the commands it runs are handed to
+/// (Linux), so that `run` can wait for them and count their CPU: work a command leaves running
+/// costs the machine as much as work it waits for. Elsewhere such work goes uncounted.
+pub fn adopt_orphans() {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
+    }
+}
+
+/// Runs `cmd` to completion: its wall time ends when it exits; then the descendants it left
+/// running (see `adopt_orphans`) are waited for, outside the wall time, and their CPU counted.
+/// `Err` carries the tail of stderr when the command failed.
 pub fn run(cmd: &mut Command) -> Result<Sample, String> {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     let started = Instant::now();
@@ -62,13 +76,37 @@ pub fn run(cmd: &mut Command) -> Result<Sample, String> {
     let wall_ns = started.elapsed().as_nanos() as u64;
     // Reaped by wait4 already.
     std::mem::forget(child);
+    let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1_000;
+    let (mut orphans_cpu_ns, mut orphans_rss) = (0u64, 0i64);
+    let ended = Instant::now();
+    loop {
+        let mut st: libc::c_int = 0;
+        let mut oru: libc::rusage = unsafe { std::mem::zeroed() };
+        let r = unsafe { libc::wait4(-1, &mut st, libc::WNOHANG, &mut oru) };
+        if r > 0 {
+            orphans_cpu_ns += tv(oru.ru_utime) + tv(oru.ru_stime);
+            orphans_rss = orphans_rss.max(oru.ru_maxrss);
+            continue;
+        }
+        if r == 0 {
+            // Descendants still running; one that never ends (a daemon) is the command's fault.
+            if ended.elapsed() > std::time::Duration::from_secs(60) {
+                return Err(format!("{:?}: descendants still running 60 s after it ended", cmd.get_program()));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            continue;
+        }
+        if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            continue;
+        }
+        break;
+    }
     let (units_run, tail) = reader.join().unwrap_or_default();
     if !(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0) {
         return Err(format!("{:?} failed:\n{}", cmd.get_program(), tail));
     }
-    let tv = |t: libc::timeval| t.tv_sec as u64 * 1_000_000_000 + t.tv_usec as u64 * 1_000;
     let rss_unit = if cfg!(target_vendor = "apple") { 1 } else { 1024 };
-    Ok(Sample { wall_ns, cpu_ns: tv(ru.ru_utime) + tv(ru.ru_stime), max_rss_bytes: ru.ru_maxrss as u64 * rss_unit, units_run, cpu_pressure: pressure("cpu"), io_pressure: pressure("io"), target_bytes: 0 })
+    Ok(Sample { wall_ns, cpu_ns: tv(ru.ru_utime) + tv(ru.ru_stime) + orphans_cpu_ns, max_rss_bytes: ru.ru_maxrss.max(orphans_rss) as u64 * rss_unit, units_run, cpu_pressure: pressure("cpu"), io_pressure: pressure("io"), target_bytes: 0 })
 }
 
 /// Allocated bytes below `dir`, each hard-linked inode counted once.
