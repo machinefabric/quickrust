@@ -290,7 +290,30 @@ pub fn downloads() -> Option<Downloads> {
 /// is removed in turn, until there is enough. The last is the protection window: like the rest
 /// of the cache, nothing used in it is removed (a size limit would let Cargo remove the crates a
 /// build has just extracted, and the next build would extract them again).
-const CARGO_AGES: &[&str] = &["30 days", "7 days", "1 day", "1 hour", "15 minutes"];
+const CARGO_AGES: &[(&str, u64)] = &[("30 days", 30 * DAY_NS), ("7 days", 7 * DAY_NS), ("1 day", DAY_NS), ("1 hour", DAY_NS / 24), ("15 minutes", PROTECTED_NS)];
+/// The shortest of Cargo's own ages (`gc.auto`: sources and checkouts unused for a month).
+const CARGO_OWN_AGE_NS: u64 = 30 * DAY_NS;
+
+/// When the oldest of Cargo's downloads came: a `.crate`, an extracted source, a git clone or
+/// checkout, by the time its file was made. Nothing was last used before it was downloaded, so
+/// a collection by an age younger than this can remove nothing, and is not run (it would hold
+/// Cargo's package lock, which builds wait for, for nothing).
+fn oldest_download_ns(d: &Downloads) -> Option<u64> {
+    let mut oldest: Option<u64> = None;
+    for dir in ["registry/cache", "registry/src", "git/checkouts"] {
+        for group in entries(&d.cargo_home.join(dir)) {
+            for e in entries(&group) {
+                let t = mtime(&e);
+                oldest = Some(oldest.map_or(t, |o| o.min(t)));
+            }
+        }
+    }
+    for e in entries(&d.cargo_home.join("git/db")) {
+        let t = mtime(&e);
+        oldest = Some(oldest.map_or(t, |o| o.min(t)));
+    }
+    oldest
+}
 
 /// Cargo's collection of the downloads in `d.cargo_home`: what was not used for `max_age`, or by
 /// Cargo's own ages. Cargo's summary line, and the bytes it says it removed (or would).
@@ -592,16 +615,27 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
             r + g
         };
         // Cargo's own ages, then what was used longer ago than each of CARGO_AGES while the
-        // bounds need room (a dry run goes by what Cargo says it would remove).
-        let (mut summary, mut would) = cargo_gc(d, None, dry_run)?;
-        let mut after = if dry_run { before.saturating_sub(would) } else { measured(d) };
-        for age in CARGO_AGES {
+        // bounds need room (a dry run goes by what Cargo says it would remove); none that
+        // cannot remove anything.
+        let oldest = oldest_download_ns(d);
+        let may_remove = |age_ns: u64| oldest.is_some_and(|o| o + age_ns < now);
+        let (mut summary, mut after) = (String::new(), before);
+        if may_remove(CARGO_OWN_AGE_NS) {
+            let (s, would) = cargo_gc(d, None, dry_run)?;
+            summary = s;
+            after = if dry_run { before.saturating_sub(would) } else { measured(d) };
+        }
+        for &(age, age_ns) in CARGO_AGES {
             let freed = before.saturating_sub(after);
             let needed = total.saturating_sub(freed).saturating_sub(goal.max_total).max(goal.min_free.saturating_sub(available.saturating_add(freed)));
             if needed == 0 {
                 break;
             }
-            (summary, would) = cargo_gc(d, Some(age), dry_run)?;
+            if !may_remove(age_ns) {
+                continue;
+            }
+            let (s, would) = cargo_gc(d, Some(age), dry_run)?;
+            summary = s;
             after = if dry_run { before.saturating_sub(would) } else { measured(d) };
         }
         let freed = before.saturating_sub(after);
@@ -675,6 +709,17 @@ pub fn due(cache: &Path, policy: &Policy, fs: &FsSpace, now: u64) -> bool {
             total + lost > policy.max_bytes || u["scanned_ns"].as_u64().unwrap_or(0) + DAY_NS <= now
         }
     }
+}
+
+/// Whether a collection of Haul's cache is running (it holds `gc.lock`; Cargo's package lock
+/// too while Cargo collects its downloads). Creates nothing.
+pub fn collecting() -> bool {
+    collecting_in(&util::cache_dir())
+}
+
+fn collecting_in(cache: &Path) -> bool {
+    let lock = cache.join("gc.lock");
+    lock.is_file() && matches!(util::ExclusiveLock::try_acquire(&lock), Ok(None))
 }
 
 /// After a command: starts `haul gc --background` when a collection is due. Errors (no free
@@ -918,6 +963,16 @@ mod tests {
         util::write_json(&c.join(USAGE), &json!({ "format": 1, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "unmet": true })).unwrap();
         assert!(!due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS - 1));
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS));
+    }
+
+    #[test]
+    fn a_running_collection_is_known_by_its_lock() {
+        let c = cache();
+        assert!(!collecting_in(&c) && !c.join("gc.lock").exists(), "asking makes no lock");
+        let held = util::ExclusiveLock::acquire(&c.join("gc.lock")).unwrap();
+        assert!(collecting_in(&c));
+        drop(held);
+        assert!(!collecting_in(&c));
     }
 
     #[cfg(unix)]
