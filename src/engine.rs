@@ -67,6 +67,9 @@ pub fn bin_dir() -> PathBuf {
 pub struct Engine {
     pub toolchain: Toolchain,
     pub selected_by: Source,
+    /// The channel that chose the toolchain, when it can move to a newer release
+    /// (`stable-<host>`; see `toolchain::start_update`).
+    pub channel: Option<String>,
     pub env: Vec<(String, String)>,
 }
 
@@ -133,8 +136,9 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
         }
     };
     progress.finish(&tc);
+    toolchain::mark_used(&tc);
     let env = environment(&tc);
-    Ok(Engine { toolchain: tc, selected_by: sel.source, env })
+    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, env })
 }
 
 /// The environment of commands run with toolchain `tc` (see the module notes).

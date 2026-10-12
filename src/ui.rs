@@ -326,6 +326,12 @@ pub fn notice_driver_build(release: &str) {
     );
 }
 
+/// A note of Haul's own on stderr.
+pub fn note(text: &str) {
+    let r = Renderer::new();
+    let _ = writeln!(std::io::stderr(), "{} {}", r.paint("2", "note:"), text);
+}
+
 /// Haul could not start building its compiler driver.
 pub fn notice_driver_unavailable(why: &str) {
     let r = Renderer::new();

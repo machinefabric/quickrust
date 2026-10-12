@@ -640,6 +640,14 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             _ => {}
         }
     }
+    // Once a day, a channel's newer release is looked for in the background.
+    if let Some(key) = &engine.channel {
+        if let Err(e) = crate::toolchain::start_update(&crate::toolchain::Layout::current(), key, &resolve::self_identity().0, cfg.str("toolchain.auto-update")) {
+            if render {
+                crate::ui::note(&format!("Haul could not check for a newer Rust release: {}", e));
+            }
+        }
+    }
     // The command itself, once what it needs is built: the program gets the real terminal.
     if let (Rendering::BuildFirst(how), true) = (rendering, exit.success()) {
         // Cargo replays the warnings of fresh units, which Haul has just summarised: they are

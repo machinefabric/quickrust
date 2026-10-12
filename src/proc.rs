@@ -252,6 +252,27 @@ pub fn interrupted() -> Option<i32> {
 /// Holds termination signals for a longer operation (a benchmark) so that an
 /// interruption is observed through [`interrupted`] and cleanup can run, instead
 /// of the process dying between child runs.
+/// Starts `cmd` in the background, detached: a session of its own (it outlives this process,
+/// and Ctrl-C at this terminal does not reach it), at the lowest scheduling priority, with
+/// stdin from /dev/null and stdout and stderr to `log`. Init reaps it.
+// The process outlives this one on purpose.
+#[allow(clippy::zombie_processes)]
+pub fn spawn_detached(cmd: &mut Command, log: std::fs::File) -> io::Result<()> {
+    cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::setsid();
+                libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+                Ok(())
+            });
+        }
+    }
+    cmd.spawn().map(|_| ())
+}
+
 pub fn hold_signals() -> imp::Guard {
     imp::Guard::install()
 }

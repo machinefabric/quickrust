@@ -20,6 +20,24 @@ What fast mode does, and the settings that control it:
 | Linker | `fast.linker` = `auto` \| `off` | Linux with glibc: when `wild` is in `~/.haul/bin` or on `PATH`, host builds of binaries, tests, proc-macros and dynamic libraries link with it instead of rustc's bundled LLD. A `-C linker`, linker-selecting link arguments or linker features from the user (Cargo configuration, `RUSTFLAGS`) win. `~/.haul/linker/ld` links to the wild in use. |
 | Build output | `output` = `haul` \| `cargo` | In a terminal: status line, errors in full, warnings counted, everything stored (`haul warnings`, `haul errors`, `haul log`). `run`, `test` and `bench` build first (rendered), then run the command with the terminal inherited. compat mode defaults to `cargo`. |
 
+## Toolchains
+
+Haul installs every toolchain it uses (see [migration.md](migration.md#which-toolchain-runs) for how one
+is chosen) from the dist server (`toolchain.dist-server`, `HAUL_DIST_SERVER`; default
+`https://static.rust-lang.org`), with the `default` profile (rustc, cargo, the standard
+library, clippy, rustfmt, rust-src) unless a toolchain file asks for another. `haul toolchain`
+lists, installs, updates, removes and links them.
+
+A channel (`stable`, `beta`, `nightly`, `1.98`) keeps naming the release it was installed as.
+Once a day after a build that used it, Haul checks in the background whether the channel has a
+newer release: a detached, low-priority `haul toolchain update --channel …` fetches the 64-byte
+checksum of the channel's manifest and, when it changed, installs the new release (with the
+components and targets the old one had) and switches the channel to it for the next build.
+The release a channel left is removed once nothing names it and it has gone unused for a day;
+releases asked for by their own name (`1.98.1`, `nightly-2026-10-11`) are never removed by Haul.
+`toolchain.auto-update = "off"` (`HAUL_TOOLCHAIN_AUTO_UPDATE=off`) turns the background check
+off; it never runs in CI. `haul toolchain update` runs it now.
+
 ## Where state lives
 
 | Location | Content | Safe to delete |

@@ -74,7 +74,8 @@ POLICY AND REMEDIATION
 TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-toolchain.toml choose)
     haul toolchain list
     haul toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
-    haul toolchain update                 bring stable, beta, nightly and 1.xx to their latest release
+    haul toolchain update [--channel C]   bring stable, beta, nightly and 1.xx to their latest release
+                                          (Haul checks once a day in the background; `toolchain.auto-update`)
     haul toolchain remove <TOOLCHAIN>…
     haul toolchain default [<TOOLCHAIN>]
     haul toolchain link <NAME> <DIR> | unlink <NAME>
@@ -552,10 +553,18 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             Ok(0)
         }
         "update" => {
+            let only = a.opt("--channel")?;
+            // Started by a build (see `toolchain::start_update`): one at a time, quietly.
+            let background = a.flag("--background");
             a.finish()?;
+            let _lock = match util::ExclusiveLock::try_acquire(&layout.toolchains().join(".locks").join("update.lock")).map_err(|e| e.to_string())? {
+                Some(l) => l,
+                None if background => return Ok(0),
+                None => util::ExclusiveLock::acquire(&layout.toolchains().join(".locks").join("update.lock")).map_err(|e| e.to_string())?,
+            };
             let mut progress = crate::ui::ToolchainProgress::new("update");
-            let moved = toolchain::update(&layout, &server, &mut progress);
-            let moved = match moved {
+            let moved = toolchain::update(&layout, &server, only.as_deref(), &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
+            let (moved, retired) = match moved {
                 Ok(m) => m,
                 Err(e) => {
                     progress.fail(&e);
@@ -567,7 +576,10 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 println!("Every channel is at its latest release.");
             }
             for m in moved {
-                println!("{}: {} → {} (`haul toolchain remove {}` deletes the old one)", m.channel, m.from, m.to, m.from);
+                println!("{}: {} → {} (the old one is removed after a day without use)", m.channel, m.from, m.to);
+            }
+            for r in retired {
+                println!("removed {}, which no channel names and which was not used for a day", r);
             }
             Ok(0)
         }

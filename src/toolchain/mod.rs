@@ -188,7 +188,8 @@ pub fn ensure(layout: &Layout, sel: &Selection, needs: &Needs, server: &str, rep
                 let locked = install::lock(layout, &id, report)?;
                 if !dir.join(install::RECORD).exists() {
                     let plan = manifest.plan(&host, profile, &components, &targets).map_err(|e| format!("Rust {}: {}", manifest.version(), e))?;
-                    install::install(layout, &locked, &id, &host, profile, &manifest, &plan, server, &client, report)?;
+                    let origin = channel_tracked(channel, date.as_deref()).then_some(key.as_str());
+                    install::install(layout, &locked, &install::Release { id: &id, host: &host, profile, manifest: &manifest, origin }, &plan, server, &client, report)?;
                 }
             }
             if channel_tracked(channel, date.as_deref()) {
@@ -336,16 +337,32 @@ pub struct Moved {
     pub to: String,
 }
 
-/// Brings every installed floating channel (`stable`, `1.98`, `nightly`) to its latest release:
-/// the new release is installed with the components and targets the old one had, then the
-/// channel names it. The old toolchain stays until removed.
-pub fn update(layout: &Layout, server: &str, report: &mut dyn Report) -> Result<Vec<Moved>, String> {
+/// Brings installed floating channels (`stable`, `1.98`, `nightly`; all of them, or `only`) to
+/// their latest release: the new release is installed with the components and targets the old
+/// one had, then the channel names it. A channel whose manifest's published SHA-256 is the one
+/// it was installed from is up to date without downloading the manifest. The toolchain a channel
+/// leaves is retired later (`retire`).
+pub fn update(layout: &Layout, server: &str, only: Option<&str>, report: &mut dyn Report) -> Result<Vec<Moved>, String> {
     let client = net::Client::new();
     let mut moved = vec![];
     for (key, ch) in state::load(&layout.toolchains())?.channels {
+        if only.is_some_and(|o| o != key) {
+            continue;
+        }
         let Ok(spec @ Spec::Dist { .. }) = Spec::parse(&key) else { continue };
         let Spec::Dist { channel, date: None, host: Some(host) } = &spec else { continue };
         if !spec.floating() {
+            continue;
+        }
+        let published = client.get_bytes(&format!("{}.sha256", dist::manifest_url(server, channel.dist_name(), None)), &[]).map_err(|e| e.to_string())?;
+        let published = String::from_utf8_lossy(&published).split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+        if !published.is_empty() && published == ch.manifest_sha256 && layout.toolchains().join(&ch.toolchain).join(install::RECORD).exists() {
+            state::update(&layout.toolchains(), |s| {
+                if let Some(c) = s.channels.get_mut(&key) {
+                    c.checked_ns = util::now_wall_ns();
+                }
+                Ok(())
+            })?;
             continue;
         }
         let old = install::read_record(&layout.toolchains().join(&ch.toolchain)).ok();
@@ -357,12 +374,14 @@ pub fn update(layout: &Layout, server: &str, report: &mut dyn Report) -> Result<
             Channel::Stable | Channel::Version(_) => format!("{}-{}", manifest.version(), host),
             Channel::Beta | Channel::Nightly => format!("{}-{}-{}", channel.dist_name(), manifest.date(), host),
         };
-        if id != ch.toolchain {
+        if !layout.toolchains().join(&id).join(install::RECORD).exists() {
             let locked = install::lock(layout, &id, report)?;
             if !layout.toolchains().join(&id).join(install::RECORD).exists() {
                 let plan = manifest.plan(host, profile, &components, &targets).map_err(|e| format!("Rust {}: {}", manifest.version(), e))?;
-                install::install(layout, &locked, &id, host, profile, &manifest, &plan, server, &client, report)?;
+                install::install(layout, &locked, &install::Release { id: &id, host, profile, manifest: &manifest, origin: Some(&key) }, &plan, server, &client, report)?;
             }
+        }
+        if id != ch.toolchain {
             moved.push(Moved { channel: key.clone(), from: ch.toolchain.clone(), to: id.clone() });
         }
         state::update(&layout.toolchains(), |s| {
@@ -371,6 +390,81 @@ pub fn update(layout: &Layout, server: &str, report: &mut dyn Report) -> Result<
         })?;
     }
     Ok(moved)
+}
+
+/// How long a toolchain a channel left stays after its last use.
+pub const RETIRE_AFTER_NS: u64 = 24 * 3_600 * 1_000_000_000;
+/// The file whose modification time is a toolchain's last use (refreshed at most hourly).
+const USED: &str = ".haul-used";
+
+/// Notes that `tc` is in use (at most one write an hour).
+pub fn mark_used(tc: &Toolchain) {
+    if tc.linked {
+        return;
+    }
+    let marker = tc.dir.join(USED);
+    let fresh = std::fs::metadata(&marker).map(|m| util::mtime_ns(&m) + 3_600 * 1_000_000_000 > util::now_wall_ns()).unwrap_or(false);
+    if !fresh {
+        let _ = std::fs::write(&marker, b"");
+    }
+}
+
+/// Deletes the toolchains that channels left behind: installed for a channel that now names
+/// another release, named by no channel, unused for `RETIRE_AFTER_NS`. Returns their ids.
+pub fn retire(layout: &Layout, report: &mut dyn Report) -> Result<Vec<String>, String> {
+    let st = state::load(&layout.toolchains())?;
+    let mut retired = vec![];
+    for tc in installed(layout) {
+        let Ok(rec) = install::read_record(&tc.dir) else { continue };
+        let Some(origin) = &rec.origin else { continue };
+        let named = st.channels.values().any(|c| c.toolchain == tc.id);
+        let left = st.channels.get(origin).is_some_and(|c| c.toolchain != tc.id);
+        let last_used = std::fs::metadata(tc.dir.join(USED)).map(|m| util::mtime_ns(&m)).unwrap_or(rec.installed_ns);
+        if named || !left || last_used + RETIRE_AFTER_NS > util::now_wall_ns() {
+            continue;
+        }
+        remove(layout, &tc.id, report)?;
+        retired.push(tc.id);
+    }
+    Ok(retired)
+}
+
+/// Once a day per channel, after a build that used it: checks in the background (a detached,
+/// low-priority `haul toolchain update --channel <key> --background`) whether the channel has a
+/// newer release, installs it for the next build, and retires what channels left behind. Never
+/// in CI, and not with `toolchain.auto-update = "off"`. Returns whether a check started.
+pub fn start_update(layout: &Layout, key: &str, haul: &Path, auto_update: &str) -> Result<bool, String> {
+    if auto_update != "background" || util::is_ci() {
+        return Ok(false);
+    }
+    if !update_due(&state::load(&layout.toolchains())?, key, util::now_wall_ns()) {
+        return Ok(false);
+    }
+    // Marked checked now: the builds until the check ends do not start another.
+    state::update(&layout.toolchains(), |s| {
+        if let Some(c) = s.channels.get_mut(key) {
+            c.checked_ns = util::now_wall_ns();
+        }
+        Ok(())
+    })?;
+    let log = std::fs::File::create(layout.toolchains().join(".update.log")).map_err(|e| e.to_string())?;
+    let mut c = std::process::Command::new(haul);
+    c.args(["toolchain", "update", "--channel", key, "--background"]);
+    crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", haul.display(), e))?;
+    Ok(true)
+}
+
+/// A channel is checked for a newer release a day after its last check.
+fn update_due(st: &state::State, key: &str, now_ns: u64) -> bool {
+    st.channels.get(key).is_some_and(|c| c.checked_ns + RETIRE_AFTER_NS <= now_ns)
+}
+
+/// The `channels.json` key of a toolchain selection that can move (`stable-<host>`), if it can.
+pub fn floating_key(spec: &Spec) -> Option<String> {
+    match spec {
+        Spec::Dist { channel, date: None, host } if spec.floating() => Some(channel_key(channel, None, &host.clone().unwrap_or_else(self::host))),
+        _ => None,
+    }
 }
 
 /// Deletes an installed toolchain and forgets the channels naming it.
@@ -568,9 +662,9 @@ mod tests {
         let old = ensure(&l, &sel("stable"), &needs, &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         let pinned = ensure(&l, &sel("1.99.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(old, pinned);
-        assert!(update(&l, &d.srv.base, &mut NoReport { waited: 0 }).unwrap().is_empty(), "nothing newer yet");
+        assert!(update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap().is_empty(), "nothing newer yet");
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
-        let moved = update(&l, &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let moved = update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(moved, vec![Moved { channel: format!("stable-{}", h), from: old.id.clone(), to: format!("1.100.0-{}", h) }]);
         let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
         assert_eq!(new.id, format!("1.100.0-{}", h));
@@ -581,6 +675,60 @@ mod tests {
         assert_eq!(installed(&l), vec![new.clone()]);
         assert!(remove(&l, "../x", &mut NoReport { waited: 0 }).is_err());
         assert!(remove(&l, &old.id, &mut NoReport { waited: 0 }).unwrap_err().contains("no toolchain"));
+    }
+
+    #[test]
+    fn an_unchanged_channel_is_confirmed_by_its_checksum_alone() {
+        let (d, l, h) = (Dist::start(), layout(), host());
+        publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
+        ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let before = state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns;
+        let manifests = || d.srv.requests("/dist/channel-rust-stable.toml").len();
+        let fetched = manifests();
+        assert!(update(&l, &d.srv.base, Some(&format!("stable-{}", h)), &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert_eq!(manifests(), fetched, "the manifest is not downloaded again");
+        assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
+        assert!(state::load(&l.toolchains()).unwrap().channels[&format!("stable-{}", h)].checked_ns > before);
+        // Another channel is not touched by an update of this one.
+        assert!(update(&l, &d.srv.base, Some("nightly-x"), &mut NoReport { waited: 0 }).unwrap().is_empty());
+        assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
+    }
+
+    #[test]
+    fn what_a_channel_left_is_retired_after_a_day_unused_and_nothing_else_is() {
+        let (d, l, h) = (Dist::start(), layout(), host());
+        publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
+        publish_release(&d, "/dist/channel-rust-1.98.0.toml", "2026-08-01", "1.98.0", &h);
+        let old = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        let pinned = ensure(&l, &sel("1.98.0"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        mark_used(&old);
+        publish_release(&d, "/dist/channel-rust-stable.toml", "2026-11-12", "1.100.0", &h);
+        update(&l, &d.srv.base, None, &mut NoReport { waited: 0 }).unwrap();
+        assert!(retire(&l, &mut NoReport { waited: 0 }).unwrap().is_empty(), "used within the day");
+        let day_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(25 * 3600);
+        for tc in [&old, &pinned] {
+            std::fs::File::create(tc.dir.join(USED)).unwrap().set_modified(day_ago).unwrap();
+        }
+        assert_eq!(retire(&l, &mut NoReport { waited: 0 }).unwrap(), vec![old.id.clone()]);
+        assert!(!old.dir.exists());
+        assert!(pinned.dir.exists(), "a release asked for by its name is never retired");
+        let new = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport { waited: 0 }).unwrap();
+        std::fs::File::create(new.dir.join(USED)).unwrap().set_modified(day_ago).unwrap();
+        assert!(retire(&l, &mut NoReport { waited: 0 }).unwrap().is_empty(), "the release a channel names stays, used or not");
+    }
+
+    #[test]
+    fn a_channel_is_checked_a_day_after_its_last_check_and_never_when_off() {
+        let mut st = state::State::default();
+        st.channels.insert("stable-h".into(), state::ChannelState { toolchain: "1.99.0-h".into(), manifest_sha256: String::new(), checked_ns: 1_000 });
+        assert!(!update_due(&st, "stable-h", 1_000 + RETIRE_AFTER_NS - 1));
+        assert!(update_due(&st, "stable-h", 1_000 + RETIRE_AFTER_NS));
+        assert!(!update_due(&st, "nightly-h", u64::MAX), "a channel never installed is not checked");
+        assert!(!start_update(&layout(), "stable-h", Path::new("/nonexistent"), "off").unwrap());
+        assert_eq!(floating_key(&Spec::parse("stable").unwrap()), Some(format!("stable-{}", host())));
+        assert_eq!(floating_key(&Spec::parse("1.98").unwrap()), Some(format!("1.98-{}", host())));
+        assert_eq!(floating_key(&Spec::parse("1.98.1").unwrap()), None);
+        assert_eq!(floating_key(&Spec::parse("nightly-2026-10-11").unwrap()), None);
     }
 
     #[test]
