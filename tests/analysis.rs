@@ -358,7 +358,9 @@ fn hauls_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come
     ok(sb.cargo(&a).arg("build"));
     assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "3\n");
     let status = stdout(&ok(sb.haul(&a).args(["cache", "status"])));
-    assert!(status.contains("Haul's cache:") && status.contains("build directories") && status.contains("collected"), "{}", status);
+    assert!(status.contains("Haul's cache:") && status.contains("build directories"), "{}", status);
+    // When, as people say it.
+    assert!(status.lines().any(|l| l.trim_start().starts_with("collected") && (l.contains("just now ·") || l.contains(" ago ·"))), "{}", status);
 }
 
 #[test]
