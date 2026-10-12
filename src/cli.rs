@@ -1309,10 +1309,11 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     match crate::engine::for_command(&resolve::classify(&[]), &cwd, cfg.as_ref().unwrap_or(&Config::defaults())) {
         Ok(engine) => {
             println!("  active toolchain   {}  (selected by: {})", engine.toolchain.id, engine.selected_by);
-            match version_of(&engine.cargo(), &["-V"]) {
+            match version_of(&engine.program, &["-V"]) {
                 Some(v) => println!("  Cargo              {}", v),
-                None => problem(format!("{} -V failed", engine.cargo().display())),
+                None => problem(format!("{} -V failed", engine.program.display())),
             }
+            println!("  runs as            {}", engine.program.display());
             match version_of(&engine.rustc(), &["-V"]) {
                 Some(v) => println!("  rustc              {}", v),
                 None => problem(format!("{} -V failed", engine.rustc().display())),
