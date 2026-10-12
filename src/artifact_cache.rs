@@ -281,6 +281,23 @@ impl Job {
         self.root.join("m").join(format!("{}.json", self.key1))
     }
 
+    /// Whether this unit compiled quickly before and was not stored for it: a small linked
+    /// workspace output. It is compiled again after every clean; the parallel frontend would
+    /// only add its start-up cost to it.
+    pub fn known_quick(&self) -> bool {
+        self.quick_marker().exists()
+    }
+
+    /// Records that this unit compiled quickly and was not stored for it.
+    pub fn remember_quick(&self) -> std::io::Result<()> {
+        fs::create_dir_all(self.root.join("q"))?;
+        util::write_atomic_fast(&self.quick_marker(), b"")
+    }
+
+    fn quick_marker(&self) -> PathBuf {
+        self.root.join("q").join(&self.key1)
+    }
+
     fn entry_dir(&self, key2: &str) -> PathBuf {
         self.root.join("e").join(key2)
     }
@@ -463,10 +480,10 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
             over = over.saturating_sub(bytes);
         }
     }
-    // Remembered hashes are a few bytes each; those not refreshed for two weeks name files
-    // long gone, and a live one is simply computed again.
+    // Remembered hashes and quick-unit markers are a few bytes each; those not refreshed for
+    // two weeks name files or units long gone, and a live one is simply learned again.
     let cutoff = util::now_wall_ns().saturating_sub(14 * 86_400 * 1_000_000_000);
-    for e in fs::read_dir(root.join("h")).into_iter().flatten().flatten() {
+    for e in ["h", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
         if e.metadata().map(|m| util::mtime_ns(&m) < cutoff).unwrap_or(false) {
             let _ = fs::remove_file(e.path());
         }

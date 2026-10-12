@@ -96,27 +96,8 @@ pub fn main() {
         None => None,
     };
 
-    // Fast mode: rustc's parallel frontend for the units Cargo schedules that are compiled from
-    // scratch: dependencies, release and CI builds, and the first compilation of a workspace
-    // unit in a target directory, which has no incremental session yet (measured: Haul's own
-    // lib 2.7 s → 1.5 s). An incremental rebuild is not: the parallel frontend makes those 2-3x
-    // slower on small crates, and turning it on for a session made without it discards the
-    // session. Turning it off after the first compilation is free: the session it leaves serves
-    // the next edit as well as one made without it. Build scripts also run rustc through this
-    // wrapper to probe the compiler; those must see it exactly as it is.
     let mut bootstrap = false;
     let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
-    if let (Some(n), None, Some(_)) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner, unlock) {
-        if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
-            let incremental = codegen_value(&lossy, "incremental").is_some();
-            if !incremental || !compiled_here_before(&lossy) {
-                argv.push(format!("-Zthreads={}", n).into());
-            }
-            // RUSTC_BOOTSTRAP is part of an incremental session's identity: a rebuild without it
-            // would discard the session the first, parallel compilation left.
-            bootstrap = true;
-        }
-    }
     // Fast mode: link with wild instead of rustc's bundled LLD (measured: relinking ripgrep
     // 22% faster, a small binary 34%). Only for host builds, and only when no linker was chosen
     // by the user (a `-C linker`, link arguments selecting one, or linker features).
@@ -128,10 +109,6 @@ pub fn main() {
             argv.push(format!("-Clink-arg=-B{}", util::path_str(&dir)).into());
             bootstrap = true;
         }
-    }
-
-    if bootstrap {
-        argv.extend(unlock.unwrap_or_default().iter().map(OsString::from));
     }
 
     let start_wall = util::now_wall_ns();
@@ -163,6 +140,33 @@ pub fn main() {
             proc::propagate(exit)
         }
     }
+    // Fast mode: rustc's parallel frontend for the units Cargo schedules that are compiled from
+    // scratch: dependencies, release and CI builds, and the first compilation of a workspace
+    // unit in a target directory, which has no incremental session yet (measured: Haul's own
+    // lib 2.7 s → 1.5 s). An incremental rebuild is not: the parallel frontend makes those 2-3x
+    // slower on small crates, and turning it on for a session made without it discards the
+    // session. Turning it off after the first compilation is free: the session it leaves serves
+    // the next edit as well as one made without it. A unit the cache saw compile quickly does
+    // not get it either: on a small crate its start-up costs more than it saves (Haul's own
+    // binaries: 50-66 ms → 79-122 ms). Build scripts also run rustc through this wrapper to
+    // probe the compiler; those must see it exactly as it is. Decided after the cache lookup,
+    // which is keyed without it.
+    if let (Some(n), None, Some(_)) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner, unlock) {
+        if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
+            let incremental = codegen_value(&lossy, "incremental").is_some();
+            let quick = job.as_ref().map(|j| j.known_quick()).unwrap_or(false);
+            if (!incremental || !compiled_here_before(&lossy)) && !quick {
+                argv.push(format!("-Zthreads={}", n).into());
+            }
+            // RUSTC_BOOTSTRAP is part of an incremental session's identity: a rebuild without it
+            // would discard the session the first, parallel compilation left.
+            bootstrap = true;
+        }
+    }
+    if bootstrap {
+        argv.extend(unlock.unwrap_or_default().iter().map(OsString::from));
+    }
+
     let mut captured: Option<Vec<u8>> = None;
     let direct = |rustc: &OsString, argv: &[OsString]| {
         let mut c = Command::new(rustc);
@@ -210,7 +214,10 @@ pub fn main() {
         // A freshly linked workspace binary that builds in a moment is not worth a copy on every
         // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
         // critical path a clean rebuild waits on.
-        (Ok(j), Some(_)) if exit.success() && j.is_local() && j.links() && settings.as_ref().map(|s| dur_ns < s.min_link_store_ns).unwrap_or(false) => json!({ "result": "miss", "not_stored": "quick to link" }),
+        (Ok(j), Some(_)) if exit.success() && j.is_local() && j.links() && settings.as_ref().map(|s| dur_ns < s.min_link_store_ns).unwrap_or(false) => {
+            let _ = j.remember_quick();
+            json!({ "result": "miss", "not_stored": "quick to link" })
+        }
         (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
             Ok(Ok(())) => json!({ "result": "stored" }),
             Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
