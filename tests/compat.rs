@@ -237,8 +237,14 @@ fn haul_installs_programs_into_its_own_bin() {
     let bin = sb.home.join("bin");
     let run_tool = |name: &str| stdout(&ok(&mut std::process::Command::new(bin.join(name))));
     // `cargo install` is Haul's: the newest release, built and put into Haul's bin.
+    let started = std::time::Instant::now();
     let out = ok(sb.cargo(&sb.dir).args(["install", "hello-tool"]));
-    assert!(stderr(&out).contains("Installed hello-tool 1.1.0"), "{}", stderr(&out));
+    let took = started.elapsed();
+    let said = stderr(&out);
+    let result = said.lines().find(|l| l.contains("Installed hello-tool 1.1.0")).unwrap_or_else(|| panic!("{}", said));
+    // The time it states is the install's, resolution and build included.
+    let stated = result.rsplit(" · ").next().and_then(|d| d.strip_suffix("ms").map(|m| m.parse::<f64>().ok().map(|m| m / 1e3)).unwrap_or_else(|| d.strip_suffix('s').and_then(|s| s.parse::<f64>().ok()))).unwrap_or_else(|| panic!("{}", result));
+    assert!(stated >= took.as_secs_f64() / 2.0, "{} for an install of {:?}", result, took);
     assert_eq!(run_tool("hello-tool"), "hello 1.1\n");
     assert!(!sb.dir.join(".cargo").exists() && !sb.dir.join("target").exists());
     let again = ok(sb.haul(&sb.dir).args(["install", "hello-tool"]));
@@ -267,6 +273,18 @@ fn haul_installs_programs_into_its_own_bin() {
     let elsewhere = sb.dir.join("elsewhere");
     ok(sb.haul(&sb.dir).args(["install", "hello-tool", "--root"]).arg(&elsewhere));
     assert_eq!(stdout(&ok(&mut std::process::Command::new(elsewhere.join("bin/hello-tool")))), "hello 1.1\n");
+    // Dependencies resolved afresh, as by `cargo install`; with --locked, as the lockfile
+    // published with the crate says.
+    let dep_10 = reg.publish(&Crate::lib("dep", "1.0.0", "pub const V: &str = \"dep 1.0.0\";\n"));
+    reg.publish(&Crate::lib("dep", "1.1.0", "pub const V: &str = \"dep 1.1.0\";\n"));
+    let published_lock = format!("version = 4\n\n[[package]]\nname = \"dep\"\nversion = \"1.0.0\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{}\"\n\n[[package]]\nname = \"locky\"\nversion = \"1.0.0\"\ndependencies = [\n \"dep\",\n]\n", dep_10);
+    reg.publish(&Crate { name: "locky", vers: "1.0.0", files: vec![("src/main.rs", "fn main() {\n    println!(\"{}\", dep::V);\n}\n".into()), ("Cargo.lock", published_lock)], deps: vec![("dep", "1")] });
+    ok(sb.haul(&sb.dir).args(["install", "locky"]));
+    assert_eq!(run_tool("locky"), "dep 1.1.0\n");
+    ok(sb.haul(&sb.dir).args(["install", "locky", "--locked", "--force"]));
+    assert_eq!(run_tool("locky"), "dep 1.0.0\n");
+    ok(sb.haul(&sb.dir).args(["install", "locky", "--force"]));
+    assert_eq!(run_tool("locky"), "dep 1.1.0\n", "the published lockfile stayed in force");
     // Uninstalled: binaries and record.
     ok(sb.cargo(&sb.dir).args(["uninstall", "local-tool"]));
     assert!(!bin.join("local-tool").exists());

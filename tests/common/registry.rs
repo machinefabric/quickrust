@@ -69,8 +69,9 @@ impl Registry {
         Registry { url, state }
     }
 
-    /// Publishes `c`: its `.crate` (a real package archive) and its index line.
-    pub fn publish(&self, c: &Crate) {
+    /// Publishes `c`: its `.crate` (a real package archive) and its index line. Its checksum
+    /// (as a lockfile records it).
+    pub fn publish(&self, c: &Crate) -> String {
         let mut manifest = format!("[package]\nname = \"{}\"\nversion = \"{}\"\nedition = \"2021\"\n", c.name, c.vers);
         if !c.deps.is_empty() {
             manifest.push_str("\n[dependencies]\n");
@@ -101,6 +102,7 @@ impl Registry {
         let mut st = self.state.lock().unwrap();
         st.files.insert(format!("/dl/{}/{}/download", c.name, c.vers), bytes);
         st.files.entry(format!("/index/{}", index_path(c.name))).or_default().extend_from_slice(line.as_bytes());
+        cksum
     }
 
     /// Serves `bytes` at `path` (any file: the server is a plain one).
