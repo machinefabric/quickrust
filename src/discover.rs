@@ -192,7 +192,7 @@ pub fn toolchain_fingerprint(cfg: &Config, cwd: &Path, toolchain: Option<&str>, 
 
 fn probe_toolchain(cfg: &Config, cwd: &Path, toolchain: Option<&str>, rustc_hint: Option<&str>) -> Value {
     let direct = |program: &Path, args: &[&str]| {
-        let mut c = Command::new(program);
+        let mut c = crate::engine::toolchain_program(program);
         c.args(args).current_dir(cwd).stdin(Stdio::null());
         run_capture(c)
     };

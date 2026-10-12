@@ -225,6 +225,89 @@ fn a_build_script_building_another_workspace_builds_it_in_that_workspaces_direct
 }
 
 #[test]
+fn haul_installs_programs_into_its_own_bin() {
+    use common::registry::{Crate, Registry};
+    let sb = Sandbox::new("install");
+    let reg = Registry::start();
+    reg.publish(&Crate::bin("hello-tool", "1.0.0", "hello 1.0"));
+    reg.publish(&Crate::bin("hello-tool", "1.1.0", "hello 1.1"));
+    reg.publish(&Crate { name: "clash", vers: "1.0.0", files: vec![("src/bin/rustfmt.rs", "fn main() {}\n".into())], deps: vec![] });
+    reg.publish(&Crate { name: "other-tool", vers: "1.0.0", files: vec![("src/bin/hello-tool.rs", "fn main() { println!(\"other\"); }\n".into())], deps: vec![] });
+    reg.serve_crates_io_for(&sb.home);
+    let bin = sb.home.join("bin");
+    let run_tool = |name: &str| stdout(&ok(&mut std::process::Command::new(bin.join(name))));
+    // `cargo install` is Haul's: the newest release, built and put into Haul's bin.
+    let out = ok(sb.cargo(&sb.dir).args(["install", "hello-tool"]));
+    assert!(stderr(&out).contains("Installed hello-tool 1.1.0"), "{}", stderr(&out));
+    assert_eq!(run_tool("hello-tool"), "hello 1.1\n");
+    assert!(!sb.dir.join(".cargo").exists() && !sb.dir.join("target").exists());
+    let again = ok(sb.haul(&sb.dir).args(["install", "hello-tool"]));
+    assert!(stderr(&again).contains("installed already"), "{}", stderr(&again));
+    // Another release replaces it.
+    ok(sb.haul(&sb.dir).args(["install", "hello-tool@1.0.0"]));
+    assert_eq!(run_tool("hello-tool"), "hello 1.0\n");
+    assert_eq!(stdout(&ok(sb.haul(&sb.dir).args(["install", "--list"]))), "hello-tool v1.0.0 (crates.io):\n    hello-tool\n");
+    // Never over Haul's own names, nor over another package's binary without --force.
+    let clash = run(sb.haul(&sb.dir).args(["install", "clash"]));
+    assert_eq!(clash.status.code(), Some(2));
+    assert!(stderr(&clash).contains("would replace Haul's own `rustfmt`"), "{}", stderr(&clash));
+    let taken = run(sb.haul(&sb.dir).args(["install", "other-tool"]));
+    assert!(stderr(&taken).contains("is hello-tool's; --force replaces it"), "{}", stderr(&taken));
+    assert_eq!(run_tool("hello-tool"), "hello 1.0\n");
+    ok(sb.haul(&sb.dir).args(["install", "other-tool", "--force"]));
+    assert_eq!(run_tool("hello-tool"), "other\n");
+    // A file nobody installed is not replaced either.
+    fs::write(bin.join("stray"), "x").unwrap();
+    reg.publish(&Crate { name: "stray-maker", vers: "1.0.0", files: vec![("src/bin/stray.rs", "fn main() {}\n".into())], deps: vec![] });
+    assert!(stderr(&run(sb.haul(&sb.dir).args(["install", "stray-maker"]))).contains("was not installed by Haul"));
+    // From a path, and into another root.
+    let p = sb.package("local", "local-tool");
+    ok(sb.haul(&p).args(["install", "--path", "."]));
+    assert_eq!(run_tool("local-tool"), "3\n");
+    let elsewhere = sb.dir.join("elsewhere");
+    ok(sb.haul(&sb.dir).args(["install", "hello-tool", "--root"]).arg(&elsewhere));
+    assert_eq!(stdout(&ok(&mut std::process::Command::new(elsewhere.join("bin/hello-tool")))), "hello 1.1\n");
+    // Uninstalled: binaries and record.
+    ok(sb.cargo(&sb.dir).args(["uninstall", "local-tool"]));
+    assert!(!bin.join("local-tool").exists());
+    assert!(!stdout(&ok(sb.haul(&sb.dir).args(["install", "--list"]))).contains("local-tool"));
+    assert_eq!(run(sb.haul(&sb.dir).args(["uninstall", "local-tool"])).status.code(), Some(2));
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn toolchain_programs_load_their_own_libraries_whatever_the_library_path_says() {
+    // rustup puts its toolchain's `lib` on LD_LIBRARY_PATH for everything it runs (`cargo test`
+    // included): with the same release as Haul's, its librustc_driver has the same name, and a
+    // rustc loading it takes rustup's toolchain for its sysroot. Here a decoy of that name, which
+    // fails to load at all, stands for it.
+    let sb = Sandbox::new("libpath");
+    let p = sb.package("p", "p");
+    let tc = sb.toolchain_dir(&p);
+    let driver_lib = fs::read_dir(tc.join("lib")).unwrap().flatten().map(|e| e.file_name()).find(|n| n.to_string_lossy().starts_with("librustc_driver-")).expect("the toolchain's librustc_driver");
+    let decoy = sb.dir.join("decoy");
+    fs::create_dir_all(&decoy).unwrap();
+    fs::write(decoy.join(&driver_lib), "not a library").unwrap();
+    let with_decoy = |c: &mut Command| {
+        c.env("LD_LIBRARY_PATH", &decoy);
+    };
+    let mut status = sb.haul(&p);
+    with_decoy(status.args(["driver", "status"]));
+    let out = ok(&mut status);
+    assert!(stdout(&out).contains("1."), "{}", stdout(&out));
+    let mut build = sb.cargo(&p);
+    with_decoy(build.arg("build"));
+    ok(&mut build);
+    let mut doctor = sb.haul(&p);
+    with_decoy(doctor.arg("doctor"));
+    assert!(stdout(&run(&mut doctor)).contains("  rustc              rustc 1."));
+    let Some(_) = build_driver(&sb, &p) else { return };
+    let mut driver = sb.haul(&p);
+    with_decoy(driver.args(["driver", "build"]));
+    ok(&mut driver);
+}
+
+#[test]
 fn qa004_manifest_path_from_another_directory() {
     let sb = Sandbox::new("manifest");
     let p = sb.package("deep/p", "p");

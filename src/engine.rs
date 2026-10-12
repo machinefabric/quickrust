@@ -154,6 +154,27 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, env })
 }
 
+/// The dynamic library path variable the toolchain's programs find their libraries by.
+pub const LIBRARY_PATH: &str = if cfg!(target_os = "macos") { "DYLD_FALLBACK_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" };
+
+/// A toolchain program (`<toolchain>/bin/<program>`) run directly: its toolchain's `lib` comes
+/// first on the dynamic library path. An inherited path (rustup puts its toolchain's `lib` there
+/// for everything it runs, `cargo test` included) could otherwise hand it another toolchain's
+/// `librustc_driver` of the same release, and with it that toolchain as its sysroot.
+pub fn toolchain_program(program: &Path) -> Command {
+    let mut cmd = Command::new(program);
+    if !cfg!(windows) {
+        if let Some(lib) = program.parent().and_then(Path::parent).map(|d| d.join("lib")) {
+            let mut libs = vec![lib.clone()];
+            libs.extend(std::env::var_os(LIBRARY_PATH).iter().flat_map(std::env::split_paths).filter(|d| *d != lib));
+            if let Ok(joined) = std::env::join_paths(libs) {
+                cmd.env(LIBRARY_PATH, joined);
+            }
+        }
+    }
+    cmd
+}
+
 /// The environment of commands run with toolchain `tc` (see the module notes).
 fn environment(tc: &Toolchain) -> Vec<(String, String)> {
     let inherited_engine = std::env::var_os(ENV_ENGINE).map(PathBuf::from);
@@ -184,7 +205,7 @@ fn environment(tc: &Toolchain) -> Vec<(String, String)> {
         env.push(("PATH".to_string(), joined.to_string_lossy().into_owned()));
     }
     if !cfg!(windows) {
-        let var = if cfg!(target_os = "macos") { "DYLD_FALLBACK_LIBRARY_PATH" } else { "LD_LIBRARY_PATH" };
+        let var = LIBRARY_PATH;
         let previous_lib = std::env::var_os(ENV_ENGINE).map(|e| PathBuf::from(e).join("lib"));
         let mut libs = vec![tc.dir.join("lib")];
         match std::env::var_os(var).filter(|v| !v.is_empty()) {

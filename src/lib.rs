@@ -17,6 +17,7 @@ pub mod discover;
 pub mod driver;
 pub mod engine;
 pub mod fast;
+pub mod install;
 pub mod inventory;
 pub mod net;
 pub mod prebuilt;

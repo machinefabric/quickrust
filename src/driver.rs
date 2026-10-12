@@ -200,7 +200,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     let minor = release_minor(&vv).ok_or_else(|| format!("`rustc -vV` of {} names no release", name))?;
     let cfgs: String = INTERFACE_BREAKS.iter().map(|b| format!(" --check-cfg cfg(haul_rustc_ge_{b}){}", if minor >= *b { format!(" --cfg haul_rustc_ge_{b}") } else { String::new() })).collect();
     let rustflags = format!("-L {} -C link-arg=-Wl,-rpath,{} -Zon-broken-pipe=kill{}", util::path_str(&lib), util::path_str(&lib), cfgs);
-    let out = Command::new(toolchain.join("bin").join(format!("cargo{}", std::env::consts::EXE_SUFFIX)))
+    let out = crate::engine::toolchain_program(&toolchain.join("bin").join(format!("cargo{}", std::env::consts::EXE_SUFFIX)))
         .args(["build", "--release", "--quiet"])
         .current_dir(&work)
         .env("RUSTC", rustc)
@@ -220,7 +220,12 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     }
     let built = work.join("target").join("release").join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
     // It must be the compiler it was built against, by its own account.
-    let says = Command::new(&built).arg("-vV").stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
+    let mut says = Command::new(&built);
+    // The driver links the toolchain's own libraries, found as rustc finds them.
+    if let Some(lib) = crate::engine::toolchain_program(rustc).get_envs().find(|(k, _)| *k == crate::engine::LIBRARY_PATH).and_then(|(_, v)| v) {
+        says.env(crate::engine::LIBRARY_PATH, lib);
+    }
+    let says = says.arg("-vV").stdin(Stdio::null()).output().map_err(|e| e.to_string())?;
     if String::from_utf8_lossy(&says.stdout) != vv {
         let _ = fs::remove_dir_all(&work);
         return Err(format!("the driver built for {} does not report the compiler's own `rustc -vV`", name));

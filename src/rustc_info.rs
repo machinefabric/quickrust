@@ -41,7 +41,7 @@ fn ask(memo_dir: &Path, rustc: &str, arg: &str) -> Result<String, String> {
             return Ok(text);
         }
     }
-    let out = std::process::Command::new(&path).arg(arg).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {} {}: {}", path.display(), arg, e))?;
+    let out = crate::engine::toolchain_program(&path).arg(arg).stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {} {}: {}", path.display(), arg, e))?;
     let text = String::from_utf8(out.stdout).map_err(|_| format!("{} {} printed something other than UTF-8", path.display(), arg))?;
     if !out.status.success() || text.trim().is_empty() {
         return Err(format!("{} {} failed", path.display(), arg));
