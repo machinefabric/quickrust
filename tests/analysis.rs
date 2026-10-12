@@ -976,6 +976,21 @@ fn links(sb: &Sandbox) -> Vec<(String, String)> {
 }
 
 #[test]
+fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
+    let sb = Sandbox::new("driver-clippy");
+    let p = sb.package("p", "p");
+    if !run(sb.upstream(&p).args(["clippy", "--version"])).status.success() {
+        return;
+    }
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n\npub fn len(x: &Vec<u8>) -> usize {\n    x.len()\n}\n");
+    let built = run(sb.haul(&p).args(["driver", "build"]));
+    assert!(built.status.success(), "{}", stderr(&built));
+    // clippy-driver describes itself exactly as rustc does; it is still clippy that runs.
+    let out = ok(sb.cargo(&p).args(["clippy"]).env("HAUL_EARLY_CUTOFF", "auto"));
+    assert!(stderr(&out).contains("writing `&Vec` instead of `&[_]`"), "{}", stderr(&out));
+}
+
+#[test]
 fn a_compiler_driver_that_crashes_never_fails_the_build() {
     let sb = Sandbox::new("driver-crash");
     let p = sb.package("p", "p");

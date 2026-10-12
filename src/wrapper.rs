@@ -117,9 +117,13 @@ pub fn main() {
     // Early cut-off (fast mode): Haul's compiler driver compiles the units Cargo schedules,
     // recording each library's interface hash; never compiler probes, which must see rustc as
     // it is. Without a driver built for this compiler, rustc compiles them as usual.
-    // A unit the driver failed on before is compiled by rustc until the driver changes.
+    // A unit the driver failed on before is compiled by rustc until the driver changes. Only
+    // when the program Cargo runs is rustc itself: a workspace wrapper (`cargo clippy`'s
+    // clippy-driver, which describes itself exactly as rustc does) comes first, with rustc as
+    // its first argument, and must run as it is.
+    let is_rustc = Path::new(&rustc).file_stem().is_some_and(|s| s == "rustc");
     let mut driver: Option<PathBuf> = match (&settings, &inner, &compiler) {
-        (Some(s), None, Ok(vv)) if s.early_cutoff && is_cargo_unit(&lossy) => crate::driver::find(vv).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
+        (Some(s), None, Ok(vv)) if s.early_cutoff && is_rustc && is_cargo_unit(&lossy) => crate::driver::find(vv).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
         _ => None,
     };
 
