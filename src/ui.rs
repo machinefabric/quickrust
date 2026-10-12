@@ -38,6 +38,9 @@ pub enum Rendering {
     /// `cargo test`): Haul first builds exactly what the command needs and renders that, then
     /// runs the command itself, which finds everything fresh, with the real terminal.
     BuildFirst(Prebuild),
+    /// A command that does not build (`update`, `add`, `fetch`, `new`, `clean`, `package`, …):
+    /// Haul renders Cargo's status lines from its stderr; stdout and stdin stay the terminal's.
+    Lines,
 }
 
 /// How the build of a `BuildFirst` command is obtained from the command itself.
@@ -61,8 +64,11 @@ pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering
     if user_chose {
         return Rendering::Off;
     }
+    let passthrough_rendered = matches!(inv.command.as_deref(), Some("update" | "fetch" | "add" | "remove" | "rm" | "new" | "init" | "generate-lockfile" | "package" | "publish" | "vendor"));
     match inv.family {
-        Family::Build | Family::Check | Family::Clippy => Rendering::Build,
+        Family::Build | Family::Check | Family::Clippy | Family::Doc => Rendering::Build,
+        Family::Clean => Rendering::Lines,
+        Family::Passthrough if passthrough_rendered => Rendering::Lines,
         Family::Test | Family::Bench if has("--no-run") => Rendering::Build,
         // Doc tests are built while they run; there is nothing to build first.
         Family::Test | Family::Bench if has("--doc") => Rendering::Off,
@@ -151,12 +157,16 @@ pub struct Live {
     render: JoinHandle<Finished>,
 }
 
+/// Reads a stream line by line; on stderr also at each `\r`, where Cargo redraws its progress.
 fn reader(from: impl Read + Send + 'static, tx: Sender<Ev>, out: bool) -> JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(from).split(b'\n').map_while(Result::ok) {
-            let line = String::from_utf8_lossy(&line).trim_end_matches('\r').to_string();
-            if tx.send(if out { Ev::Out(line) } else { Ev::Err(line) }).is_err() {
-                break;
+            let line = String::from_utf8_lossy(&line).into_owned();
+            let segments: Vec<&str> = if out { vec![line.trim_end_matches('\r')] } else { line.split('\r').filter(|s| !s.trim().is_empty()).collect() };
+            for seg in segments.into_iter().filter(|s| !out || !s.is_empty() || line.is_empty()) {
+                if tx.send(if out { Ev::Out(seg.to_string()) } else { Ev::Err(seg.to_string()) }).is_err() {
+                    return;
+                }
             }
         }
     })
@@ -239,6 +249,24 @@ impl Phase {
         self.clear();
         let _ = writeln!(std::io::stderr(), "{}", text);
     }
+}
+
+/// `text` cut to fit a terminal `width` wide (one column spare), with `…` where it was cut.
+fn truncate(text: &str, width: usize) -> String {
+    let max = width.saturating_sub(1).max(20);
+    if text.chars().count() > max {
+        text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+    } else {
+        text.to_string()
+    }
+}
+
+/// Why a build failed on a full disk, and what Haul's cache holds there.
+fn disk_full_note() -> String {
+    let home = util::haul_home();
+    let free = crate::space::fs_space(&home).map(|f| util::human_bytes(f.available)).unwrap_or_else(|_| "?".into());
+    let cache = crate::space::usage(&util::cache_dir()).and_then(|u| u["total_bytes"].as_u64()).map(util::human_bytes).unwrap_or_else(|| "an uncounted amount".into());
+    format!("  the disk is full: {} free where Haul keeps its cache, which holds {} · `haul gc` frees what is not in use, `haul cache status` shows it", free, cache)
 }
 
 /// A 20-cell progress bar: `━━━━━━━━╺───────────`.
@@ -331,6 +359,17 @@ pub fn notice_driver_build(release: &str) {
     );
 }
 
+/// A note shown at most once an hour (per Haul home and `key`).
+pub fn notice_hourly(key: &str, text: &str) {
+    let marker = util::haul_home().join("notices").join(key);
+    let recent = std::fs::metadata(&marker).map(|m| util::mtime_ns(&m) + 3_600 * 1_000_000_000 > util::now_wall_ns()).unwrap_or(false);
+    if recent {
+        return;
+    }
+    note(text);
+    let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
+}
+
 /// A note of Haul's own on stderr.
 pub fn note(text: &str) {
     let r = Renderer::new();
@@ -362,6 +401,42 @@ pub fn start(stdout: impl Read + Send + 'static, stderr: impl Read + Send + 'sta
     let readers = vec![reader(stdout, tx.clone(), true), reader(stderr, tx.clone(), false)];
     let render = std::thread::spawn(move || Renderer { prebuild, ..Renderer::new() }.run(rx));
     Live { tx, readers, render }
+}
+
+/// Starts rendering the stderr of a command that does not build (`Rendering::Lines`), named
+/// `command` (`update`, `add`, …).
+pub fn start_lines(stderr: impl Read + Send + 'static, command: &str) -> Live {
+    let (tx, rx) = channel();
+    let readers = vec![reader(stderr, tx.clone(), false)];
+    let command = command.to_string();
+    let render = std::thread::spawn(move || Renderer { lines: Some(Lines { command, ..Default::default() }), ..Renderer::new() }.run(rx));
+    Live { tx, readers, render }
+}
+
+/// What a command that does not build changed, for its summary.
+#[derive(Default)]
+struct Lines {
+    command: String,
+    updated: u64,
+    downgraded: u64,
+    added: u64,
+    removed: u64,
+    /// A line with the command's result was printed (`Created …`, `Removed …`, `Packaged …`).
+    result: bool,
+    /// `cargo add`'s feature list, collected until it ends.
+    features: Vec<String>,
+    /// Inside a `Features:` block.
+    in_features: bool,
+    /// What Cargo is busy with (`Packaging demo v0.1.0`).
+    doing: Option<String>,
+    /// For a manifest edit (`add`, `remove`): the lockfile's changes, said in one line at the end.
+    locked: Vec<String>,
+}
+
+impl Lines {
+    fn edits_manifest(&self) -> bool {
+        matches!(self.command.as_str(), "add" | "remove" | "rm")
+    }
 }
 
 impl Live {
@@ -406,6 +481,80 @@ struct Renderer {
     warning_total: u64,
     messages: Vec<Value>,
     log: Vec<Value>,
+    activity: Activity,
+    /// Rendering a command that does not build.
+    lines: Option<Lines>,
+}
+
+/// What Cargo is doing, as its status lines and progress say.
+#[derive(Default)]
+struct Activity {
+    /// `Building [..] n/N`: units done of all.
+    progress: Option<(u64, u64)>,
+    /// Downloading: the most crates seen remaining (the total), those remaining now, the bytes left.
+    downloading: Option<(u64, u64, String)>,
+    /// `Blocking waiting for file lock on …`: on what.
+    waiting: Option<String>,
+    /// `Updating crates.io index`: which.
+    updating: Option<String>,
+    /// `Generated …/index.html` (documentation).
+    generated: Vec<String>,
+    /// Cargo or rustc reported a full disk.
+    disk_full: bool,
+}
+
+impl Activity {
+    /// Notes a status line or progress update of Cargo's; what it prints instead, if anything.
+    fn observe(&mut self, line: &crate::cargo_lines::Line) -> Option<String> {
+        use crate::cargo_lines::Line;
+        let done_waiting = !matches!(line, Line::Status { verb: "Blocking", .. });
+        if done_waiting {
+            self.waiting = None;
+        }
+        match *line {
+            Line::Progress { verb: "Building", done: Some(d), total: Some(t), .. } => {
+                self.progress = Some((d, t));
+                self.updating = None;
+            }
+            Line::Progress { verb: "Downloading", total, detail, .. } => {
+                let remaining = total.unwrap_or(0);
+                let most = self.downloading.as_ref().map(|d| d.0).unwrap_or(0).max(remaining);
+                self.downloading = Some((most, remaining, detail.to_string()));
+                self.updating = None;
+            }
+            Line::Status { verb: "Blocking", rest } => self.waiting = Some(rest.trim_start_matches("waiting for file lock on ").to_string()),
+            Line::Status { verb: "Updating", rest } if rest.ends_with(" index") => self.updating = Some(rest.to_string()),
+            Line::Status { verb: "Downloaded", rest } => {
+                // `Downloaded 7 crates (645.0KiB) in 0.16s`: all done.
+                if let Some((n, more)) = rest.split_once(' ') {
+                    if n.parse::<u64>().is_ok() && (more.starts_with("crates") || more.starts_with("crate ")) {
+                        self.downloading = None;
+                        let size = more.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(b, _)| b).unwrap_or("");
+                        let took = more.rsplit_once(" in ").map(|(_, t)| t).unwrap_or("");
+                        return Some(format!("{} {}{}{}", n, if n == "1" { "crate" } else { "crates" }, if size.is_empty() { String::new() } else { format!(" · {}", size) }, if took.is_empty() { String::new() } else { format!(" · {}", took) }));
+                    }
+                }
+            }
+            Line::Status { verb: "Generated", rest } => self.generated.push(rest.to_string()),
+            _ => {}
+        }
+        None
+    }
+
+    /// The status line for what Cargo is doing before (or apart from) compiling.
+    fn status(&self) -> Option<String> {
+        if let Some(w) = &self.waiting {
+            return Some(format!("Waiting for the lock on the {} (another Cargo holds it)", w));
+        }
+        if let Some((most, remaining, bytes)) = &self.downloading {
+            if *most == 0 {
+                return Some("Downloading crates".to_string());
+            }
+            let done = most.saturating_sub(*remaining);
+            return Some(format!("Downloading {}  {}/{} crates{}", bar(done, *most), done, most, if bytes.is_empty() { String::new() } else { format!(" · {} left", bytes) }));
+        }
+        self.updating.as_ref().map(|u| format!("Updating {}", u))
+    }
 }
 
 fn crate_label(msg: &Value) -> String {
@@ -442,7 +591,23 @@ impl Renderer {
             return;
         }
         self.last_draw = Some(Instant::now());
-        let mut text = format!("  Building · {} compiled · {} fresh", self.compiled, self.fresh);
+        let lines_doing = self.lines.as_ref().and_then(|l| l.doing.clone());
+        let status = self.activity.status().or(lines_doing);
+        if let Some(text) = &status {
+            let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &truncate(&format!("  {}", text), self.width)));
+            let _ = err.flush();
+            self.status_shown = true;
+            return;
+        }
+        if self.lines.is_some() {
+            // Nothing under way: no status line.
+            self.clear_status(err);
+            return;
+        }
+        let mut text = match self.activity.progress {
+            Some((d, t)) => format!("  Building {}  {}/{} · {} compiled · {} fresh", bar(d, t), d, t, self.compiled, self.fresh),
+            None => format!("  Building · {} compiled · {} fresh", self.compiled, self.fresh),
+        };
         if self.errors > 0 {
             text.push_str(&format!(" · {} error{}", self.errors, if self.errors == 1 { "" } else { "s" }));
         }
@@ -527,7 +692,150 @@ impl Renderer {
         }
     }
 
+    /// Prints `cargo add`'s collected feature list, if any.
+    fn flush_features(&mut self, err: &mut impl Write) {
+        let Some(l) = self.lines.as_mut() else { return };
+        if l.features.is_empty() {
+            return;
+        }
+        let list = std::mem::take(&mut l.features).join(" ");
+        let text = self.paint("2", &format!("    features {}", list));
+        self.print_above(err, &text);
+    }
+
+    /// A line of a command that does not build (see `Rendering::Lines`).
+    fn on_lines(&mut self, err: &mut impl Write, line: &str) {
+        use crate::cargo_lines::{change, classify, package, Line};
+        let plain = strip_ansi(line);
+        let classified = classify(&plain);
+        // `cargo add`'s features: `+ derive` / `- alloc` lines under `Features:`.
+        if let (Line::Other(t), Some(l)) = (&classified, self.lines.as_mut()) {
+            let t = t.trim();
+            if t == "Features:" {
+                l.in_features = true;
+                return;
+            }
+            if l.in_features {
+                let item = t.strip_prefix("+ ").map(|f| format!("+{}", f)).or_else(|| t.strip_prefix("- ").map(|f| format!("−{}", f)));
+                if let Some(item) = item.filter(|i| i.len() > 1 && !i.contains(' ')) {
+                    l.features.push(item);
+                    return;
+                }
+            }
+        }
+        if let Some(l) = self.lines.as_mut() {
+            l.in_features = false;
+        }
+        self.flush_features(err);
+        if let Some(done) = self.activity.observe(&classified) {
+            let mark = self.paint("1;36", "↓");
+            self.print_above(err, &format!("{} Downloaded {}", mark, done));
+            return;
+        }
+        let paint_mark = |s: &Self, code: &str, m: &str| s.paint(code, m);
+        let out: Option<String> = match classified {
+            Line::Progress { verb: v @ ("Building" | "Downloading"), .. } => {
+                let _ = v;
+                None
+            }
+            Line::Progress { verb, detail, .. } => {
+                if let Some(l) = self.lines.as_mut() {
+                    l.doing = Some(format!("{} {}", verb, detail));
+                }
+                None
+            }
+            Line::Status { verb: "Updating", rest } if rest.ends_with(" index") => None,
+            Line::Status { verb: "Locking", .. } => None,
+            // A manifest edit: `Adding serde v1.0.229 to dependencies`, `Adding greet =1.0.0 to
+            // dev-dependencies`, `Removing serde from dependencies`.
+            Line::Status { verb: "Adding", rest } if rest.contains(" to ") => {
+                let (what, table) = rest.split_once(" to ").unwrap_or((rest, ""));
+                let (name, req) = what.split_once(' ').unwrap_or((what, ""));
+                let req = req.strip_prefix('v').filter(|r| r.bytes().next().is_some_and(|c| c.is_ascii_digit())).unwrap_or(req);
+                Some(format!("{} {:<24} {} → {}", paint_mark(self, "1;32", "+"), name, req, table))
+            }
+            Line::Status { verb: "Removing", rest } if rest.contains(" from ") => {
+                let (name, table) = rest.split_once(" from ").unwrap_or((rest, ""));
+                Some(format!("{} {} ← {}", paint_mark(self, "1;31", "−"), name, table))
+            }
+            // The lockfile: listed for `update`, one line at the end of a manifest edit.
+            Line::Status { verb: v @ ("Updating" | "Downgrading" | "Adding" | "Removing"), rest } => {
+                let edit = self.lines.as_ref().is_some_and(|l| l.edits_manifest());
+                let shown = match v {
+                    "Updating" | "Downgrading" => change(rest).map(|(n, f, t)| (n.to_string(), format!("{} → {}", f, t))),
+                    _ => package(rest).map(|(n, ver)| (n.to_string(), ver.to_string())),
+                };
+                let Some((name, what)) = shown else { return self.print_above(err, line) };
+                let (mark, code) = match v {
+                    "Updating" => ("↑", "1;32"),
+                    "Downgrading" => ("↓", "1;33"),
+                    "Adding" => ("+", "1;32"),
+                    _ => ("−", "1;31"),
+                };
+                if let Some(l) = self.lines.as_mut() {
+                    match v {
+                        "Updating" => l.updated += 1,
+                        "Downgrading" => l.downgraded += 1,
+                        "Adding" => l.added += 1,
+                        _ => l.removed += 1,
+                    }
+                    if edit {
+                        l.locked.push(format!("{}{} {}", mark, name, what));
+                        return;
+                    }
+                }
+                Some(format!("{} {:<24} {}", paint_mark(self, code, mark), name, what))
+            }
+            Line::Status { verb: "Unchanged", rest } => Some(self.paint("2", &format!("  = {}", rest))),
+            Line::Status { verb: "Creating" | "Removed" | "Packaged" | "Uploaded" | "Published" | "Vendored", rest } => {
+                if let Some(l) = self.lines.as_mut() {
+                    l.result = true;
+                }
+                let verb = match classified {
+                    Line::Status { verb: "Creating", .. } => "Created",
+                    Line::Status { verb, .. } => verb,
+                    _ => "",
+                };
+                Some(format!("{} {} {}", paint_mark(self, "1;32", "✓"), verb, rest))
+            }
+            Line::Status { verb: v @ ("Packaging" | "Verifying" | "Uploading" | "Waiting" | "Vendoring" | "Archiving" | "Compiling" | "Checking" | "Documenting" | "Finished" | "Fresh" | "Blocking" | "Downloaded" | "Generated"), rest } => {
+                if let Some(l) = self.lines.as_mut() {
+                    l.doing = Some(format!("{} {}", v, rest));
+                }
+                None
+            }
+            _ => Some(line.to_string()),
+        };
+        if let Some(text) = out {
+            self.print_above(err, &text);
+        }
+    }
+
     fn on_stderr(&mut self, err: &mut impl Write, line: &str) {
+        if self.lines.is_some() {
+            return self.on_lines(err, line);
+        }
+        let plain = strip_ansi(line);
+        if plain.contains("No space left on device") {
+            self.activity.disk_full = true;
+        }
+        let classified = crate::cargo_lines::classify(&plain);
+        if let Some(done) = self.activity.observe(&classified) {
+            let mark = self.paint("1;36", "↓");
+            self.print_above(err, &format!("{} Downloaded {}", mark, done));
+            return;
+        }
+        match classified {
+            crate::cargo_lines::Line::Progress { .. } => return,
+            // The lockfile changed: said once, dimly (each package is in `haul log`).
+            crate::cargo_lines::Line::Status { verb: "Locking", rest } if !rest.starts_with("0 ") => {
+                let text = self.paint("2", &format!("  Locked {}", rest));
+                self.print_above(err, &text);
+                return;
+            }
+            crate::cargo_lines::Line::Status { verb: "Updating" | "Locking" | "Adding" | "Removing" | "Downgrading" | "Unchanged" | "Downloaded" | "Downloading" | "Generated", .. } => return,
+            _ => {}
+        }
         let t = line.trim_start();
         let word = t.split_whitespace().next().unwrap_or("");
         match word {
@@ -547,7 +855,40 @@ impl Renderer {
         }
     }
 
+    /// The summary of a command that does not build.
+    fn lines_summary(&mut self, err: &mut impl Write, exit: ExitInfo, wall_ns: u64) {
+        self.flush_features(err);
+        self.clear_status(err);
+        let Some(l) = self.lines.take() else { return };
+        let dot = self.paint("2", " · ");
+        if !l.locked.is_empty() {
+            let _ = writeln!(err, "{}", self.paint("2", &format!("    locked {}", l.locked.join(" "))));
+        }
+        let s = if exit.signal.is_some() {
+            format!("{} after {}", self.paint("1;33", "■ Interrupted"), human_dur(wall_ns))
+        } else if !exit.success() {
+            format!("{} after {}", self.paint("1;31", &format!("✗ cargo {} failed", l.command)), human_dur(wall_ns))
+        } else if l.result {
+            return;
+        } else {
+            let changes: Vec<String> = [(l.updated, "updated"), (l.downgraded, "downgraded"), (l.added, "added"), (l.removed, "removed")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+            let what = match l.command.as_str() {
+                "update" | "generate-lockfile" if changes.is_empty() => "Lockfile up to date".to_string(),
+                "update" | "generate-lockfile" => format!("Lockfile updated{}{}", dot, changes.join(&dot)),
+                "add" | "remove" | "rm" => "Manifest updated".to_string(),
+                "fetch" => "Fetched".to_string(),
+                other => format!("cargo {}", other),
+            };
+            format!("{} {}{}{}", self.paint("1;32", "✓"), what, dot, human_dur(wall_ns))
+        };
+        let _ = writeln!(err, "{}", s);
+        let _ = err.flush();
+    }
+
     fn summary(&mut self, err: &mut impl Write, exit: ExitInfo, wall_ns: u64, cache_hits: u64) {
+        if self.lines.is_some() {
+            return self.lines_summary(err, exit, wall_ns);
+        }
         self.clear_status(err);
         let dot = self.paint("2", " · ");
         if exit.success() {
@@ -557,6 +898,9 @@ impl Renderer {
                 s.push_str(&format!("{}{} restored from Haul's cache", dot, cache_hits));
             }
             let _ = writeln!(err, "{}", s);
+            for g in &self.activity.generated {
+                let _ = writeln!(err, "  {} {}", self.paint("2", "docs"), g);
+            }
         } else if exit.signal.is_some() {
             let _ = writeln!(err, "{} after {}", self.paint("1;33", "■ Interrupted"), human_dur(wall_ns));
         } else {
@@ -568,6 +912,9 @@ impl Renderer {
                 s.push_str(&format!("{}first at {}", dot, first));
             }
             let _ = writeln!(err, "{}", s);
+            if self.activity.disk_full {
+                let _ = writeln!(err, "{}", self.paint("1;31", &disk_full_note()));
+            }
         }
         if let Some(line) = self.warnings_line() {
             let _ = writeln!(err, "{}", line);
@@ -606,7 +953,10 @@ impl Renderer {
                 }
                 Ev::Err(line) => {
                     self.on_stderr(&mut err, &line);
-                    self.store("err", line);
+                    // Progress redraws are not output to keep.
+                    if !matches!(crate::cargo_lines::classify(&strip_ansi(&line)), crate::cargo_lines::Line::Progress { .. }) {
+                        self.store("err", line);
+                    }
                 }
                 Ev::End { exit, wall_ns, cache_hits } => {
                     self.summary(&mut err, exit, wall_ns, cache_hits);
@@ -697,6 +1047,64 @@ mod tests {
 
     fn r() -> Renderer {
         Renderer { width: 80, ..Default::default() }
+    }
+
+    /// What a command that does not build shows for Cargo's `lines` and exit status `code`.
+    fn lines(command: &str, lines: &[&str], code: i32) -> String {
+        let mut ren = Renderer { width: 80, lines: Some(Lines { command: command.into(), ..Default::default() }), ..Default::default() };
+        let mut sink: Vec<u8> = Vec::new();
+        for l in lines {
+            ren.on_stderr(&mut sink, l);
+        }
+        ren.summary(&mut sink, ExitInfo { code: Some(code), signal: None }, 920_000_000, 0);
+        String::from_utf8(sink).unwrap()
+    }
+
+    #[test]
+    fn lockfile_changes_are_listed_and_summed_up() {
+        // Cargo 1.99's lines.
+        let out = lines("update", &["    Updating crates.io index", "     Locking 3 packages to latest Rust 1.99.0 compatible versions", "    Updating serde v1.0.200 -> v1.0.229", "      Adding itoa v1.0.18", "    Removing autocfg v1.3.0"], 0);
+        assert_eq!(
+            out,
+            "↑ serde                    1.0.200 → 1.0.229\n+ itoa                     1.0.18\n− autocfg                  1.3.0\n✓ Lockfile updated · 1 updated · 1 added · 1 removed · 920ms\n"
+        );
+        assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "✓ Lockfile up to date · 920ms\n");
+    }
+
+    #[test]
+    fn manifest_edits_and_their_features_read_as_one() {
+        let out = lines("add", &["    Updating crates.io index", "      Adding serde v1.0.229 to dependencies", "             Features:", "             + derive", "             + std", "             - alloc", "    Updating crates.io index", "     Locking 7 packages to latest compatible versions"], 0);
+        assert_eq!(out, "+ serde                    1.0.229 → dependencies\n    features +derive +std −alloc\n✓ Manifest updated · 920ms\n");
+        // What the edit locked is one line, at the end.
+        let out = lines("add", &["      Adding greet =1.0.0 to dev-dependencies", "     Locking 2 packages to latest compatible versions", "      Adding greet v1.0.0", "      Adding itoa v1.0.18"], 0);
+        assert_eq!(out, "+ greet                    =1.0.0 → dev-dependencies\n    locked +greet 1.0.0 +itoa 1.0.18\n✓ Manifest updated · 920ms\n");
+        assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "− serde ← dependencies\n✓ Manifest updated · 920ms\n");
+    }
+
+    #[test]
+    fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
+        assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "✓ Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
+        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files, 75.8MiB total\n");
+        let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
+        assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\n✗ cargo update failed after 920ms\n");
+    }
+
+    #[test]
+    fn downloads_show_progress_then_one_line() {
+        let mut ren = r();
+        let mut sink: Vec<u8> = Vec::new();
+        ren.on_stderr(&mut sink, " Downloading crates ...");
+        assert_eq!(ren.activity.status().as_deref(), Some("Downloading crates"));
+        ren.on_stderr(&mut sink, " Downloading 4 crates");
+        ren.on_stderr(&mut sink, "  Downloaded quote v1.0.47");
+        ren.on_stderr(&mut sink, " Downloading 3 crates, remaining bytes: 281.0KiB");
+        assert_eq!(ren.activity.status().as_deref(), Some("Downloading ━━━━━╺──────────────  1/4 crates · 281.0KiB left"));
+        ren.on_stderr(&mut sink, "  Downloaded 4 crates (645.0KiB) in 0.16s");
+        assert_eq!(ren.activity.status(), None);
+        ren.on_stderr(&mut sink, "    Building [==>      ] 2/16: syn, quote");
+        assert_eq!(ren.activity.progress, Some((2, 16)));
+        let text = String::from_utf8(sink).unwrap();
+        assert_eq!(text, "↓ Downloaded 4 crates · 645.0KiB · 0.16s\n");
     }
 
     #[test]

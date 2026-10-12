@@ -454,7 +454,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // The disk nearly full: Haul's cache gives back what it can first (for ten seconds at most).
     if let Some(freed) = crate::space::before_command(&cfg) {
         match freed {
-            Ok(c) => crate::ui::note(&format!("the disk is nearly full: Haul's cache gave back {} ({} → {}){}", util::human_bytes(c.before.saturating_sub(c.after)), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
+            Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: Haul's cache gave back {} ({} → {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
+            // Nothing of Haul's left to give: said once an hour, not on every command.
+            Ok(c) => crate::ui::notice_hourly("disk-full", &format!("the disk is nearly full, and nothing in Haul's cache ({}) can go now", util::human_bytes(c.after))),
             Err(e) => crate::ui::note(&format!("the disk is nearly full, and Haul's cache could not give back space: {}", e)),
         }
     }
@@ -526,13 +528,21 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
     let render = rendering != Rendering::Off;
-    if render {
+    // A build rendered: Cargo's JSON messages on stdout. A command that does not build: its stderr.
+    let render_build = matches!(rendering, Rendering::Build | Rendering::BuildFirst(_));
+    if render_build {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
+    }
+    // Cargo's progress (units done of all, crates left to download) for Haul's status line; and
+    // its colours for the lines Haul shows as they are, though it writes into a pipe.
+    let mut progress_env: Vec<(String, String)> = if render { vec![("CARGO_TERM_PROGRESS_WHEN".into(), "always".into()), ("CARGO_TERM_PROGRESS_WIDTH".into(), "1000".into())] } else { vec![] };
+    if rendering == Rendering::Lines && crate::ui::color() {
+        progress_env.push(("CARGO_TERM_COLOR".into(), "always".into()));
     }
     let command = |args: &[OsString]| -> Command {
         let mut cmd = engine.command(args, &inv);
         cmd.current_dir(&cwd);
-        for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
+        for (k, v) in plan.env_set.iter().chain(spec.env.iter()).chain(progress_env.iter()) {
             cmd.env(k, v);
         }
         for k in &plan.env_remove {
@@ -545,7 +555,9 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let mut cmd = command(&args);
 
     let tee = !spec.stdout_to_stderr && cfg.str("measurement.cargo-json") == "auto" && inv.json_messages && inv.family.builds() && !std::io::stdout().is_terminal();
-    if tee || render {
+    if rendering == Rendering::Lines {
+        cmd.stderr(Stdio::piped());
+    } else if tee || render {
         cmd.stdout(Stdio::piped());
         if render {
             cmd.stderr(Stdio::piped());
@@ -562,7 +574,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // A build Haul renders is skipped when its stamp shows nothing it depends on changed (see
     // prebuilt.rs). For `run` / `test` the command itself still checks freshness; for a build
     // alone Haul's verdict is the answer.
-    let judged = rendering != Rendering::Off;
+    let judged = render_build;
     let prebuilt_key = (judged && store_ok).then(|| crate::prebuilt::key(&args, &cwd, &engine.cargo(), &engine.env));
     let known_fresh = prebuilt_key.as_deref().and_then(|k| crate::prebuilt::fresh(&store.dir, k));
 
@@ -577,7 +589,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
         None => {
             let run = proc::run_with(&mut cmd, true, &mut |child| {
-                if render {
+                if rendering == Rendering::Lines {
+                    if let Some(err) = child.stderr.take() {
+                        live = Some(crate::ui::start_lines(err, inv.alias_of.as_deref().or(inv.command.as_deref()).unwrap_or("")));
+                    }
+                } else if render {
                     if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
                         live = Some(crate::ui::start(out, err, matches!(rendering, Rendering::BuildFirst(_))));
                     }
