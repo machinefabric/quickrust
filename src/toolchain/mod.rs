@@ -508,7 +508,7 @@ pub fn start_update(layout: &Layout, key: &str, haul: &Path, auto_update: &str) 
         Ok(())
     })?;
     let log = std::fs::File::create(layout.toolchains().join(".update.log")).map_err(|e| e.to_string())?;
-    let mut c = std::process::Command::new(haul);
+    let mut c = crate::resolve::haul_command(haul);
     c.args(["toolchain", "update", "--channel", key, "--background"]);
     crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", haul.display(), e))?;
     Ok(true)
