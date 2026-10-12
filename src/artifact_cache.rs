@@ -309,12 +309,8 @@ impl Job {
                 continue;
             }
             fs::copy(&p, tmp.join(&name)).map_err(|e| e.to_string())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if md.permissions().mode() & 0o111 != 0 {
-                    executable.push(name.clone());
-                }
+            if has_execute_permission(&md) {
+                executable.push(name.clone());
             }
             files.push(name);
         }
@@ -331,6 +327,21 @@ impl Job {
             let _ = fs::remove_dir_all(&tmp);
         }
         util::write_json(&self.manifest(), &manifest).map_err(|e| e.to_string())
+    }
+}
+
+/// Whether a file carries execute permission, which a restored copy must get back. Windows has
+/// no such bit: executables are recognised by their extension there.
+fn has_execute_permission(md: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        md.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = md;
+        false
     }
 }
 
