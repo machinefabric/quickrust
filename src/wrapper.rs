@@ -38,10 +38,15 @@ pub fn main() {
 
     // Fast mode: rustc's parallel frontend for the units Cargo schedules. Build scripts also run
     // rustc through this wrapper to probe the compiler; those must see it exactly as it is.
+    // The thread pool costs ~7 ms per process, which only pays off in large crates: units whose
+    // last compilation took under half a second (known from this machine's history) go without.
     let mut bootstrap = false;
+    let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
+    let unit_time = settings["unit_times"].as_str().filter(|_| is_cargo_unit(&lossy)).and_then(|d| arg_value(&lossy, "--crate-name").map(|n| PathBuf::from(d).join(format!("{}{}", n, codegen_value(&lossy, "extra-filename").unwrap_or("")))));
     if let (Some(n), None) = (settings["frontend_threads"].as_u64(), &inner) {
-        let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
-        if is_cargo_unit(&lossy) && !lossy.iter().any(|a| a.contains("threads=")) {
+        let last_ns = unit_time.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| t.trim().parse::<u64>().ok());
+        let small = last_ns.map(|ns| ns < 500_000_000).unwrap_or(false);
+        if is_cargo_unit(&lossy) && !small && !lossy.iter().any(|a| a.contains("threads=")) {
             argv.push(format!("-Zthreads={}", n).into());
             bootstrap = true;
         }
@@ -116,6 +121,9 @@ pub fn main() {
         }
     };
     let dur_ns = started.elapsed().as_nanos() as u64;
+    if let (Some(p), true) = (&unit_time, exit.success()) {
+        let _ = std::fs::create_dir_all(p.parent().unwrap_or(Path::new("."))).and_then(|_| std::fs::write(p, dur_ns.to_string()));
+    }
 
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
