@@ -474,7 +474,7 @@ pub fn inspect_build_script_run(run_dir: &Path, session_start: u64, session_end:
 }
 
 /// Connects units through the artifacts they consume (FR-030.1).
-pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, known_stems: &HashMap<String, Value>) -> (Graph, Vec<Value>) {
+pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, known_stems: &HashMap<&str, &Value>) -> (Graph, Vec<Value>) {
     let mut by_stem: HashMap<String, usize> = HashMap::new();
     for (i, u) in units.iter().enumerate() {
         // A unit compiled twice in one session (nested builds) keeps its last invocation.
@@ -490,7 +490,7 @@ pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, k
                 continue;
             }
             if let std::collections::hash_map::Entry::Vacant(slot) = by_stem.entry(stem.clone()) {
-                let prior = known_stems.get(&stem);
+                let prior = known_stems.get(stem.as_str()).copied();
                 let get = |k: &str| prior.map(|p| util::vstr(p, k)).unwrap_or_default();
                 let fresh = Unit {
                     id: format!("unit:{}", stem),
@@ -739,6 +739,13 @@ fn artifact_cache_summary(mut cache: Value, session: &Value, events: &Events) ->
 
 /// Finalizes a session into its report. Idempotent: an existing report is returned as is.
 pub fn finalize(store: &WsStore, id: &str, cfg: &Config) -> Result<Value, String> {
+    if let Some(existing) = store.load_run(id) {
+        return Ok(existing);
+    }
+    // One analysis of a workspace at a time: each reads the unit index, adds its run and writes it
+    // back, and two at once would lose one's additions.
+    let _lock = util::ExclusiveLock::acquire(&store.index_path().with_file_name("units.lock")).map_err(|e| format!("could not lock the unit index: {}", e))?;
+    // Another process may have analysed it while this one waited.
     if let Some(existing) = store.load_run(id) {
         return Ok(existing);
     }

@@ -52,8 +52,9 @@ impl Index {
         self.v["units"].as_object().into_iter().flat_map(|o| o.values()).filter_map(Value::as_array).flatten()
     }
 
-    pub fn by_stem(&self) -> HashMap<String, Value> {
-        self.all().filter_map(|e| Some((e["stem"].as_str()?.to_string(), e.clone()))).collect()
+    /// Every entry by its artifact stem, borrowed: an index of ten thousand units is large.
+    pub fn by_stem(&self) -> HashMap<&str, &Value> {
+        self.all().filter_map(|e| Some((e["stem"].as_str()?, e))).collect()
     }
 
     pub fn last_clean(&self) -> Option<u64> {

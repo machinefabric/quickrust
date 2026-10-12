@@ -321,6 +321,47 @@ pub fn read_json(path: &Path) -> Option<Value> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+/// An exclusive lock on a file, held until dropped; waits for whoever holds it. Unix: `flock`,
+/// which the kernel releases when the process ends, so a crash never leaves it held. Windows: the
+/// file opened without sharing, which other openers wait out.
+pub struct ExclusiveLock {
+    _file: fs::File,
+}
+
+impl ExclusiveLock {
+    pub fn acquire(path: &Path) -> io::Result<ExclusiveLock> {
+        if let Some(dir) = path.parent() {
+            create_private_dir(dir)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    return Ok(ExclusiveLock { _file: file });
+                }
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::Interrupted {
+                    return Err(e);
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            loop {
+                match fs::OpenOptions::new().create(true).truncate(false).write(true).share_mode(0).open(path) {
+                    Ok(file) => return Ok(ExclusiveLock { _file: file }),
+                    Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+    }
+}
+
 /// Private directories for Haul state (SEC-017).
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
@@ -486,6 +527,26 @@ pub fn vpath<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_exclusive_lock_waits_for_its_holder() {
+        let dir = std::env::temp_dir().join(format!("haul-lock-{}", new_id()));
+        let path = dir.join("x.lock");
+        let held = ExclusiveLock::acquire(&path).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let other = path.clone();
+        let waiter = std::thread::spawn(move || {
+            let _l = ExclusiveLock::acquire(&other).unwrap();
+            tx.send(std::time::Instant::now()).unwrap();
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(rx.try_recv().is_err(), "acquired while held");
+        let released = std::time::Instant::now();
+        drop(held);
+        assert!(rx.recv().unwrap() >= released);
+        waiter.join().unwrap();
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn iso_epoch_and_known_date() {
