@@ -30,6 +30,10 @@ enum Kind {
     Enum(&'static [&'static str]),
     Bool,
     Int,
+    /// A byte size such as `10GiB`; stored as bytes.
+    Size,
+    /// `auto`, `off`, or a thread count of at least 2.
+    Threads,
 }
 
 struct Key {
@@ -42,6 +46,7 @@ struct Key {
 }
 
 const KEYS: &[Key] = &[
+    Key { name: "output", kind: Kind::Enum(&["haul", "cargo"]), default: "haul", env: Some("HAUL_OUTPUT"), help: "build output in a terminal: Haul's (status line, errors in full, warnings counted; everything stored) or Cargo's own; compat mode defaults to cargo" },
     Key { name: "mode", kind: Kind::Enum(&["fast", "compat"]), default: "fast", env: Some("HAUL_MODE"), help: "fast: build settings that keep program behaviour identical are applied by default; compat: exactly upstream Cargo's builds" },
     Key { name: "compatibility.nested-cargo", kind: Kind::Enum(&["orchestrator", "upstream"]), default: "orchestrator", env: Some("HAUL_NESTED"), help: "nested `cargo` invocations that reach the shim: record them (orchestrator) or hand straight to upstream" },
     Key { name: "compatibility.unknown-command", kind: Kind::Enum(&["delegate", "instrument"]), default: "delegate", env: None, help: "external subcommands: plain delegation or rustc-wrapper instrumentation" },
@@ -56,10 +61,10 @@ const KEYS: &[Key] = &[
     Key { name: "incremental.local-dev", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy on developer machines" },
     Key { name: "incremental.ci", kind: Kind::Enum(&["cargo-default", "on", "off", "experiment"]), default: "cargo-default", env: None, help: "incremental compilation policy in CI" },
     Key { name: "cache.provider", kind: Kind::Enum(&["inherit", "none", "sccache"]), default: "inherit", env: None, help: "compiler cache: observe what is configured, none, or chain sccache" },
-    Key { name: "fast.frontend-threads", kind: Kind::Str, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
+    Key { name: "fast.frontend-threads", kind: Kind::Threads, default: "auto", env: None, help: "fast mode: threads for rustc's parallel frontend in the units Cargo builds (auto: up to 8 on 4+ cores; off; or a number)" },
     Key { name: "cache.artifacts", kind: Kind::Enum(&["on", "off"]), default: "on", env: None, help: "fast mode: Haul's global artifact cache for dependency units (no effect in compat mode or with a user rustc wrapper)" },
     Key { name: "cache.artifacts-min-workspace-ms", kind: Kind::Int, default: "300", env: None, help: "workspace units that compiled faster than this are not stored: a copy on every edit would cost about what it saves" },
-    Key { name: "cache.artifacts-max-size", kind: Kind::Str, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
+    Key { name: "cache.artifacts-max-size", kind: Kind::Size, default: "10GiB", env: None, help: "size above which Haul's artifact cache drops its least recently used entries" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
     Key { name: "artifacts.stale-days", kind: Kind::Int, default: "30", env: None, help: "age after which unused rebuildable artifacts become GC candidates" },
@@ -120,6 +125,11 @@ fn parse_scalar(key: &Key, raw: &str, origin: &str) -> Result<Val, String> {
             _ => Err(bad("a boolean")),
         },
         Kind::Int => raw.parse::<i64>().ok().filter(|v| *v >= 0).map(Val::Int).ok_or_else(|| bad("a non-negative integer")),
+        Kind::Size => crate::util::parse_bytes(raw).filter(|b| *b > 0).map(|b| Val::Int(b as i64)).ok_or_else(|| bad("a size such as 10GiB or 500MB")),
+        Kind::Threads => match raw {
+            "auto" | "off" => Ok(Val::Str(raw.to_string())),
+            n => n.parse::<u32>().ok().filter(|n| *n >= 2).map(|_| Val::Str(raw.to_string())).ok_or_else(|| bad("auto, off, or a thread count of at least 2")),
+        },
     }
 }
 
@@ -127,7 +137,7 @@ fn from_toml(key: &Key, v: &toml::Value, origin: &str) -> Result<Val, String> {
     match (v, &key.kind) {
         (toml::Value::String(s), _) => parse_scalar(key, s, origin),
         (toml::Value::Boolean(b), Kind::Bool) => Ok(Val::Bool(*b)),
-        (toml::Value::Integer(i), Kind::Int) if *i >= 0 => Ok(Val::Int(*i)),
+        (toml::Value::Integer(i), Kind::Int | Kind::Size | Kind::Threads) if *i >= 0 => parse_scalar(key, &i.to_string(), origin),
         _ => Err(format!("invalid type for `{}` from {}", key.name, origin)),
     }
 }
@@ -153,14 +163,14 @@ pub fn find_repo_config(start: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Threads for rustc's parallel frontend under `fast.frontend-threads`; `None` when off.
-pub fn frontend_threads(setting: &str) -> Result<Option<u32>, String> {
+/// Threads for rustc's parallel frontend under `fast.frontend-threads` (validated on load); `None` when off.
+pub fn frontend_threads(setting: &str) -> Option<u32> {
     let cores = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
     match setting {
-        "off" | "0" | "1" => Ok(None),
+        "off" => None,
         // More than eight threads gained little in measurements; fewer than four cores gain nothing.
-        "auto" => Ok((cores >= 4).then(|| cores.min(8))),
-        n => n.parse::<u32>().map(|n| (n > 1).then_some(n)).map_err(|_| format!("invalid value {:?} for `fast.frontend-threads`: expected auto, off or a number", n)),
+        "auto" => (cores >= 4).then(|| cores.min(8)),
+        n => n.parse::<u32>().ok(),
     }
 }
 
@@ -302,12 +312,18 @@ mod tests {
         assert!(err.contains("cache.providr") && err.contains("config.toml"), "{}", err);
         fs::write(&p, "[cache]\nfail = \"maybe\"\n").unwrap();
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("one of open, closed"));
-        fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\n[measurement]\nkeep-runs = 7\n").unwrap();
+        fs::write(&p, "[cache]\nartifacts-max-size = \"lots\"\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("a size such as 10GiB"));
+        fs::write(&p, "[fast]\nfrontend-threads = 1\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("at least 2"));
+        fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\nartifacts-max-size = \"2GiB\"\n[fast]\nfrontend-threads = 4\n[measurement]\nkeep-runs = 7\n").unwrap();
         let mut c = Config::defaults();
         c.apply_file(&p).unwrap();
         assert_eq!(c.str("cache.provider"), "sccache");
         assert_eq!(c.int("measurement.keep-runs"), 7);
         assert_eq!(c.str("mode"), "compat");
+        assert_eq!(c.int("cache.artifacts-max-size"), 2 << 30);
+        assert_eq!(frontend_threads(c.str("fast.frontend-threads")), Some(4));
         assert!(c.origin("cache.provider").ends_with("config.toml"));
         c.set_flag("cache.provider=none").unwrap();
         assert_eq!(c.origin("cache.provider"), "flag");

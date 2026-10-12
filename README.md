@@ -107,6 +107,32 @@ report).
 How much faster, measured on real projects against plain Cargo:
 [benchmarks/PROGRESS.md](benchmarks/PROGRESS.md) (method: [benchmarks/README.md](benchmarks/README.md)).
 
+## Build output
+
+In a terminal, Haul shows a build the way you need it: one live status line instead of a
+`Compiling` line per crate, every error in full as it arrives (rustc's own rendering),
+warnings counted by lint and crate instead of dumped, and a one-line summary:
+
+```text
+✓ Built 4.21s · 12 compiled · 140 fresh · 37 restored from Haul's cache
+⚠ 23 warnings in app, util: unused_variables ×17, dead_code ×4, +2 more · `haul warnings` to show them
+```
+
+Nothing is lost. Every line is stored with the run:
+
+```bash
+haul warnings                       # all warnings of the latest build, as rustc wrote them
+haul warnings --crate app --lint dead_code
+haul errors                         # the errors again
+haul log [--raw]                    # everything, in order
+```
+
+Lines Haul does not recognise (build script failures, `cargo:warning=…`, resolution errors)
+are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format`,
+`cargo run` and `cargo test` (other than `--no-run`) get Cargo's output untouched.
+`output = "cargo"` (or `HAUL_OUTPUT=cargo`) turns it off; compat mode leaves the terminal
+to Cargo unless you set `output = "haul"`.
+
 ## What "drop-in" means here
 
 - Arguments, stdin, stdout, stderr, the environment, the exit status and

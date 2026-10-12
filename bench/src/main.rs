@@ -409,7 +409,12 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
 
     // Provenance is taken before measuring: the binaries were built from this state, and later
     // edits to the checkout must not be attributed to them.
-    let state = || (capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_default(), capture(repo, "git", &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(true));
+    // A record without provenance is worthless: no git, no measurement.
+    let state = || {
+        let rev = capture(repo, "git", &["rev-parse", "--short", "HEAD"]).unwrap_or_else(|| fail(&format!("cannot read the Haul revision in {} (git rev-parse failed)", repo.display())));
+        let status = capture(repo, "git", &["status", "--porcelain"]).unwrap_or_else(|| fail(&format!("cannot read the state of {} (git status failed)", repo.display())));
+        (rev, !status.is_empty())
+    };
     let (haul_rev, haul_dirty) = state();
     let started = Instant::now();
     let mut edit_n = 0u64;

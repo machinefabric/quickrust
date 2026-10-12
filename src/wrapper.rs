@@ -12,6 +12,7 @@
 use crate::artifact_cache;
 use crate::proc::{self, ExitInfo};
 use crate::util;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -20,6 +21,39 @@ use std::time::Instant;
 
 /// Files larger than this are fingerprinted by size and mtime only.
 const HASH_LIMIT: u64 = 8 * 1024 * 1024;
+
+/// What a session tells the wrapper about its build, written once into the session's event
+/// directory. A file rather than more environment variables: programs run by `cargo run` and
+/// `cargo test` inherit Cargo's environment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Settings {
+    /// Haul's artifact cache, when it is on for this build.
+    pub artifact_cache: Option<PathBuf>,
+    /// Threads for rustc's parallel frontend in Cargo's units, when it is on.
+    pub frontend_threads: Option<u32>,
+    /// Workspace units that compiled faster than this are not stored in the cache.
+    pub min_workspace_store_ns: u64,
+}
+
+const SETTINGS_FILE: &str = "_wrapper.settings";
+
+impl Settings {
+    pub fn write(&self, events_dir: &Path) -> std::io::Result<()> {
+        util::write_atomic_fast(&events_dir.join(SETTINGS_FILE), &serde_json::to_vec(self).map_err(std::io::Error::other)?)
+    }
+
+    /// `Ok(None)` outside a Haul session. A settings file that exists but cannot be read is an
+    /// error: the session that wrote it and this wrapper disagree, which must not go unnoticed.
+    pub fn read(events_dir: &Path) -> Result<Option<Settings>, String> {
+        let path = events_dir.join(SETTINGS_FILE);
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{} is not valid wrapper settings ({}); the haul and haul-rustc-wrapper binaries may be from different versions", path.display(), e)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("cannot read {}: {}", path.display(), e)),
+        }
+    }
+}
 
 pub fn main() {
     let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
@@ -32,22 +66,24 @@ pub fn main() {
     let event_dir = std::env::var_os(crate::ENV_EVENT_DIR).filter(|v| !v.is_empty()).map(PathBuf::from);
     let fail_open = std::env::var(crate::ENV_WRAPPER_FAIL).map(|v| v == "open").unwrap_or(false);
 
-    // Settings the session left for this build (fast mode); none outside a Haul session.
-    let settings = event_dir.as_ref().and_then(|d| util::read_json(&d.join(crate::WRAPPER_CONFIG))).unwrap_or(Value::Null);
-    let cache_root = settings["artifact_cache"].as_str().map(PathBuf::from);
+    let settings = match event_dir.as_deref().map(Settings::read).transpose() {
+        Ok(s) => s.flatten(),
+        Err(e) => {
+            eprintln!("haul: error: {}", e);
+            std::process::exit(crate::EXIT_HAUL_ERROR);
+        }
+    };
+    let cache_root = settings.as_ref().and_then(|s| s.artifact_cache.clone());
 
-    // Fast mode: rustc's parallel frontend for the units Cargo schedules. Build scripts also run
-    // rustc through this wrapper to probe the compiler; those must see it exactly as it is.
-    // The thread pool costs ~7 ms per process, which only pays off in large crates: units that
-    // never took half a second to compile on this machine go without. The longest compilation
-    // seen counts, not the last one: a short incremental rebuild says nothing about a fresh one.
+    // Fast mode: rustc's parallel frontend for the units Cargo schedules that are compiled from
+    // scratch (dependencies, release and CI builds). Measured on ripgrep: it makes incremental
+    // rebuilds of small crates 2-3x slower, and switching it on and off between incremental
+    // compilations discards rustc's incremental session. Build scripts also run rustc through
+    // this wrapper to probe the compiler; those must see it exactly as it is.
     let mut bootstrap = false;
     let lossy: Vec<String> = argv.iter().map(|a| util::lossy(a)).collect();
-    let unit_time = settings["unit_times"].as_str().filter(|_| is_cargo_unit(&lossy)).and_then(|d| arg_value(&lossy, "--crate-name").map(|n| PathBuf::from(d).join(format!("{}{}", n, codegen_value(&lossy, "extra-filename").unwrap_or("")))));
-    if let (Some(n), None) = (settings["frontend_threads"].as_u64(), &inner) {
-        let last_ns = unit_time.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| t.trim().parse::<u64>().ok());
-        let small = last_ns.map(|ns| ns < 500_000_000).unwrap_or(false);
-        if is_cargo_unit(&lossy) && !small && !lossy.iter().any(|a| a.contains("threads=")) {
+    if let (Some(n), None) = (settings.as_ref().and_then(|s| s.frontend_threads), &inner) {
+        if is_cargo_unit(&lossy) && codegen_value(&lossy, "incremental").is_none() && !lossy.iter().any(|a| a.contains("threads=")) {
             argv.push(format!("-Zthreads={}", n).into());
             bootstrap = true;
         }
@@ -122,15 +158,11 @@ pub fn main() {
         }
     };
     let dur_ns = started.elapsed().as_nanos() as u64;
-    if let (Some(p), true) = (&unit_time, exit.success()) {
-        let longest = std::fs::read_to_string(p).ok().and_then(|t| t.trim().parse::<u64>().ok()).unwrap_or(0).max(dur_ns);
-        let _ = std::fs::create_dir_all(p.parent().unwrap_or(Path::new("."))).and_then(|_| std::fs::write(p, longest.to_string()));
-    }
 
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
         // A workspace unit that compiles in a moment is not worth a copy on every edit.
-        (Ok(j), Some(_)) if exit.success() && j.is_local() && dur_ns < settings["min_workspace_store_ns"].as_u64().unwrap_or(300_000_000) => json!({ "result": "miss", "not_stored": "quick to compile" }),
+        (Ok(j), Some(_)) if exit.success() && j.is_local() && settings.as_ref().map(|s| dur_ns < s.min_workspace_store_ns).unwrap_or(false) => json!({ "result": "miss", "not_stored": "quick to compile" }),
         (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
             Ok(Ok(())) => json!({ "result": "stored" }),
             Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
@@ -404,6 +436,19 @@ mod tests {
     #[test]
     fn depinfo_paths_with_spaces() {
         assert_eq!(split_depinfo_paths("src/lib.rs src/my\\ file.rs  build.rs"), vec!["src/lib.rs", "src/my file.rs", "build.rs"]);
+    }
+
+    #[test]
+    fn settings_round_trip_and_reject_what_this_version_does_not_know() {
+        let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_workspace_store_ns: 300_000_000 };
+        s.write(&dir).unwrap();
+        assert_eq!(Settings::read(&dir).unwrap(), Some(s));
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_workspace_store_ns":1,"from_the_future":true}"#).unwrap();
+        assert!(Settings::read(&dir).unwrap_err().contains("different versions"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
