@@ -751,3 +751,46 @@ fn a_cargo_that_is_not_a_proxy_is_used_directly_and_remembered_as_such() {
     assert_eq!(entries[0]["proxy"], Value::Bool(false));
 }
 
+
+#[test]
+fn comp007_cargo_has_the_terminal_through_the_shim() {
+    // COMP-007: Cargo's standard streams are a terminal under Haul as under upstream Cargo: it
+    // detects colour, and a Ctrl-C typed there reaches every process of the build and ends it
+    // with the same status.
+    let sb = Sandbox::new("terminal");
+    let p = sb.package("p", "p");
+    let Some(mut ours) = sb.cargo_in_terminal(&p, "build") else {
+        eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
+        return;
+    };
+    let compiling = |out: &std::process::Output| -> Vec<String> { String::from_utf8_lossy(&out.stdout).split(['\r', '\n']).filter(|l| l.contains("Compiling")).map(str::to_string).collect() };
+    // Cargo's own colour detection (the sandbox otherwise turns colour off).
+    let ours = run(ours.env("HAUL_MODE", "compat").env_remove("CARGO_TERM_COLOR"));
+    ok(sb.upstream(&p).arg("clean"));
+    let theirs = run(sb.upstream_in_terminal(&p, "build").unwrap().env_remove("CARGO_TERM_COLOR"));
+    assert!(ours.status.success() && theirs.status.success());
+    assert!(!compiling(&theirs).is_empty() && compiling(&theirs)[0].contains("\x1b["), "upstream Cargo colours its status on a terminal: {:?}", compiling(&theirs));
+    assert_eq!(compiling(&ours), compiling(&theirs), "the same colour, through the shim");
+
+    // A program that waits; Ctrl-C typed at the terminal.
+    sb.file("p/src/main.rs", "fn main() {\n    println!(\"ready\");\n    std::thread::sleep(std::time::Duration::from_secs(60));\n}\n");
+    let interrupted = |mut cmd: std::process::Command| -> (Option<i32>, std::time::Duration) {
+        use std::io::{BufRead, Write};
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let mut lines = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut line = String::new();
+        while !line.contains("ready") {
+            line.clear();
+            assert!(lines.read_line(&mut line).unwrap() > 0, "the program never started");
+        }
+        let typed = std::time::Instant::now();
+        child.stdin.as_mut().unwrap().write_all(b"\x03").unwrap();
+        let status = child.wait().unwrap();
+        (status.code(), typed.elapsed())
+    };
+    let (theirs, _) = interrupted(sb.upstream_in_terminal(&p, "run").unwrap());
+    // Haul's own way, building first and then running the command (the default in a terminal).
+    let (ours, took) = interrupted(sb.cargo_in_terminal(&p, "run").unwrap());
+    assert_eq!(ours, theirs, "the same exit status as upstream Cargo after Ctrl-C");
+    assert!(took < std::time::Duration::from_secs(10), "Ctrl-C ended the run after {:?}", took);
+}
