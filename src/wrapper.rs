@@ -32,8 +32,8 @@ pub struct Settings {
     pub artifact_cache: Option<PathBuf>,
     /// Threads for rustc's parallel frontend in Cargo's units, when it is on.
     pub frontend_threads: Option<u32>,
-    /// Workspace units that compiled faster than this are not stored in the cache.
-    pub min_workspace_store_ns: u64,
+    /// Linked workspace outputs that compiled faster than this are not stored in the cache.
+    pub min_link_store_ns: u64,
 }
 
 const SETTINGS_FILE: &str = "_wrapper.settings";
@@ -161,8 +161,10 @@ pub fn main() {
 
     // Storing is best effort and never changes the compiler's outcome.
     let cache = match (&job, &captured) {
-        // A workspace unit that compiles in a moment is not worth a copy on every edit.
-        (Ok(j), Some(_)) if exit.success() && j.is_local() && settings.as_ref().map(|s| dur_ns < s.min_workspace_store_ns).unwrap_or(false) => json!({ "result": "miss", "not_stored": "quick to compile" }),
+        // A freshly linked workspace binary that builds in a moment is not worth a copy on every
+        // edit (measured: ~30 ms for a small binary); libraries are cheap to store and form the
+        // critical path a clean rebuild waits on.
+        (Ok(j), Some(_)) if exit.success() && j.is_local() && j.links() && settings.as_ref().map(|s| dur_ns < s.min_link_store_ns).unwrap_or(false) => json!({ "result": "miss", "not_stored": "quick to link" }),
         (Ok(j), Some(buf)) if exit.success() => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| j.store(buf, start_wall))) {
             Ok(Ok(())) => json!({ "result": "stored" }),
             Ok(Err(e)) => json!({ "result": "miss", "not_stored": e }),
@@ -443,10 +445,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("haul-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a Haul session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_workspace_store_ns: 300_000_000 };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000 };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
-        std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_workspace_store_ns":1,"from_the_future":true}"#).unwrap();
+        std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"from_the_future":true}"#).unwrap();
         assert!(Settings::read(&dir).unwrap_err().contains("different versions"));
         std::fs::remove_dir_all(&dir).ok();
     }
