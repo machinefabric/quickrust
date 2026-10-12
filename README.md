@@ -28,12 +28,14 @@ behind it is [docs/report.md](docs/report.md).
 ## Install
 
 ```bash
-cargo install --path .          # installs `haul` and `haul-rustc-wrapper`; never a binary named `cargo`
+cargo install --locked --path . # installs `haul` and `haul-rustc-wrapper`; never a binary named `cargo`
 haul doctor                     # shows what Haul resolved and whether anything is wrong
 ```
 
-Requires a Rust toolchain (rustup or a plain Cargo on `PATH`). sccache and Git
-are optional.
+Requires a Rust toolchain (rustup or a plain Cargo on `PATH`); Haul itself builds with
+Rust 1.80 or newer. `--locked` uses the tested dependency versions: without it Cargo
+picks the newest, and some of those need a newer Rust than 1.80. sccache and Git are
+optional.
 
 ## Use
 

@@ -35,6 +35,22 @@ jobs:
       - name: Tests
         run: cargo test --workspace
 
+  # Haul declares `rust-version = 1.80`: built and tested with exactly that compiler, from the
+  # lockfile (newer releases of some dependencies need newer Rust). The builds the suites observe
+  # run on stable.
+  msrv:
+    name: test (Rust 1.80)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchains
+        run: |
+          rustup toolchain install 1.80 --profile minimal
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Tests
+        run: cargo +1.80 test --locked --workspace
+
   windows:
     name: check (windows)
     runs-on: windows-latest
