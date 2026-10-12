@@ -204,8 +204,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         Some(tc) => {
             let cwd = std::env::current_dir().unwrap_or_default();
             let server = crate::config::Config::load(&cwd).map(|c| c.str("toolchain.dist-server").to_string()).unwrap_or_else(|_| crate::toolchain::dist::UPSTREAM.to_string());
-            let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
-            let mut progress = crate::ui::ToolchainProgress::adding(&release, "rustc-dev");
+            let mut progress = crate::ui::ToolchainProgress::new(&tc.id);
             match crate::toolchain::ensure_components(&layout, &tc, &["rustc-dev".to_string()], &server, &mut progress) {
                 Ok(()) => progress.finish(&tc),
                 Err(e) => {
