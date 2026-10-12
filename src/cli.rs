@@ -30,6 +30,11 @@ USAGE
     haul upstream <args…>            run upstream Cargo directly: no policy, no instrumentation
     cargo <args…>                    the same as the first form, when the shim is on PATH
 
+OUTPUT OF A BUILD (stored for every build Haul rendered in a terminal)
+    haul warnings [--run REF] [--crate NAME] [--lint LINT]
+    haul errors [--run REF] [--crate NAME]
+    haul log [--run REF] [--raw]
+
 ANALYSIS
     haul analyze [SECTION] [--run REF] [--format text|json]
                                      SECTION: timing rebuilds duplication scripts proc-macros
@@ -228,6 +233,9 @@ pub fn main() {
             Ok(0)
         }
         "upstream" => session::exec_upstream(rest.to_vec()),
+        "warnings" => cmd_output(rest, Some("warning")),
+        "errors" => cmd_output(rest, Some("error")),
+        "log" => cmd_output(rest, None),
         "analyze" => cmd_analyze(rest),
         "report" => cmd_report(rest),
         "runs" => cmd_runs(rest),
@@ -252,6 +260,31 @@ pub fn main() {
         Ok(code) => std::process::exit(code),
         Err(e) => session::fail(&e),
     }
+}
+
+/// `haul warnings` / `haul errors` / `haul log`: the stored output of a rendered build.
+fn cmd_output(raw: &[OsString], level: Option<&str>) -> CmdResult {
+    let mut a = Args::new(raw);
+    let run = a.opt("--run")?;
+    let krate = a.opt("--crate")?;
+    let lint = if level == Some("warning") { a.opt("--lint")? } else { None };
+    let raw_log = level.is_none() && a.flag("--raw");
+    a.finish()?;
+    let ctx = Ctx::load()?;
+    let id = ctx.store.resolve_run_ref(run.as_deref().unwrap_or("latest"), true)?;
+    let session = ctx.store.load_session(&id).ok_or_else(|| format!("run {} has no record", id))?;
+    let dir = PathBuf::from(session["events_dir"].as_str().ok_or("this run has no stored output")?);
+    let lines = crate::ui::stored_output(&dir)?;
+    match level {
+        Some(level) => {
+            let n = crate::ui::show(&lines, level, krate.as_deref(), lint.as_deref());
+            if n == 0 {
+                println!("No {}s in run {}{}.", level, id, if krate.is_some() || lint.is_some() { " matching the filter" } else { "" });
+            }
+        }
+        None => crate::ui::show_log(&lines, raw_log),
+    }
+    Ok(0)
 }
 
 fn cmd_analyze(raw: &[OsString]) -> CmdResult {

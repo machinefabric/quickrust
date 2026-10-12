@@ -693,12 +693,27 @@ fn fast_mode_applies_its_settings_unless_the_user_made_them() {
     assert!(!debuginfo(&r).is_empty() && debuginfo(&r).iter().all(|d| d == "line-tables-only"), "{:?}", debuginfo(&r));
     let applied: Vec<&str> = r["policy"]["fast"]["applied"].as_array().unwrap().iter().map(|a| a["key"].as_str().unwrap()).collect();
     assert!(applied.contains(&"profile.dev.debug") && applied.contains(&"profile.dev.package.\"*\".debug"), "{:?}", applied);
-    // The parallel frontend reaches the units Cargo built (on machines with at least four cores).
+    // The parallel frontend (on machines with at least four cores) reaches units compiled from
+    // scratch, never incremental ones: it slows incremental rebuilds of small crates down.
     if std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) >= 4 {
         assert!(applied.contains(&"rustc -Zthreads"), "{:?}", applied);
-        let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
-        let events: Vec<Value> = fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|e: &Value| e["kind"] == "compile").collect();
-        assert!(!events.is_empty() && events.iter().all(|e| e["args"].as_array().unwrap().iter().any(|a| a.as_str().unwrap().starts_with("-Zthreads="))));
+        let threads_by_unit = |sb: &Sandbox| -> Vec<(bool, bool)> {
+            let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+            fs::read_dir(s["events_dir"].as_str().unwrap())
+                .unwrap()
+                .filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok())
+                .filter(|e| e["kind"] == "compile")
+                .map(|e| {
+                    let args: Vec<&str> = e["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+                    (args.iter().any(|a| a.starts_with("incremental=")), args.iter().any(|a| a.starts_with("-Zthreads=")))
+                })
+                .collect()
+        };
+        let dev = threads_by_unit(&sb);
+        assert!(!dev.is_empty() && dev.iter().all(|(incremental, threads)| *incremental && !*threads), "{:?}", dev);
+        ok(sb.cargo(&p).args(["build", "--release"]));
+        let release = threads_by_unit(&sb);
+        assert!(!release.is_empty() && release.iter().all(|(incremental, threads)| !*incremental && *threads), "{:?}", release);
     }
     assert_eq!(r["run"]["command"]["argv_redacted"], json!(["cargo", "build"]), "the record shows the user's command, not Haul's overlays");
 
@@ -797,3 +812,46 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     ok(cargo(&a).arg("build").env("HAUL_MODE", "compat"));
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "off"), "{:?}", cache_results(&sb));
 }
+
+#[test]
+fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
+    let sb = Sandbox::new("render");
+    let p = sb.package("p", "p");
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n");
+    let Some(mut build) = sb.cargo_in_terminal(&p, "build") else {
+        eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
+        return;
+    };
+    let out = run(&mut build);
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{}", screen);
+    assert!(screen.contains("✓ Built"), "a summary: {}", screen);
+    assert!(!screen.contains("   Compiling p v0.1.0"), "no line per crate: {}", screen);
+    assert!(!screen.contains("let unused = 1"), "warnings are counted, not shown: {}", screen);
+    assert!(screen.contains("1 warning in p: unused_variables ×1"), "{}", screen);
+    // Everything is kept: the warning is shown on request, in rustc's words.
+    let shown = stdout(&ok(sb.haul(&p).arg("warnings")));
+    assert!(shown.contains("unused variable: `unused`") && shown.contains("src/lib.rs:2"), "{}", shown);
+    assert!(stdout(&ok(sb.haul(&p).args(["warnings", "--lint", "dead_code"]))).contains("No warnings"));
+
+    // An error is shown in full, with a summary that points at it.
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    x + \"y\"\n}\n");
+    let out = run(&mut sb.cargo_in_terminal(&p, "build").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!out.status.success());
+    assert!(screen.contains("cannot add `&str` to `u32`"), "the error in full: {}", screen);
+    assert!(screen.contains("✗ Build failed") && screen.contains("first at src/lib.rs:2:"), "{}", screen);
+    assert!(stdout(&ok(sb.haul(&p).arg("errors"))).contains("cannot add `&str` to `u32`"));
+
+    // Through a pipe, Cargo's own output is untouched.
+    let piped = run(sb.cargo(&p).arg("build"));
+    assert!(stderr(&piped).contains("error[E0277]") && !stderr(&piped).contains("✗ Build failed"));
+
+    // With colour, the same holds and rustc's own colours are kept.
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n");
+    let out = run(sb.cargo_in_terminal(&p, "build").unwrap().env("CARGO_TERM_COLOR", "always"));
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("\x1b["), "{}", screen);
+    assert!(stdout(&ok(sb.haul(&p).arg("warnings"))).contains("unused variable: `unused`"));
+}
+

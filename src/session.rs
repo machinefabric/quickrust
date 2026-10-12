@@ -122,7 +122,7 @@ pub fn shim_path() -> Option<PathBuf> {
 }
 
 /// Compact record of one Cargo JSON message, kept for analysis.
-fn summarize_message(line: &[u8]) -> Option<Value> {
+pub(crate) fn summarize_message(line: &[u8]) -> Option<Value> {
     if !line.starts_with(b"{\"reason\"") {
         return None;
     }
@@ -314,7 +314,19 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         match &wrapper {
             Some(w) => {
                 let dir = store.events_dir(id);
-                if util::create_private_dir(&dir).is_ok() {
+                // Haul's artifact cache: fast mode only, and never behind a wrapper the user
+                // configured, which may be a cache with rules of its own.
+                let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
+                // The parallel frontend: not behind a user wrapper, and not when the user decides
+                // about RUSTC_BOOTSTRAP themselves.
+                let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
+                let settings = crate::wrapper::Settings {
+                    artifact_cache: artifacts.then(|| util::haul_home().join("cache").join("artifacts")),
+                    frontend_threads: threads,
+                    min_workspace_store_ns: cfg.int("cache.artifacts-min-workspace-ms") * 1_000_000,
+                };
+                // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
+                if util::create_private_dir(&dir).and_then(|_| settings.write(&dir)).is_ok() {
                     p.instrumented = true;
                     p.env_set.push(("RUSTC_WRAPPER".into(), path_str(w)));
                     p.env_set.push((crate::ENV_EVENT_DIR.into(), path_str(&dir)));
@@ -326,21 +338,8 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                         Some((iw, _)) => p.env_set.push((crate::ENV_INNER_WRAPPER.into(), iw.clone())),
                         None => p.env_remove.push(crate::ENV_INNER_WRAPPER.into()),
                     }
-                    // Haul's artifact cache: fast mode only, and never behind a wrapper the user
-                    // configured, which may be a cache with rules of its own.
-                    let artifacts = cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && inner.is_none();
                     p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
-                    // The parallel frontend: not behind a user wrapper, and not when the user decides
-                    // about RUSTC_BOOTSTRAP themselves.
-                    let threads = if cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none() { crate::config::frontend_threads(cfg.str("fast.frontend-threads"))? } else { None };
                     p.frontend_threads = threads;
-                    let wrapper_config = json!({
-                        "artifact_cache": if artifacts { Some(path_str(&util::haul_home().join("cache").join("artifacts"))) } else { None },
-                        "frontend_threads": threads,
-                        "unit_times": path_str(&util::haul_home().join("cache").join("unit-times")),
-                        "min_workspace_store_ns": cfg.int("cache.artifacts-min-workspace-ms") * 1_000_000,
-                    });
-                    let _ = util::write_atomic_fast(&dir.join(crate::WRAPPER_CONFIG), &serde_json::to_vec(&wrapper_config).unwrap_or_default());
                     p.events_dir = Some(dir);
                 }
             }
@@ -365,6 +364,18 @@ fn upstream_command(up: &resolve::Upstream, args: &[OsString], inv: &Invocation)
         cmd.env(k, v);
     }
     cmd
+}
+
+/// Units of this session restored from the artifact cache, from the wrapper's events.
+fn count_cache_hits(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().map(|x| x == "json").unwrap_or(false))
+        .filter_map(|e| util::read_json(&e.path()))
+        .filter(|v| v["cache"]["result"] == json!("hit"))
+        .count() as u64
 }
 
 /// The user's arguments with `--config` overlays placed before the subcommand (after `+toolchain`).
@@ -455,7 +466,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         applied.push(json!({ "key": "rustc -Zthreads", "value": n.to_string(), "why": "rustc's parallel frontend works inside the large crates on a build's critical path; applied by the wrapper to Cargo's units only, never to compiler probes run by build scripts" }));
     }
 
-    let mut cmd = upstream_command(&up, &with_overlays(&spec.args, &inv, &fast.args), &inv);
+    // Haul's own rendering of the build's output (a terminal, a build command, nothing the user chose).
+    let render = !spec.stdout_to_stderr && spec.scenario.is_none() && crate::ui::wanted(&inv, &spec.args, &cfg);
+    let mut args = with_overlays(&spec.args, &inv, &fast.args);
+    if render {
+        args = crate::ui::with_arg(args, crate::ui::message_format_arg());
+    }
+    let mut cmd = upstream_command(&up, &args, &inv);
     cmd.current_dir(&cwd);
     for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
         cmd.env(k, v);
@@ -467,8 +484,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}", std::process::id(), id));
 
     let tee = !spec.stdout_to_stderr && cfg.str("measurement.cargo-json") == "auto" && inv.json_messages && inv.family.builds() && !std::io::stdout().is_terminal();
-    if tee {
+    if tee || render {
         cmd.stdout(Stdio::piped());
+        if render {
+            cmd.stderr(Stdio::piped());
+        }
     } else if spec.stdout_to_stderr {
         cmd.stdout(Stdio::from(std::io::stderr()));
     }
@@ -481,8 +501,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let started_wall = util::now_wall_ns();
     let started = Instant::now();
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Value>>();
+    let mut live: Option<crate::ui::Live> = None;
     let run = proc::run_with(&mut cmd, true, &mut |child| {
-        if let Some(out) = child.stdout.take() {
+        if render {
+            if let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) {
+                live = Some(crate::ui::start(out, err));
+            }
+        } else if let Some(out) = child.stdout.take() {
             let tx = tx.clone();
             std::thread::spawn(move || {
                 let _ = tx.send(pump_json(out, 200_000));
@@ -495,7 +520,20 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     }
     let (exit, _usage) = run.map_err(|e| format!("could not execute upstream Cargo {} (resolved by: {}): {}", up.program.display(), up.rule, e))?;
     // Drain the pipe; a lingering grandchild holding it open must not hang us.
-    let messages = if tee { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { None };
+    let mut messages = if tee { rx.recv_timeout(std::time::Duration::from_secs(5)).ok() } else { None };
+    if let Some(live) = live {
+        let hits = plan.events_dir.as_deref().map(count_cache_hits).unwrap_or(0);
+        let fin = live.finish(exit, duration_ns, hits);
+        if let Some(dir) = &plan.events_dir {
+            let mut text = String::new();
+            for l in &fin.log {
+                text.push_str(&l.to_string());
+                text.push('\n');
+            }
+            let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
+        }
+        messages = Some(fin.messages);
+    }
 
     let post = Instant::now();
     let mut outcome = Outcome { exit, session_id: None, store: None, report: None, policy_exit: None };
@@ -614,8 +652,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
     if plan.policy["cache"]["artifacts"] == json!("on") && id.as_bytes()[24] % 16 == 0 {
-        let max = util::parse_bytes(cfg.str("cache.artifacts-max-size")).unwrap_or(10 << 30);
-        crate::artifact_cache::evict(&util::haul_home().join("cache").join("artifacts"), max);
+        crate::artifact_cache::evict(&util::haul_home().join("cache").join("artifacts"), cfg.int("cache.artifacts-max-size"));
     }
     outcome.store = Some(store);
     Ok(outcome)
