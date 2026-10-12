@@ -7,6 +7,7 @@
 //!
 //! See benchmarks/README.md for the method.
 
+mod cutoff;
 mod measure;
 mod sealed;
 mod verify;
@@ -100,11 +101,25 @@ struct Ctx {
     work: PathBuf,
     sealed: Sealed,
     haul: PathBuf,
+    /// Haul's compiler driver for the pinned toolchain (the `drivers` directory of a Haul home),
+    /// or why it could not be built.
+    drivers: Result<PathBuf, String>,
 }
 
 impl Ctx {
     fn variant_dir(&self, v: &Variant, w: &Workload) -> PathBuf {
         self.work.join("runs").join(&v.name).join(&w.name)
+    }
+
+    /// Empties a variant's Haul state, as on a machine where Haul has run once before: its
+    /// compiler driver is built (Haul builds it in the background after the first build that
+    /// finds it missing, which a measurement must not include), nothing else is kept.
+    fn fresh_haul_home(&self, v: &Variant, w: &Workload) {
+        let home = self.variant_dir(v, w).join("haul-home");
+        let _ = fs::remove_dir_all(&home);
+        if let (Base::Haul, Ok(drivers)) = (&v.base, &self.drivers) {
+            copy_tree(drivers, &home.join("drivers")).unwrap_or_else(|e| fail(&format!("cannot copy Haul's compiler driver into {}: {}", home.display(), e)));
+        }
     }
 
     /// A Cargo command for `v`, run in checkout `co` with its own target directory and Haul state.
@@ -140,9 +155,10 @@ fn repetition(ctx: &Ctx, v: &Variant, w: &Workload, selected: &[&str], originals
     let dir = ctx.variant_dir(v, w);
     let (a, b) = (dir.join("a"), dir.join("b"));
     // Nothing may be cached at the start: build output, Haul's state, edited sources.
-    for p in [a.join("target"), b.join("target"), dir.join("haul-home")] {
+    for p in [a.join("target"), b.join("target")] {
         let _ = fs::remove_dir_all(p);
     }
+    ctx.fresh_haul_home(v, w);
     for (file, text) in originals {
         fs::write(a.join(file), text).unwrap_or_else(|e| fail(&format!("cannot restore {}: {}", file, e)));
     }
@@ -256,6 +272,9 @@ struct Opts {
     record: bool,
     haul: Option<PathBuf>,
     max_cpu_pressure: f64,
+    /// `cutoff`: edits per workload, and the seed that chooses them.
+    edits: usize,
+    seed: u64,
     /// Every option given, to reject those the chosen command does not use.
     given: Vec<String>,
 }
@@ -281,6 +300,8 @@ fn parse_opts(args: &[String]) -> Opts {
         record: false,
         haul: None,
         max_cpu_pressure: 10.0,
+        edits: 8,
+        seed: 1,
         given: Vec::new(),
     };
     if let Some(w) = std::env::var_os("HAUL_BENCH_DIR") {
@@ -308,6 +329,8 @@ fn parse_opts(args: &[String]) -> Opts {
             "--aa" => o.aa = true,
             "--record" => o.record = true,
             "--haul" => o.haul = Some(PathBuf::from(val(&mut i, "--haul"))),
+            "--edits" => o.edits = val(&mut i, "--edits").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--edits needs a number ≥ 1")),
+            "--seed" => o.seed = val(&mut i, "--seed").parse().unwrap_or_else(|_| fail("--seed needs a number")),
             "--max-cpu-pressure" => o.max_cpu_pressure = val(&mut i, "--max-cpu-pressure").parse().unwrap_or_else(|_| fail("--max-cpu-pressure needs a number")),
             other => fail(&format!("unknown argument {:?}; see benchmarks/README.md", other)),
         }
@@ -323,7 +346,8 @@ const USAGE: &str = "usage: haul-bench fetch [--work-dir DIR] [--workload a,b] [
        haul-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
                       [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
                       [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--haul PATH]
-       haul-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
+       haul-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]
+       haul-bench cutoff [--workload a,b] [--edits N] [--seed S] [--toolchain T] [--record] [--work-dir DIR] [--haul PATH]";
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
@@ -332,6 +356,7 @@ fn main() {
     let accepted: &[&str] = match cmd.as_str() {
         "fetch" => &["--work-dir", "--toolchain", "--workload"],
         "verify" => &["--work-dir", "--toolchain", "--workload", "--define", "--record", "--haul"],
+        "cutoff" => &["--work-dir", "--toolchain", "--workload", "--edits", "--seed", "--record", "--haul"],
         _ => &[],
     };
     if let Some(unused) = opts.given.iter().find(|g| !accepted.is_empty() && !accepted.contains(&g.as_str())) {
@@ -357,6 +382,7 @@ fn main() {
         }
         "run" => run(&opts, &repo, work, sealed, &chosen),
         "verify" => verify_command(&opts, &repo, work, sealed, &chosen),
+        "cutoff" => cutoff_command(&opts, &repo, work, sealed, &chosen),
         _ => fail(USAGE),
     }
 }
@@ -372,13 +398,52 @@ fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> 
             fail(&format!("workload {} is not fetched; run `haul-bench fetch` first", w.name));
         }
     }
-    Ctx { work: work.to_path_buf(), sealed, haul }
+    // Haul's compiler driver, built once for the pinned toolchain (online: it may install the
+    // toolchain's rustc-dev component).
+    let home = work.join("driver-home");
+    let probe = work.join("probe");
+    let _ = fs::create_dir_all(&probe);
+    let built = sealed.command(&haul, &probe, &probe.join("target"), true).env("HAUL_HOME", &home).args(["driver", "build"]).output();
+    let drivers = match built {
+        Ok(o) if o.status.success() => Ok(home.join("drivers")),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => Err(format!("cannot run {}: {}", haul.display(), e)),
+    };
+    if let Err(e) = &drivers {
+        eprintln!("haul-bench: Haul's compiler driver could not be built, so early cut-off is not measured: {}", e);
+    }
+    Ctx { work: work.to_path_buf(), sealed, haul, drivers }
+}
+
+/// What the record says about Haul's compiler driver: the driver directories present in every
+/// Haul home the runs started from (they name the compiler and the driver source), or why
+/// there were none.
+fn driver_record(ctx: &Ctx) -> Value {
+    match &ctx.drivers {
+        Ok(d) => json!({ "built": fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect::<Vec<_>>() }),
+        Err(e) => json!({ "error": e }),
+    }
+}
+
+/// Copies a directory tree (files and directories).
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(to)?;
+    for e in fs::read_dir(from)? {
+        let e = e?;
+        let target = to.join(e.file_name());
+        if e.file_type()?.is_dir() {
+            copy_tree(&e.path(), &target)?;
+        } else {
+            fs::copy(e.path(), &target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Git revision and dirtiness of the Haul checkout; a record without them is worthless.
 /// The benchmark's own records: appended by the runs themselves, they say nothing about the
 /// code under measurement.
-const RECORDS: [&str; 4] = ["benchmarks/speed-index.jsonl", "benchmarks/speed-index-quick.jsonl", "benchmarks/verify.jsonl", "benchmarks/PROGRESS.md"];
+const RECORDS: [&str; 5] = ["benchmarks/speed-index.jsonl", "benchmarks/speed-index-quick.jsonl", "benchmarks/verify.jsonl", "benchmarks/cutoff-gate.jsonl", "benchmarks/PROGRESS.md"];
 
 /// The Haul revision, and whether the checkout differs from it anywhere but in the records.
 fn provenance(repo: &Path) -> (String, bool) {
@@ -398,7 +463,7 @@ fn verify_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workl
     let (report, agree) = verify::verify(&ctx, &variants, workloads);
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
-        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(),
+        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
         "variants": variants.iter().map(|v| json!({ "name": v.name, "env": v.env.iter().map(|(k, val)| format!("{}={}", k, val)).collect::<Vec<_>>(), "config": v.config })).collect::<Vec<_>>(),
         "agree": agree, "workloads": report,
     });
@@ -413,6 +478,29 @@ fn verify_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workl
         println!("recorded in {}", path.display());
     }
     if !agree {
+        std::process::exit(1);
+    }
+}
+
+fn cutoff_command(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Workload]) {
+    let (haul_rev, haul_dirty) = provenance(repo);
+    let ctx = context(opts, &work, sealed, workloads);
+    let (report, pass) = cutoff::gate(&ctx, workloads, opts.edits, opts.seed);
+    let entry = json!({
+        "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        "haul_rev": haul_rev, "haul_dirty": haul_dirty, "toolchain": ctx.sealed.toolchain, "machine": machine(), "compiler_driver": driver_record(&ctx),
+        "edits": opts.edits, "seed": opts.seed, "pass": pass, "workloads": report,
+    });
+    println!("\n{}", if pass { "PASSED: every edit's loop build is byte-identical to building it from nothing." } else { "FAILED: some loop builds differ from building the same source from nothing." });
+    if opts.record {
+        let path = repo.join("benchmarks/cutoff-gate.jsonl");
+        let mut text = fs::read_to_string(&path).unwrap_or_default();
+        text.push_str(&entry.to_string());
+        text.push('\n');
+        fs::write(&path, text).unwrap_or_else(|e| fail(&format!("cannot write {}: {}", path.display(), e)));
+        println!("recorded in {}", path.display());
+    }
+    if !pass {
         std::process::exit(1);
     }
 }
@@ -624,7 +712,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         "haul_rev": haul_rev, "haul_dirty": haul_dirty, "haul_settings": settings,
         "mode": if opts.full { "full" } else if opts.quick { "quick" } else { "custom" },
         "repetitions": reps, "warmups": warmups, "note": opts.note,
-        "machine": machine(), "toolchain": toolchain,
+        "machine": machine(), "toolchain": toolchain, "compiler_driver": driver_record(&ctx),
         "variants": variants.iter().map(|v| json!({ "name": v.name, "base": format!("{:?}", v.base).to_lowercase(), "env": v.env.iter().map(|(k, val)| format!("{}={}", k, val)).collect::<Vec<_>>(), "config": v.config })).collect::<Vec<_>>(),
         "workloads": results, "index": overall, "problems": problems,
     });

@@ -52,6 +52,9 @@ impl Sandbox {
             }
         }
         c.env("HAUL_HOME", &self.home).env("CARGO_TERM_COLOR", "never");
+        // Early cut-off builds Haul's compiler driver in the background when it is missing: the
+        // tests that need the driver turn it on and build it themselves.
+        c.env("HAUL_EARLY_CUTOFF", "off");
         // A Cargo home of the sandbox's own: the machine's `$CARGO_HOME/config.toml` (a global
         // `build.target-dir`, a rustc wrapper, profile overrides) must not reach the fixtures, and
         // `cargo login` in the suite must not touch real credentials. The fixtures need no registry.

@@ -6,9 +6,17 @@
 //! only units whose sources cannot change under a name (registry and git dependencies) and
 //! that read nothing a build script produced outside `OUT_DIR`:
 //!
-//! - **key, level 1**: cache format version; rustc identity; every argument, with output
-//!   and search paths removed and each `--extern` replaced by the content hash of the
-//!   artifact it names; Cargo's `CARGO_*` variables; the content of `OUT_DIR`;
+//! - **key, level 1**: cache format version; rustc identity (and Haul's compiler driver, when
+//!   it compiles the unit); every argument, with output and search paths removed and each
+//!   `--extern` replaced by the identity of the artifact it names; Cargo's `CARGO_*`
+//!   variables; the content of `OUT_DIR`. An artifact's identity is its content hash, except
+//!   for the metadata a unit that links nothing compiles against when the driver built it:
+//!   then it is the crate's interface hash (see `driver/`), which an edit inside a function
+//!   body its dependents cannot observe leaves unchanged. Their entries are then hits: the
+//!   rebuild stops at the edited crate (early cut-off), up to the units that link. A unit
+//!   that links (binary, test, procedural macro) is keyed instead by what it links: each
+//!   rlib's content and, recursively, the rlibs it was compiled against, which the linker
+//!   finds through the search path without the command line naming them;
 //! - **key, level 2**: level 1 plus the values of the environment variables rustc reported
 //!   reading (`# env-dep:` in its dep-info), which are only known after one compilation;
 //! - **store**: outputs are hard-linked into the entry when the cache shares their file
@@ -36,7 +44,11 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "haul-artifact-cache-2";
+const FORMAT: &str = "haul-artifact-cache-3";
+
+/// How far past the start of a crate's metadata root its crate hash may lie: the root begins
+/// with the target triple (or a whole JSON target specification), then the hash.
+const ROOT_HEADER_WINDOW: u64 = 64 * 1024;
 
 /// One cacheable compilation, prepared before rustc runs.
 pub struct Job {
@@ -111,9 +123,136 @@ fn remember_hash(root: &Path, path: &Path, hash: &str) -> std::io::Result<()> {
     util::write_atomic_fast(&memo, hash.as_bytes())
 }
 
+fn link_memo_path(root: &Path, md: &fs::Metadata, path: &Path) -> PathBuf {
+    root.join("l").join(util::digest_parts([content_identity(md, path)]))
+}
+
+/// Records what the rlib a unit just produced (compiled or restored) was compiled against: the
+/// dependencies named on its command line, which `link_identity` follows once every rlib a
+/// linking unit needs is complete (a dependency's may still be in code generation when this
+/// unit finishes). Nothing to record for a unit that produces no rlib.
+pub fn record_link_inputs(root: &Path, args: &[String]) -> Result<(), String> {
+    let (mut out_dir, mut name, mut extra, mut deps) = (None, None, "", Vec::new());
+    let mut i = 0;
+    while i < args.len() {
+        if let Some(v) = value_of(args, &mut i, "--out-dir") {
+            out_dir = Some(v);
+        } else if let Some(v) = value_of(args, &mut i, "--crate-name") {
+            name = Some(v);
+        } else if let Some(v) = value_of(args, &mut i, "--extern") {
+            if let Some((n, p)) = v.split_once('=') {
+                deps.push(json!([n, util::path_str(&std::env::current_dir().map_err(|e| e.to_string())?.join(p))]));
+            }
+        } else if let Some(v) = value_of(args, &mut i, "-C") {
+            if let Some(e) = v.strip_prefix("extra-filename=") {
+                extra = e;
+            }
+        }
+        i += 1;
+    }
+    let (Some(out_dir), Some(name)) = (out_dir, name) else { return Ok(()) };
+    let rlib = Path::new(out_dir).join(format!("lib{}{}.rlib", name, extra));
+    let Ok(md) = fs::metadata(&rlib) else { return Ok(()) };
+    fs::create_dir_all(root.join("l")).map_err(|e| e.to_string())?;
+    util::write_json_fast(&link_memo_path(root, &md, &rlib), &json!({ "deps": deps })).map_err(|e| e.to_string())
+}
+
+/// What a unit that links the artifact at `path` links, by content: an rlib's (named directly or
+/// through its metadata) content and, recursively, what the dependencies it was compiled against
+/// link; a dynamic library's or procedural macro's own content, which holds what it linked.
+/// `None` when an rlib's inputs were never recorded (it was not built through this cache).
+fn link_identity(root: &Path, path: &Path, seen: &mut std::collections::HashMap<PathBuf, String>) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let path = match name.strip_suffix(".rmeta") {
+        Some(stem) => path.with_file_name(format!("{}.rlib", stem)),
+        None => path.to_path_buf(),
+    };
+    if let Some(id) = seen.get(&path) {
+        return Some(id.clone());
+    }
+    let content = content_hash(root, &path).ok()?;
+    let id = if path.extension().is_some_and(|e| e == "rlib") {
+        let memo_path = link_memo_path(root, &fs::metadata(&path).ok()?, &path);
+        let memo = util::read_json(&memo_path)?;
+        // In use: eviction drops records not refreshed for two weeks, and this one cannot be
+        // learned again without compiling the rlib anew.
+        let day_ago = util::now_wall_ns().saturating_sub(86_400 * 1_000_000_000);
+        if fs::metadata(&memo_path).map(|m| util::mtime_ns(&m) < day_ago).unwrap_or(false) {
+            let _ = fs::File::options().write(true).open(&memo_path).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        }
+        let mut parts = vec![format!("content={}", content)];
+        for dep in memo["deps"].as_array()? {
+            let (n, p) = (dep[0].as_str()?, dep[1].as_str()?);
+            parts.push(format!("{}={}", n, link_identity(root, Path::new(p), seen)?));
+        }
+        util::digest_parts(parts)
+    } else {
+        content
+    };
+    seen.insert(path, id.clone());
+    Some(id)
+}
+
 /// Outputs another unit can name in `--extern`, whose hashes are kept with a cache entry.
 fn is_linkable(name: &str) -> bool {
     [".rlib", ".rmeta", ".so", ".dylib", ".dll"].iter().any(|e| name.ends_with(e))
+}
+
+/// What decides whether rustc's MIR inliner runs, which copies other crates' function bodies
+/// into this one's MIR (and so into its metadata).
+#[derive(Default)]
+struct MirInlining {
+    opt_level: String,
+    mir_opt_level: Option<String>,
+    inline_mir: Option<String>,
+}
+
+impl MirInlining {
+    /// As rustc decides it (`Inline::is_enabled`); a setting it cannot read counts as inlining.
+    fn inlines(&self, incremental: bool) -> bool {
+        if let Some(v) = &self.inline_mir {
+            return !matches!(v.as_str(), "no" | "n" | "off" | "false");
+        }
+        let opt_level = if self.opt_level.is_empty() { "0" } else { self.opt_level.as_str() };
+        let mir_opt_level = match &self.mir_opt_level {
+            Some(l) => match l.parse::<u32>() {
+                Ok(l) => l,
+                Err(_) => return true,
+            },
+            None if opt_level == "0" => 1,
+            None => 2,
+        };
+        match mir_opt_level {
+            0 | 1 => false,
+            2 => matches!(opt_level, "2" | "3") && !incremental,
+            _ => true,
+        }
+    }
+}
+
+/// The interface hash of the crate whose metadata is at `rmeta`, as Haul's compiler driver
+/// recorded it next to the metadata (`lib<crate><extra>.haul-svh`), when that metadata carries
+/// it. The metadata is what dependents compile against, so the record counts only if the
+/// metadata's own root names the same crate hash: a record left by an earlier compilation, or a
+/// metadata file written by another compiler since, is not this crate's interface.
+fn interface_identity(rmeta: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let stem = rmeta.file_name()?.to_str()?.strip_suffix(".rmeta")?;
+    let svh = u128::from_str_radix(fs::read_to_string(rmeta.with_file_name(format!("{}.haul-svh", stem))).ok()?.trim(), 16).ok()?;
+    // `rust\0\0\0` and the format version, then the root's position (64-bit little-endian).
+    let mut f = fs::File::open(rmeta).ok()?;
+    let mut head = [0u8; 16];
+    f.read_exact(&mut head).ok()?;
+    if &head[..7] != b"rust\0\0\0" {
+        return None;
+    }
+    let root = u64::from_le_bytes(head[8..].try_into().ok()?);
+    f.seek(SeekFrom::Start(root)).ok()?;
+    let mut window = Vec::new();
+    f.take(ROOT_HEADER_WINDOW).read_to_end(&mut window).ok()?;
+    // The crate hash is encoded as its sixteen little-endian bytes.
+    let hash = svh.to_le_bytes();
+    window.windows(hash.len()).any(|w| w == hash).then(|| format!("{:032x}", svh))
 }
 
 /// Content digest of a directory tree: relative names and file contents, sorted.
@@ -136,13 +275,18 @@ fn tree_digest(root: &Path) -> Option<String> {
 }
 
 /// Prepares a lookup, or says why this compilation is not cached.
-/// `compiler` is the compiler's own account of itself (`rustc -vV`, see `rustc_info`).
-pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<Job, String> {
+/// `compiler` is the compiler's own account of itself (`rustc -vV`, see `rustc_info`);
+/// `driver`, Haul's compiler driver when it compiles this unit instead of rustc.
+pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, args: &[String]) -> Result<Job, String> {
     let root = root.ok_or("the artifact cache is off")?.to_path_buf();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
     let local = !crate::wrapper::is_external_source(Path::new(&manifest_dir));
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let mut key = vec![FORMAT.to_string(), format!("rustc={}", util::sha256_hex(compiler.as_bytes()))];
+    if let Some(d) = driver {
+        // The driver's directory names the compiler and the driver's own source.
+        key.push(format!("driver={}", d.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+    }
     if local {
         // Workspace units carry the checkout's absolute path in their debug information: they are
         // reused within the same checkout (after a clean, across branch switches, in CI with a
@@ -151,7 +295,9 @@ pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<J
     }
     let mut test = false;
     let mut scheduled_by_cargo = false;
-    let (mut crate_name, mut out_dir, mut extra, mut types) = (None, None, String::new(), Vec::new());
+    let mut incremental = false;
+    let (mut crate_name, mut out_dir, mut extra, mut types, mut externs) = (None, None, String::new(), Vec::new(), Vec::new());
+    let mut mir = MirInlining::default();
     let mut i = 0;
     while i < args.len() {
         let a = args[i].as_str();
@@ -167,11 +313,8 @@ pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<J
             types.extend(v.split(',').map(str::to_string));
             key.push(format!("--crate-type={}", v));
         } else if let Some(v) = value_of(args, &mut i, "--extern") {
-            // The artifact a dependency resolves to, by content: identical inputs, identical output.
-            match v.split_once('=') {
-                Some((name, path)) => key.push(format!("--extern={}=sha:{}", name, content_hash(&root, Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?)),
-                None => key.push(format!("--extern={}", v)),
-            }
+            // Keyed below, once it is known whether this unit links.
+            externs.push(v.to_string());
         } else if let Some(v) = value_of(args, &mut i, "-L") {
             // Where to look for dependencies is not what is compiled; native search paths are.
             if !v.starts_with("dependency=") {
@@ -181,6 +324,7 @@ pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<J
             return Err("links native libraries or prints compiler information".into());
         } else if let Some(v) = value_of(args, &mut i, "-C") {
             if v.starts_with("incremental") {
+                incremental = true;
                 // rustc revalidates its incremental state against the inputs on every compilation,
                 // so outputs may be restored without it; only whether it is on changes the output.
                 key.push("-Cincremental".into());
@@ -190,10 +334,21 @@ pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<J
             if let Some(e) = v.strip_prefix("extra-filename=") {
                 extra = e.to_string();
             }
+            if let Some(level) = v.strip_prefix("opt-level=") {
+                mir.opt_level = level.to_string();
+            }
             scheduled_by_cargo |= v.starts_with("metadata=");
             key.push(format!("-C{}", v));
         } else if a.starts_with("-Zthreads") {
             // How many threads rustc's frontend uses does not change what it produces.
+        } else if let Some(v) = value_of(args, &mut i, "-Z") {
+            if let Some(level) = v.strip_prefix("mir-opt-level=") {
+                mir.mir_opt_level = Some(level.to_string());
+            }
+            if let Some(inline) = v.strip_prefix("inline-mir=") {
+                mir.inline_mir = Some(inline.to_string());
+            }
+            key.push(format!("-Z{}", v));
         } else if a == "--test" {
             test = true;
             key.push(a.to_string());
@@ -229,6 +384,28 @@ pub fn prepare(root: Option<&Path>, compiler: &str, args: &[String]) -> Result<J
         key.push(format!("OUT_DIR=sha:{}", tree_digest(Path::new(o)).ok_or("OUT_DIR is unreadable")?));
     }
     let links = test || types.iter().any(|t| matches!(t.as_str(), "bin" | "proc-macro"));
+    // The artifact each dependency resolves to: identical inputs, identical output. A unit that
+    // links compiles the dependencies' code into its output, and the code of everything they
+    // were compiled against: it is keyed by what it links.
+    let mut seen = std::collections::HashMap::new();
+    for v in externs {
+        match v.split_once('=') {
+            Some((name, path)) if links => match link_identity(&root, Path::new(path), &mut seen) {
+                Some(id) => key.push(format!("--extern={}=link:{}", name, id)),
+                None => return Err(format!("what dependency {} links was not recorded", path)),
+            },
+            Some((name, path)) => {
+                // Nor may a unit inline their MIR: it would carry spans whose expansions the
+                // interface hash identifies by kind, not by number (see `driver/`).
+                let interface = if driver.is_some() && !mir.inlines(incremental) { interface_identity(Path::new(path)) } else { None };
+                match interface {
+                    Some(svh) => key.push(format!("--extern={}=svh:{}", name, svh)),
+                    None => key.push(format!("--extern={}=sha:{}", name, content_hash(&root, Path::new(path)).map_err(|e| format!("dependency {} is unreadable: {}", path, e))?)),
+                }
+            }
+            None => key.push(format!("--extern={}", v)),
+        }
+    }
     Ok(Job { root, key1: util::digest_parts(key), out_dir: cwd.join(out_dir), stem: format!("{}{}", crate_name, extra), out_dir_env, local, links, cwd })
 }
 
@@ -395,7 +572,8 @@ impl Job {
         if dir.join("entry.json").exists() {
             return util::write_json_fast(&self.manifest(), &manifest).map_err(|e| e.to_string());
         }
-        let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
+        // With the interface hash Haul's compiler driver recorded, which dependents key on.
+        let candidates = [format!("lib{}.rlib", self.stem), format!("lib{}.rmeta", self.stem), format!("lib{}.haul-svh", self.stem), format!("lib{}.so", self.stem), format!("lib{}.dylib", self.stem), format!("{}.dll", self.stem), self.stem.clone(), format!("{}.exe", self.stem), format!("{}.d", self.stem)];
         let tmp = self.root.join("tmp").join(format!("{}-{}", key2, std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         util::create_private_dir(&tmp).map_err(|e| e.to_string())?;
@@ -493,10 +671,10 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
             over = over.saturating_sub(bytes);
         }
     }
-    // Remembered hashes and quick-unit markers are a few bytes each; those not refreshed for
+    // Remembered hashes, link inputs and quick-unit markers are a few bytes each; those not refreshed for
     // two weeks name files or units long gone, and a live one is simply learned again.
     let cutoff = util::now_wall_ns().saturating_sub(14 * 86_400 * 1_000_000_000);
-    for e in ["h", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
+    for e in ["h", "l", "q"].iter().flat_map(|d| fs::read_dir(root.join(d)).into_iter().flatten().flatten()) {
         if e.metadata().map(|m| util::mtime_ns(&m) < cutoff).unwrap_or(false) {
             let _ = fs::remove_file(e.path());
         }
@@ -507,6 +685,99 @@ pub fn evict(root: &Path, max_bytes: u64) -> (u64, u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mir_inlining_is_decided_as_rustc_decides_it() {
+        let m = |opt: &str, mir: Option<&str>, inline: Option<&str>| MirInlining { opt_level: opt.into(), mir_opt_level: mir.map(Into::into), inline_mir: inline.map(Into::into) };
+        // Debug builds (`opt-level` 0, the default) and size-optimised ones do not inline MIR.
+        assert!(!m("", None, None).inlines(false));
+        assert!(!m("0", None, None).inlines(false));
+        assert!(!m("s", None, None).inlines(false));
+        assert!(!m("1", None, None).inlines(false));
+        // Optimised builds do, except incremental ones.
+        assert!(m("3", None, None).inlines(false));
+        assert!(m("2", None, None).inlines(false));
+        assert!(!m("3", None, None).inlines(true));
+        // Explicit settings win; one that cannot be read counts as inlining.
+        assert!(m("0", None, Some("yes")).inlines(true));
+        assert!(!m("3", None, Some("no")).inlines(false));
+        assert!(m("0", Some("3"), None).inlines(true));
+        assert!(!m("3", Some("1"), None).inlines(false));
+        assert!(m("0", Some("high"), None).inlines(false));
+    }
+
+    #[test]
+    fn an_interface_hash_counts_only_when_the_metadata_carries_it() {
+        let dir = std::env::temp_dir().join(format!("haul-iface-{}", util::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let svh: u128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+        // Metadata as rustc lays it out: header, the root's position, …, the root (target triple, crate hash).
+        let mut rmeta = b"rust\0\0\0\x0a".to_vec();
+        let root = 64u64;
+        rmeta.extend_from_slice(&root.to_le_bytes());
+        rmeta.resize(root as usize, 0xaa);
+        rmeta.extend_from_slice(b"\x1ax86_64-unknown-linux-gnu");
+        rmeta.extend_from_slice(&svh.to_le_bytes());
+        let path = dir.join("libdep-0123.rmeta");
+        fs::write(&path, &rmeta).unwrap();
+        let record = dir.join("libdep-0123.haul-svh");
+        fs::write(&record, format!("{:032x}\n", svh)).unwrap();
+        assert_eq!(interface_identity(&path), Some(format!("{:032x}", svh)));
+        // A record left by an earlier compilation, or metadata another compiler wrote since.
+        fs::write(&record, format!("{:032x}\n", svh ^ 1)).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        fs::write(&record, format!("{:032x}\n", svh)).unwrap();
+        let mut other = rmeta.clone();
+        let at = other.len() - 1;
+        other[at] ^= 0xff;
+        fs::write(&path, &other).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        // The hash only counts in the root, not anywhere in the file.
+        let mut elsewhere = rmeta[..root as usize].to_vec();
+        elsewhere[20..36].copy_from_slice(&svh.to_le_bytes());
+        elsewhere.extend_from_slice(b"\x1ax86_64-unknown-linux-gnu");
+        fs::write(&path, &elsewhere).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        // Not metadata at all, or no record.
+        fs::write(&path, b"not metadata").unwrap();
+        assert_eq!(interface_identity(&path), None);
+        fs::write(&path, &rmeta).unwrap();
+        fs::remove_file(&record).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn what_a_unit_links_follows_every_rlib_below_it() {
+        let dir = std::env::temp_dir().join(format!("haul-link-{}", util::new_id()));
+        let (root, deps) = (dir.join("cache"), dir.join("deps"));
+        fs::create_dir_all(&deps).unwrap();
+        let unit = |name: &str, content: &str, externs: &[&str]| {
+            fs::write(deps.join(format!("lib{}.rlib", name)), content).unwrap();
+            fs::write(deps.join(format!("lib{}.rmeta", name)), content).unwrap();
+            let mut args = vec!["--crate-name".to_string(), name.to_string(), "--out-dir".to_string(), util::path_str(&deps)];
+            for e in externs {
+                args.push("--extern".into());
+                args.push(format!("{}={}", e, util::path_str(&deps.join(format!("lib{}.rmeta", e)))));
+            }
+            record_link_inputs(&root, &args).unwrap();
+        };
+        let linked = |name: &str| link_identity(&root, &deps.join(format!("lib{}.rmeta", name)), &mut std::collections::HashMap::new());
+        unit("base", "base v1", &[]);
+        unit("mid", "mid", &["base"]);
+        let before = linked("mid").unwrap();
+        assert_eq!(linked("mid").unwrap(), before);
+        // `base` changes; `mid`'s own output does not (its interface did not change): what links
+        // `mid` links the new `base`.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        unit("base", "base v2", &[]);
+        assert_ne!(linked("mid").unwrap(), before);
+        // An rlib whose inputs were never recorded: unknown, never guessed.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        fs::write(deps.join("libbase.rlib"), "base v3").unwrap();
+        assert_eq!(linked("mid"), None);
+        fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn remembered_hashes_follow_the_file_content() {

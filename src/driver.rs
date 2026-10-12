@@ -13,10 +13,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+/// Set for the driver: compute the crate hash from what dependents can observe.
+pub const ENV_INTERFACE_HASH: &str = "HAUL_DRIVER_INTERFACE_HASH";
+
 const MANIFEST: &str = include_str!("../driver/Cargo.toml");
 const SOURCE: &str = include_str!("../driver/src/main.rs");
 /// The binary's name inside its directory.
 const BINARY: &str = "haul-rustc-driver";
+/// Next to where the driver would be: why it could not be built.
+const BUILD_FAILED: &str = "build-failed";
+/// Next to where the driver would be, while a background build runs.
+const BUILDING: &str = ".building";
 
 /// Where the driver for the compiler with this `rustc -vV` lives, built or not.
 pub fn dir(version_verbose: &str) -> Result<PathBuf, String> {
@@ -32,6 +39,31 @@ pub fn find(version_verbose: &str) -> Option<PathBuf> {
     util::is_executable(&exe).then_some(exe)
 }
 
+/// Why the driver for the compiler with this `rustc -vV` could not be built, when it could not.
+pub fn build_failure(version_verbose: &str) -> Option<String> {
+    fs::read_to_string(dir(version_verbose).ok()?.join(BUILD_FAILED)).ok()
+}
+
+/// Where failures of the driver at `exe` are recorded, per unit (see the wrapper).
+fn failures(exe: &Path) -> PathBuf {
+    exe.with_file_name("failed")
+}
+
+/// Whether the driver at `exe` failed on this unit before: it is then compiled by rustc, until
+/// a new driver (another compiler or another driver source) takes over.
+pub fn failed_before(exe: &Path, unit: &str) -> bool {
+    failures(exe).join(unit).exists()
+}
+
+/// Records that the driver at `exe` failed on this unit, with what it printed; returns where.
+pub fn record_failure(exe: &Path, unit: &str, report: &[u8]) -> Result<PathBuf, String> {
+    let dir = failures(exe);
+    fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {}", dir.display(), e))?;
+    let path = dir.join(unit);
+    util::write_atomic_fast(&path, report).map_err(|e| format!("cannot write {}: {}", path.display(), e))?;
+    Ok(path)
+}
+
 /// The toolchain directory of a rustup-managed compiler (`…/toolchains/<name>/bin/rustc`).
 fn rustup_toolchain(rustc: &Path) -> Option<(PathBuf, String)> {
     let dir = rustc.parent()?.parent()?;
@@ -39,12 +71,84 @@ fn rustup_toolchain(rustc: &Path) -> Option<(PathBuf, String)> {
     (dir.parent()?.file_name()? == "toolchains").then(|| (dir.to_path_buf(), name))
 }
 
+/// Starts building the driver for the compiler at `rustc` (whose `rustc -vV` is
+/// `version_verbose`) in the background, with `haul` (Haul's own binary) running `haul driver
+/// build`, unless it is built, being built, or could not be built before (`haul driver build`
+/// tries again). Returns whether a build started.
+// The build outlives this process on purpose; init reaps it.
+#[allow(clippy::zombie_processes)]
+pub fn start_build(haul: &Path, rustc: &Path, version_verbose: &str) -> Result<bool, String> {
+    if find(version_verbose).is_some() {
+        return Ok(false);
+    }
+    let target = dir(version_verbose)?;
+    if target.join(BUILD_FAILED).exists() {
+        return Ok(false);
+    }
+    util::create_private_dir(&target).map_err(|e| e.to_string())?;
+    // One build at a time. A marker older than an hour is from a build that did not finish.
+    let marker = target.join(BUILDING);
+    if let Ok(md) = fs::metadata(&marker) {
+        if util::mtime_ns(&md) + 3_600 * 1_000_000_000 > util::now_wall_ns() {
+            return Ok(false);
+        }
+        let _ = fs::remove_file(&marker);
+    }
+    match fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
+        Err(e) => return Err(format!("cannot create {}: {}", marker.display(), e)),
+    }
+    let log = fs::File::create(target.join("build.log")).map_err(|e| e.to_string())?;
+    let mut c = Command::new(haul);
+    c.args(["driver", "build", "--rustc", &util::path_str(rustc)]).stdin(Stdio::null()).stdout(log.try_clone().map_err(|e| e.to_string())?).stderr(log);
+    // A session of its own: it outlives the build that started it, and that build's terminal
+    // signals (Ctrl-C) do not reach it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            c.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+    match c.spawn() {
+        Ok(_) => Ok(true),
+        Err(e) => {
+            let _ = fs::remove_file(&marker);
+            Err(format!("cannot start {}: {}", haul.display(), e))
+        }
+    }
+}
+
 /// Builds the driver for the compiler at `rustc` (a toolchain binary, not rustup's proxy) and
-/// installs it where `find` looks. Installs the toolchain's `rustc-dev` component through rustup
-/// when it is missing.
+/// installs it where `find` looks; one build at a time. Installs the toolchain's `rustc-dev`
+/// component through rustup when it is missing. A failure is recorded, and background builds
+/// (`start_build`) do not try again; this one always does.
 pub fn build(rustc: &Path) -> Result<PathBuf, String> {
     let vv = crate::rustc_info::version_verbose(&util::haul_home().join("rustc"), &util::path_str(rustc))?;
     let target = dir(&vv)?;
+    let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
+    let result = match find(&vv) {
+        Some(exe) => Ok(exe),
+        None => build_locked(rustc, &vv, &target),
+    };
+    match &result {
+        Ok(_) => {
+            let _ = fs::remove_file(target.join(BUILD_FAILED));
+        }
+        Err(e) => {
+            let _ = fs::write(target.join(BUILD_FAILED), format!("{}\n", e));
+        }
+    }
+    let _ = fs::remove_file(target.join(BUILDING));
+    result
+}
+
+fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String> {
+    let vv = vv.to_string();
     let (toolchain, name) = rustup_toolchain(rustc).ok_or_else(|| format!("{} is not a rustup toolchain's compiler; the driver is built against rustup's rustc-dev component", rustc.display()))?;
     let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).unwrap_or_default().trim().to_string();
     let compiler_libs = toolchain.join("lib").join("rustlib").join(&host).join("lib");
@@ -89,7 +193,7 @@ pub fn build(rustc: &Path) -> Result<PathBuf, String> {
         return Err(format!("the driver built for {} does not report the compiler's own `rustc -vV`", name));
     }
     let exe = target.join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
-    fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    fs::create_dir_all(target).map_err(|e| e.to_string())?;
     let staged = target.join(format!(".{}.{}", BINARY, std::process::id()));
     fs::copy(&built, &staged).and_then(|_| fs::rename(&staged, &exe)).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&work);

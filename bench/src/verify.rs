@@ -74,7 +74,7 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
                 workload::checkout(&ctx.work, w, &co).unwrap_or_else(|e| fail(&e));
                 if round == 0 {
                     // Empty Haul state for the first round; the second keeps the artifact cache.
-                    let _ = fs::remove_dir_all(ctx.variant_dir(v, w).join("haul-home"));
+                    ctx.fresh_haul_home(v, w);
                 }
                 eprintln!("haul-bench: verify {} · {} · round {}/{}", w.name, v.name, round + 1, ROUNDS);
                 let (_, outcomes) = run_suite(ctx, v, w, &co, None);
