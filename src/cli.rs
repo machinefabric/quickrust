@@ -363,7 +363,12 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
     }
     let mut report = ctx.report(run.as_deref())?;
     if let Some(s) = section.as_deref().filter(|_| !view.is_empty()) {
-        view.apply(&mut report, s)?;
+        let kept = view.apply(&mut report, s)?;
+        // The section's own words for an empty list ("Nothing was compiled") would describe the run.
+        if format == "text" && kept.matching == 0 && kept.records > 0 {
+            println!("{}\n  None of the {} records matches {}.", render::title(s), kept.records, view.filters());
+            return Ok(0);
+        }
     }
     if format == "json" {
         let v = match section.as_deref() {
@@ -381,7 +386,7 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
             Some(s) => vec![s],
             None => render::SECTIONS.to_vec(),
         };
-        print!("{}", render::run_text(&report, &sections, render::Presentation { as_given: !view.is_empty(), limit: view.limit() }));
+        print!("{}", render::run_text(&report, &sections, render::Presentation { as_given: !view.is_empty(), limit: view.limit(), filtered: !view.filters().is_empty() }));
     }
     Ok(0)
 }

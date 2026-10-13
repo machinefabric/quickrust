@@ -1536,6 +1536,18 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("\x1b[1;32mOK  \x1b[0m Built: "), "the summary's tag in colour: {:?}", screen);
     assert!(stdout(&ok(sb.qrust(&p).arg("warnings"))).contains("unused variable: `unused`"));
+
+    // A unit restored from QuickRust's cache is counted once, as restored, though Cargo reports it
+    // as compiled (it ran the compiler, QuickRust's wrapper, for it). Of the two units, the library
+    // is restored; the binary too, unless it linked faster than the cache stores.
+    ok(sb.cargo(&p).arg("clean"));
+    let out = run(&mut sb.cargo_in_terminal(&p, "build").unwrap());
+    let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{}", screen);
+    let summary = screen.lines().find_map(|l| l.split("OK   Built: ").nth(1)).and_then(|s| s.split(" [").next()).unwrap_or_else(|| panic!("no summary: {}", screen));
+    let count = |what: &str| summary.split(", ").find_map(|c| c.strip_suffix(what)).map_or(0, |n| n.parse::<u32>().unwrap());
+    let (compiled, restored) = (count(" compiled"), count(" restored from QuickRust's cache"));
+    assert!(restored >= 1 && compiled + restored == 2, "each unit once: {}", summary);
 }
 
 #[test]
@@ -1723,6 +1735,18 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     // Text shows exactly the records asked for, including the ones its default view leaves out.
     let text = stdout(&ok(sb.qrust(&p).args(["analyze", "rebuilds", "--filter", "reason=new", "--limit", "1"])));
     assert!(text.contains("new") && text.contains("first time this unit is observed"), "{}", text);
+    // A filter nothing matches says so, not that the run compiled nothing.
+    let text = stdout(&ok(sb.qrust(&p).args(["analyze", "timing", "--filter", "source=registry"])));
+    assert!(text.starts_with("Timing\n  None of the ") && text.contains(" records matches source=registry."), "{}", text);
+    // A filter that matches only units Cargo found fresh (known in a terminal build) says that none
+    // of those was compiled, not that the run compiled nothing.
+    sb.file("p/src/main.rs", "fn main() {\n    println!(\"{}\", p::add(2, 3));\n}\n");
+    if let Some(mut build) = sb.cargo_in_terminal(&p, "build") {
+        assert!(run(&mut build).status.success());
+        let text = stdout(&ok(sb.qrust(&p).args(["analyze", "timing", "--filter", "kind=lib"])));
+        assert_eq!(text, "Timing\n  No unit the filter matches was compiled in this run.\n");
+        assert!(stdout(&ok(sb.qrust(&p).args(["analyze", "timing", "--filter", "kind=bin"]))).contains("units (1 of 1):"));
+    }
     // Mistakes are named, never silently ignored.
     let e = run(sb.qrust(&p).args(["analyze", "timing", "--filter", "profile=release"]));
     assert!(!e.status.success() && stderr(&e).contains("no field `profile`"), "{}", stderr(&e));

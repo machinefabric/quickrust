@@ -1135,7 +1135,11 @@ impl Renderer {
         if exit.success() && self.step {
             // Part of a command that reports the result.
         } else if exit.success() {
-            let counts: Vec<String> = [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+            // Cargo reports a unit QuickRust's cache restored as compiled: it ran the compiler (the
+            // wrapper) for it. Each unit is counted once, as what happened to it.
+            debug_assert!(cache_hits <= self.compiled, "{} units restored of {} compiled", cache_hits, self.compiled);
+            let compiled = self.compiled.saturating_sub(cache_hits);
+            let counts: Vec<String> = [(compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
             let _ = writeln!(err, "{}", tagged(Tag::Ok, &message(self.done.word(), &counts, Some(wall_ns)), self.color));
             for g in &self.activity.generated {
                 let _ = writeln!(err, "{}docs {}", INDENT, g);
@@ -1423,7 +1427,10 @@ mod tests {
     fn success_summary_and_ansi_stripping() {
         let mut ren = r();
         let mut sink: Vec<u8> = Vec::new();
-        ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": false, "target": { "name": "app", "kind": ["bin"] } }).to_string());
+        // Four units Cargo ran the compiler for, three of them restored from QuickRust's cache.
+        for name in ["app", "a", "b", "c"] {
+            ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": false, "target": { "name": name, "kind": ["lib"] } }).to_string());
+        }
         ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": true, "target": { "name": "dep", "kind": ["lib"] } }).to_string());
         ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 3);
         let text = String::from_utf8(sink).unwrap();
