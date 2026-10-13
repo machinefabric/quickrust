@@ -84,7 +84,7 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 | `ci.budget-policy` | string | `.qrust/budgets.toml` | `QRUST_CI_BUDGET_POLICY` | the budget file, relative to the workspace root ([Budgets](budgets.md)) |
 | `ci.baseline` | string | `main` | `QRUST_CI_BASELINE` | the baseline budgets are evaluated against |
 | `ci.enforce-on-build` | bool | `false` | `QRUST_CI_ENFORCE_ON_BUILD` | evaluate budgets after every successful build command; a blocking failure exits 3 |
-| `self.update-url` | string | `https://github.com/jowharshamshiri/quickrust/releases/latest/download` | `QRUST_UPDATE_URL` | where `qrust self update` reads `version.txt`, `qrust-<target>.tar.gz` and its `.sha256` |
+| `self.update-url` | string | `https://github.com/machinefabric/quickrust/releases/latest/download` | `QRUST_UPDATE_URL` | where `qrust self update` reads `version.txt`, `qrust-<target>.tar.gz` and its `.sha256` |
 | `toolchain.auto-update` | `background`, `off` | `background` | `QRUST_TOOLCHAIN_AUTO_UPDATE` | once a day after a build, check in the background whether the channel the build used has a newer release, and install it for the next build; never in CI |
 | `toolchain.dist-server` | string | `https://static.rust-lang.org` | `QRUST_DIST_SERVER` | where Rust releases are downloaded from |
 | `security.persist-environment` | `allowlist`, `none` | `allowlist` | `QRUST_SECURITY_PERSIST_ENVIRONMENT` | which environment values run records keep: build-relevant variables only, or none |

@@ -3,10 +3,10 @@
 # checksum, and runs `qrust setup` (which puts QuickRust into ~/.qrust/bin, first on PATH, and installs
 # stable Rust). Arguments are passed to `qrust setup` (`--no-modify-path`, `--toolchain none`).
 #
-#   curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh
+#   curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh
 set -eu
 
-releases="${QRUST_UPDATE_URL:-https://github.com/jowharshamshiri/quickrust/releases/latest/download}"
+releases="${QRUST_UPDATE_URL:-https://github.com/machinefabric/quickrust/releases/latest/download}"
 
 fail() {
     echo "qrust install: $*" >&2

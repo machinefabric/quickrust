@@ -9,19 +9,19 @@ QuickRust is the only thing you install: it brings its own Rust toolchains, so y
 On Linux and macOS:
 
 ```bash
-curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh
+curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh
 ```
 
 On Windows (PowerShell, x86_64):
 
 ```powershell
-irm https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.ps1 | iex
+irm https://github.com/machinefabric/quickrust/releases/latest/download/install.ps1 | iex
 ```
 
 The script downloads the build for your machine (static on Linux, so any distribution works), checks it against its published checksum and runs `qrust setup`. Arguments after `sh -s --` are passed on to `qrust setup`:
 
 ```bash
-curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
+curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
 ```
 
 If the script stops with "no release for ...", your platform has no published build: install from source instead.
@@ -37,7 +37,7 @@ When setup has finished, open a new shell, or source the file it names:
 You need a Rust toolchain of 1.80 or newer for this one build:
 
 ```bash
-git clone https://github.com/jowharshamshiri/quickrust
+git clone https://github.com/machinefabric/quickrust
 cd quickrust
 cargo build --release --locked
 target/release/qrust setup

@@ -20,8 +20,8 @@ How much faster, measured against plain Cargo on real projects: [benchmarks/PROG
 ## Install
 
 ```bash
-curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh
-# Windows: irm https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.ps1 | iex
+curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh
+# Windows: irm https://github.com/machinefabric/quickrust/releases/latest/download/install.ps1 | iex
 ```
 
 From source, with Rust 1.80 or newer:

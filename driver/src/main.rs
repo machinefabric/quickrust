@@ -549,7 +549,7 @@ fn record(tcx: TyCtxt<'_>, svh: Svh) {
 fn main() -> std::process::ExitCode {
     let early = rustc_session::EarlyDiagCtxt::new(rustc_session::config::ErrorOutputType::default());
     rustc_driver::init_rustc_env_logger(&early);
-    rustc_driver::install_ice_hook("https://github.com/jowharshamshiri/quickrust/issues", |_| ());
+    rustc_driver::install_ice_hook("https://github.com/machinefabric/quickrust/issues", |_| ());
     rustc_driver::install_ctrlc_handler();
     #[cfg(unix)]
     let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok()).inspect(|fd| early_link::keep_to_self(*fd));

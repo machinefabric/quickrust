@@ -5,7 +5,7 @@ This guide shows you how to build with QuickRust in a CI job, keep a report of e
 ## Install QuickRust in the job
 
 ```bash
-curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
+curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
 export PATH="$HOME/.qrust/bin:$PATH"
 ```
 
@@ -14,7 +14,7 @@ On GitHub Actions, put the directory on `PATH` for the following steps:
 ```yaml
 - name: QuickRust
   run: |
-    curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
+    curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
     echo "$HOME/.qrust/bin" >> "$GITHUB_PATH"
 ```
 
