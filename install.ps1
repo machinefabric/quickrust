@@ -1,9 +1,9 @@
 # Installs QuickRust on Windows: downloads the release, checks it against its published checksum, and
 # runs `qrust setup` (QuickRust into ~/.qrust/bin, first on the user PATH; stable Rust).
 #
-#   irm https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.ps1 | iex
+#   irm https://github.com/machinefabric/quickrust/releases/latest/download/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
-$releases = if ($env:QRUST_UPDATE_URL) { $env:QRUST_UPDATE_URL } else { 'https://github.com/jowharshamshiri/quickrust/releases/latest/download' }
+$releases = if ($env:QRUST_UPDATE_URL) { $env:QRUST_UPDATE_URL } else { 'https://github.com/machinefabric/quickrust/releases/latest/download' }
 if (-not [Environment]::Is64BitOperatingSystem -or $env:PROCESSOR_ARCHITECTURE -ne 'AMD64') {
     throw 'qrust install: no release for this processor; build QuickRust from source'
 }
