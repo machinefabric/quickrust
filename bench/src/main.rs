@@ -36,7 +36,7 @@ const QUICK_SCENARIOS: &[&str] = &["cold-build", "no-op", "edit-leaf", "edit-cor
 const NOOP_RUNS: u64 = 10;
 
 fn fail(msg: &str) -> ! {
-    eprintln!("qrust-bench: error: {}", msg);
+    eprintln!("FAIL {}", msg);
     std::process::exit(1)
 }
 
@@ -320,7 +320,7 @@ fn parse_opts(args: &[String]) -> Opts {
             "--toolchain" => o.toolchain = val(&mut i, "--toolchain"),
             "--quick" => o.quick = true,
             "--full" => o.full = true,
-            "--reps" => o.reps = Some(val(&mut i, "--reps").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--reps needs a number ≥ 1"))),
+            "--reps" => o.reps = Some(val(&mut i, "--reps").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--reps needs a number >= 1"))),
             "--warmups" => o.warmups = Some(val(&mut i, "--warmups").parse().unwrap_or_else(|_| fail("--warmups needs a number"))),
             "--note" => o.note = Some(val(&mut i, "--note")),
             "--workload" => o.workloads = Some(list(&val(&mut i, "--workload"))),
@@ -330,7 +330,7 @@ fn parse_opts(args: &[String]) -> Opts {
             "--aa" => o.aa = true,
             "--record" => o.record = true,
             "--qrust" => o.qrust = Some(PathBuf::from(val(&mut i, "--qrust"))),
-            "--edits" => o.edits = val(&mut i, "--edits").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--edits needs a number ≥ 1")),
+            "--edits" => o.edits = val(&mut i, "--edits").parse().ok().filter(|n| *n >= 1).unwrap_or_else(|| fail("--edits needs a number >= 1")),
             "--seed" => o.seed = val(&mut i, "--seed").parse().unwrap_or_else(|_| fail("--seed needs a number")),
             "--max-cpu-pressure" => o.max_cpu_pressure = val(&mut i, "--max-cpu-pressure").parse().unwrap_or_else(|_| fail("--max-cpu-pressure needs a number")),
             other => fail(&format!("unknown argument {:?}; see benchmarks/README.md", other)),
@@ -345,9 +345,9 @@ fn parse_opts(args: &[String]) -> Opts {
 
 const USAGE: &str = "usage: qrust-bench fetch [--work-dir DIR] [--workload a,b] [--toolchain T]
        qrust-bench run [--quick | --full] [--reps N] [--warmups N] [--workload a,b] [--variant a,b]
-                      [--only scenario,…] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
+                      [--only scenario,...] [--define NAME=BASE;env:K=V;config:K=V] [--aa]
                       [--toolchain T] [--record] [--note TEXT] [--work-dir DIR] [--qrust PATH]
-       qrust-bench verify [--workload a,b] [--define …] [--toolchain T] [--record] [--work-dir DIR] [--qrust PATH]
+       qrust-bench verify [--workload a,b] [--define ...] [--toolchain T] [--record] [--work-dir DIR] [--qrust PATH]
        qrust-bench cutoff [--workload a,b] [--edits N] [--seed S] [--toolchain T] [--record] [--work-dir DIR] [--qrust PATH]";
 
 fn main() {
@@ -380,7 +380,7 @@ fn main() {
         "fetch" => {
             for w in &chosen {
                 workload::fetch(&work, &repo, w, &sealed).unwrap_or_else(|e| fail(&e));
-                eprintln!("qrust-bench: {} @ {} ready", w.name, w.rev);
+                eprintln!("     {} @ {} ready", w.name, w.rev);
             }
         }
         "run" => run(&opts, &repo, work, sealed, &chosen),
@@ -420,7 +420,7 @@ fn context(opts: &Opts, work: &Path, sealed: Sealed, workloads: &[Workload]) -> 
         Err(e) => Err(format!("cannot run {}: {}", qrust.display(), e)),
     };
     if let Err(e) = &drivers {
-        eprintln!("qrust-bench: QuickRust's compiler driver could not be built, so early cut-off is not measured: {}", e);
+        eprintln!("WARN QuickRust's compiler driver could not be built, so early cut-off is not measured: {}", e);
     }
     Ctx { work: work.to_path_buf(), sealed, qrust, drivers }
 }
@@ -547,7 +547,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
         variants.retain(|v| names.contains(&v.name) || v.name == "cargo" || (opts.aa && v.name == "cargo-aa") || opts.defines.iter().any(|d| d.name == v.name));
     }
     if !has_mode {
-        eprintln!("qrust-bench: this QuickRust has no `mode` setting yet; qrust-compat is identical to qrust and is skipped");
+        eprintln!("NOTE this QuickRust has no `mode` setting yet; qrust-compat is identical to qrust and is skipped");
     }
     let selected: Vec<&str> = match &opts.only {
         Some(names) => names.iter().map(|n| SCENARIOS.iter().find(|(s, _)| s == n).map(|(s, _)| *s).unwrap_or_else(|| fail(&format!("unknown scenario {:?}", n)))).collect(),
@@ -565,7 +565,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     let warmups = opts.warmups.unwrap_or(if opts.full { 1 } else { 0 });
 
     let toolchain = json!({ "pinned": ctx.sealed.toolchain, "cargo": ctx.sealed.version("cargo", &probe), "rustc": ctx.sealed.version("rustc", &probe), "wild": ctx.sealed.wild.as_ref().map(|w| w.display().to_string()) });
-    eprintln!("qrust-bench: {} · {} · {} rep(s) + {} warm-up · variants {} · scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
+    eprintln!("     {}, {}, {} rep(s) + {} warm-up, variants {}, scenarios {}", toolchain["rustc"].as_str().unwrap_or(""), work.display(), reps, warmups, variants.iter().map(|v| v.name.as_str()).collect::<Vec<_>>().join(" "), selected.join(" "));
 
     // Provenance is taken before measuring: the binaries were built from this state, and later
     // edits to the checkout must not be attributed to them.
@@ -605,7 +605,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
             let n = variants.len();
             for k in 0..n {
                 let v = &variants[(k + rep) % n];
-                eprintln!("qrust-bench: {} · {} {}/{} · {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - warmups + 1 } else { rep + 1 }, if measured { reps } else { warmups }, v.name);
+                eprintln!("     {}, {} {}/{}, {}", w.name, if measured { "repetition" } else { "warm-up" }, if measured { rep - warmups + 1 } else { rep + 1 }, if measured { reps } else { warmups }, v.name);
                 let r = repetition(&ctx, v, w, &selected, &originals, &mut edit_n);
                 if !measured {
                     continue;
@@ -617,7 +617,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
             }
             if rep == 0 {
                 let per = rep_started.elapsed().as_secs_f64();
-                eprintln!("qrust-bench: {}: one repetition of all variants takes ~{:.0}s → ~{:.1} min for this workload", w.name, per, per * total as f64 / 60.0);
+                eprintln!("     {}: one repetition of all variants takes ~{:.0}s -> ~{:.1} min for this workload", w.name, per, per * total as f64 / 60.0);
             }
         }
 
@@ -633,20 +633,20 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
                     if vn == "qrust-compat" || vn == "cargo-aa" {
                         problems.push(msg);
                     } else {
-                        eprintln!("qrust-bench: note: {}", msg);
+                        eprintln!("NOTE {}", msg);
                     }
                 }
             }
         }
 
         // Medians, stability and the index for this workload.
-        println!("\n{} @ {} — {}", w.name, &w.rev[..w.rev.len().min(10)], w.description);
+        println!("\n{} @ {}: {}", w.name, &w.rev[..w.rev.len().min(10)], w.description);
         print!("{:<20}", "scenario");
         for v in &variants {
             print!("{:>13}", v.name);
         }
         for v in variants.iter().filter(|v| v.name != "cargo") {
-            print!("{:>16}", format!("{} ×", v.name));
+            print!("{:>16}", format!("{} x", v.name));
         }
         println!();
         let mut scen_rows = Vec::new();
@@ -668,7 +668,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
                 if m >= 1_000_000_000 && walls.len() >= 2 {
                     let spread = (walls.iter().max().unwrap_or(&0) - walls.iter().min().unwrap_or(&0)) as f64 / m as f64;
                     if spread > 0.25 {
-                        problems.push(format!("{} / {} / {}: samples {} … {} differ by {:.0}% (machine busy?)", w.name, v.name, scenario, secs(*walls.iter().min().unwrap_or(&0)), secs(*walls.iter().max().unwrap_or(&0)), spread * 100.0));
+                        problems.push(format!("{} / {} / {}: samples {} ... {} differ by {:.0}% (machine busy?)", w.name, v.name, scenario, secs(*walls.iter().min().unwrap_or(&0)), secs(*walls.iter().max().unwrap_or(&0)), spread * 100.0));
                     }
                 }
                 wall_med.insert(&v.name, m);
@@ -715,7 +715,7 @@ fn run(opts: &Opts, repo: &Path, work: PathBuf, sealed: Sealed, workloads: &[Wor
     println!("  elapsed {:.1} min", started.elapsed().as_secs_f64() / 60.0);
 
     if provenance(repo) != (qrust_rev.clone(), qrust_dirty) {
-        eprintln!("qrust-bench: note: the QuickRust checkout changed during the run; the record describes it as it was at the start");
+        eprintln!("NOTE the QuickRust checkout changed during the run; the record describes it as it was at the start");
     }
     let entry = json!({
         "recorded_at_unix": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),

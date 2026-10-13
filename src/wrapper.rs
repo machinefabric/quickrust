@@ -66,7 +66,7 @@ impl Settings {
 pub fn main() {
     let mut argv: Vec<OsString> = std::env::args_os().skip(1).collect();
     if argv.is_empty() {
-        eprintln!("qrust-rustc-wrapper: expected `<rustc> [args…]`; this binary is run by Cargo through RUSTC_WRAPPER");
+        crate::ui::say(crate::ui::Tag::Fail, "qrust-rustc-wrapper expects `<rustc> [args...]`; Cargo runs it through RUSTC_WRAPPER");
         std::process::exit(crate::EXIT_QRUST_ERROR);
     }
     let rustc = argv.remove(0);
@@ -77,7 +77,7 @@ pub fn main() {
     let settings = match event_dir.as_deref().map(Settings::read).transpose() {
         Ok(s) => s.flatten(),
         Err(e) => {
-            eprintln!("qrust: error: {}", e);
+            crate::ui::say(crate::ui::Tag::Fail, &e);
             std::process::exit(crate::EXIT_QRUST_ERROR);
         }
     };
@@ -255,7 +255,7 @@ pub fn main() {
                 // The cache layer could not even be started: compile locally (FR-100.6).
                 Err(e) if fail_open => {
                     fallback = true;
-                    eprintln!("qrust: warning: could not run rustc wrapper {:?} ({}); compiling without it", w, e);
+                    crate::ui::say(crate::ui::Tag::Warn, &format!("could not run rustc wrapper {:?} ({}); compiling without it", w, e));
                     proc::run(&mut direct(&rustc, &argv, &None), true)
                 }
                 Err(e) => Err(e),
@@ -307,7 +307,7 @@ pub fn main() {
     let (mut exit, mut usage) = match result {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("qrust: error: could not execute {:?}: {}", inner.as_ref().unwrap_or(&rustc), e);
+            crate::ui::say(crate::ui::Tag::Fail, &format!("could not execute {:?}: {}", inner.as_ref().unwrap_or(&rustc), e));
             std::process::exit(101);
         }
     };
@@ -321,7 +321,7 @@ pub fn main() {
         if crashed(&exit) && !artifact_notice {
             let report = crate::driver::record_failure(&d, &unit_identity(&lossy), &text);
             let name = arg_value(&lossy, "--crate-name").unwrap_or("?");
-            eprintln!("qrust: warning: QuickRust's compiler driver failed on crate `{}`; compiled with rustc instead ({})", name, report.as_ref().map(|p| format!("report: {}", p.display())).unwrap_or_else(|e| format!("its report could not be kept: {}", e)));
+            crate::ui::say(crate::ui::Tag::Warn, &format!("QuickRust's compiler driver failed on crate `{}`; compiled with rustc instead ({})", name, report.as_ref().map(|p| format!("report: {}", p.display())).unwrap_or_else(|e| format!("its report could not be kept: {}", e))));
             driver_failure = Some(report.unwrap_or_default());
             driver = None;
             let rerun = match &job {
@@ -334,7 +334,7 @@ pub fn main() {
             (exit, usage) = match rerun {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("qrust: error: could not execute {:?}: {}", rustc, e);
+                    crate::ui::say(crate::ui::Tag::Fail, &format!("could not execute {:?}: {}", rustc, e));
                     std::process::exit(101);
                 }
             };

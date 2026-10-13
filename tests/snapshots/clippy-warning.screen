@@ -1,2 +1,2 @@
-Checked <time> · 1 compiled · 1 fresh
-2 warnings in app (bin): clippy::len_zero ×1, clippy::useless_vec ×1 · `qrust warnings` to show them
+OK   Checked: 1 compiled, 1 fresh [<time>]
+WARN 2 warnings in app (bin): clippy::len_zero x1, clippy::useless_vec x1; `qrust warnings` shows them

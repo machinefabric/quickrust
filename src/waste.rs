@@ -166,7 +166,7 @@ fn changed_files(now: &BTreeMap<String, (String, u64)>, before: &Value) -> (Vec<
 fn sample(list: &[String], n: usize) -> String {
     let mut s = list.iter().take(n).cloned().collect::<Vec<_>>().join(", ");
     if list.len() > n {
-        s.push_str(&format!(", … (+{})", list.len() - n));
+        s.push_str(&format!(", ... (+{})", list.len() - n));
     }
     s
 }
@@ -237,13 +237,13 @@ pub fn rebuilds(graph: &Graph, index: &Index, scripts: &[Value]) -> Value {
                 "source" => ("source", format!("changed: {}", sample(&content, 5)), differing, evidence, "high"),
                 "feature-set" => {
                     let before: Vec<String> = prior["features"].as_array().into_iter().flatten().filter_map(|x| x.as_str().map(str::to_string)).collect();
-                    ("feature-set", format!("features [{}] → [{}]", before.join(", "), u.features.join(", ")), differing, evidence, "high")
+                    ("feature-set", format!("features [{}] -> [{}]", before.join(", "), u.features.join(", ")), differing, evidence, "high")
                 }
                 "compiler" => ("compiler", "the compiler binary or selected toolchain changed".into(), differing, evidence, "high"),
                 "profile" => {
                     let before = prior["codegen"].as_object().map(|o| o.iter().map(|(k, v)| format!("{}={}", k, v.as_str().unwrap_or(""))).collect::<Vec<_>>().join(" ")).unwrap_or_default();
                     let now = u.codegen.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(" ");
-                    ("profile", format!("profile settings [{}] → [{}]", before, now), differing, evidence, "high")
+                    ("profile", format!("profile settings [{}] -> [{}]", before, now), differing, evidence, "high")
                 }
                 "generated-input" | "dependency" if script_ran => ("build-script-input", "the package's build script ran again and its outputs feed this unit".into(), differing, evidence, "medium"),
                 "dependency" => ("dependency", "the set of dependency artifacts this unit links against changed".into(), differing, evidence, "high"),
@@ -859,7 +859,7 @@ mod tests {
         feat.extra = vec!["--cfg", "feature=\"std\""];
         let r = reasons(&[Ev::new("a", "1")], &[feat], false);
         assert_eq!(r["a"].0, "feature-set");
-        assert!(r["a"].1.contains("[] → [std]"), "{}", r["a"].1);
+        assert!(r["a"].1.contains("[] -> [std]"), "{}", r["a"].1);
         let mut prof = Ev::new("a", "1");
         prof.extra = vec!["-C", "opt-level=3"];
         assert_eq!(reasons(&[Ev::new("a", "1")], &[prof], false)["a"].0, "profile");
@@ -902,7 +902,7 @@ mod tests {
         let mut user = Ev::new("user", "3");
         user.externs = vec![("a", "liba-2.rlib")];
         let d = duplication(None, &graph(&[Ev::new("a", "1"), with, user]), &Index::empty());
-        assert!(d["versions"].is_null(), "no resolution available ⇒ versions unavailable, not empty");
+        assert!(d["versions"].is_null(), "no resolution available means versions unavailable, not empty");
         let g = &d["variants"][0];
         assert_eq!(g["package"], "a");
         assert_eq!(g["causes"], json!(["feature-set"]));

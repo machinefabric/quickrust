@@ -223,8 +223,8 @@ mod tests {
         let messages = vec![json!({ "reason": "compiler-artifact", "filenames": [exe], "executable": exe, "manifest_path": util::path_str(&ws.join("Cargo.toml")) })];
         let cargo = ws.join("bin/cargo");
         let built = |warnings_line| Built { messages: &messages, cwd: &ws, ws_root: Some(&ws), cargo: &cargo, units: 3, warnings_line };
-        record(&store, "k", &built(Some("1 warning in p: unused_variables ×1")));
-        assert_eq!(fresh(&store, "k"), Some((3, Some("1 warning in p: unused_variables ×1".to_string()))));
+        record(&store, "k", &built(Some("1 warning in p: unused_variables x1")));
+        assert_eq!(fresh(&store, "k"), Some((3, Some("1 warning in p: unused_variables x1".to_string()))));
         assert_eq!(fresh(&store, "another command"), None);
 
         let edit = |p: &Path, text: &str| {

@@ -157,9 +157,9 @@ pub fn duplication(r: &Value, out: &mut String, p: Presentation) {
         }
         Some(v) => {
             for p in v {
-                let _ = writeln!(out, "  {} — {} ({})", vstr(p, "name"), vstr(p, "state"), vstr(p, "explanation"));
+                let _ = writeln!(out, "  {}: {} ({})", vstr(p, "name"), vstr(p, "state"), vstr(p, "explanation"));
                 for ver in p["versions"].as_array().into_iter().flatten() {
-                    let _ = writeln!(out, "    {:<10} compile {:<12} via {}", vstr(ver, "version"), dur(&ver["observed_compile_ns"]), list(&ver["required_by"]).replace(", ", " → "));
+                    let _ = writeln!(out, "    {:<10} compile {:<12} via {}", vstr(ver, "version"), dur(&ver["observed_compile_ns"]), list(&ver["required_by"]).replace(", ", " -> "));
                 }
             }
         }
@@ -171,7 +171,7 @@ pub fn duplication(r: &Value, out: &mut String, p: Presentation) {
         groups => {
             let _ = writeln!(out, "  Build variants (same package built more than once):");
             for g in groups.iter().take(p.rows(20)) {
-                let _ = writeln!(out, "    {}@{} [{}] — {}: {}", vstr(g, "package"), vstr(g, "version"), vstr(g, "kind"), vstr(g, "state"), list(&g["causes"]));
+                let _ = writeln!(out, "    {}@{} [{}] {}: {}", vstr(g, "package"), vstr(g, "version"), vstr(g, "kind"), vstr(g, "state"), list(&g["causes"]));
                 for v in g["variants"].as_array().into_iter().flatten() {
                     let _ = writeln!(out, "      {:<6} {:<8} features [{}]  {}  dependents: {}", vstr(v, "mode"), vstr(v, "role"), list(&v["features"]), dur(&v["dur_ns"]), list(&v["dependents"]));
                 }
@@ -246,7 +246,7 @@ pub fn codegen(r: &Value, out: &mut String) {
         let _ = writeln!(out, "  Link phase timing\n    Unavailable: {}", num(&r["codegen"]["linking"]["unavailable"]["link_phase_ns"]));
     }
     let inc = &r["policy"]["incremental"];
-    let _ = writeln!(out, "  incremental: {} — {}", vstr(inc, "decision"), vstr(inc, "rationale"));
+    let _ = writeln!(out, "  incremental: {}; {}", vstr(inc, "decision"), vstr(inc, "rationale"));
     let _ = writeln!(out, "    {}", vstr(inc, "explanation"));
 }
 
@@ -271,7 +271,7 @@ pub fn cache(r: &Value, out: &mut String) {
 }
 
 pub fn inventory(inv: &Value, out: &mut String) {
-    let _ = writeln!(out, "  {}  — {} allocated, {} logical, {} files{}", vstr(inv, "root"), bytes(&inv["allocated_bytes"]), bytes(&inv["logical_bytes"]), num(&inv["files"]), if inv["complete"] == true { "" } else { "  [partial: some entries could not be read]" });
+    let _ = writeln!(out, "  {}: {} allocated, {} logical, {} files{}", vstr(inv, "root"), bytes(&inv["allocated_bytes"]), bytes(&inv["logical_bytes"]), num(&inv["files"]), if inv["complete"] == true { "" } else { "  [partial: some entries could not be read]" });
     // Default storage view: allocated bytes, largest first.
     let mut rows: Vec<(u64, Vec<String>)> = inv["categories"].as_object().into_iter().flatten().map(|(k, v)| (v["allocated_bytes"].as_u64().unwrap_or(0), vec![k.clone(), bytes(&v["allocated_bytes"]), bytes(&v["logical_bytes"]), num(&v["files"])])).collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.0));
@@ -282,7 +282,7 @@ pub fn inventory(inv: &Value, out: &mut String) {
         let _ = writeln!(out, "  hard-linked copies counted once: {} excluded", bytes(&inv["hardlink_duplicate_bytes_excluded"]));
     }
     if inv["shared_outside_bytes"].as_u64().unwrap_or(0) > 0 {
-        let _ = writeln!(out, "  shared with other directories (QuickRust's artifact cache links outputs): {} — deleting them here frees nothing", bytes(&inv["shared_outside_bytes"]));
+        let _ = writeln!(out, "  shared with other directories (QuickRust's artifact cache links outputs): {}; deleting them here frees nothing", bytes(&inv["shared_outside_bytes"]));
     }
     for e in inv["errors"]["samples"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "  unreadable: {}", num(e));
@@ -316,7 +316,7 @@ pub fn gc_plan(inv: &Value, out: &mut String) {
     let regen = &p["regeneration_estimate"];
     let _ = writeln!(out, "  cost to regenerate: {} ({} unit(s) with measured cost, {} unknown)", dur(&regen["compile_time_ns"]), num(&regen["units_with_known_cost"]), num(&regen["units_with_unknown_cost"]));
     if let Some(b) = p["size_budget"].as_object() {
-        let _ = writeln!(out, "  size budget {}: currently {}, {} after the plan — {}", bytes(&b["target_bytes"]), bytes(&b["current_bytes"]), bytes(&b["after_plan_bytes"]), if b["met_by_plan"] == true { "met" } else { "NOT met by stale output alone" });
+        let _ = writeln!(out, "  size budget {}: currently {}, {} after the plan, {}", bytes(&b["target_bytes"]), bytes(&b["current_bytes"]), bytes(&b["after_plan_bytes"]), if b["met_by_plan"] == true { "met" } else { "NOT met by stale output alone" });
     }
     candidates(inv, 25, out);
     let _ = writeln!(out, "  Nothing was deleted: QuickRust's cache removes whole build directories when it needs the space (`qrust gc`), and `cargo clean` is unchanged.");
@@ -354,14 +354,14 @@ pub fn recommendations(recs: &Value, out: &mut String) {
             _ => "gain unknown (not measured)".into(),
         };
         let _ = writeln!(out, "  {}. {}", i + 1, vstr(r, "title"));
-        let _ = writeln!(out, "     id {}   [{}]   confidence {} · risk {} · effort {} · {}", vstr(r, "id"), vstr(r, "category"), vstr(r, "confidence"), vstr(r, "risk"), vstr(r, "effort"), gain);
+        let _ = writeln!(out, "     id {}   [{}]   confidence {}, risk {}, effort {}, {}", vstr(r, "id"), vstr(r, "category"), vstr(r, "confidence"), vstr(r, "risk"), vstr(r, "effort"), gain);
         for e in r["evidence"].as_array().into_iter().flatten() {
             let _ = writeln!(out, "     - {}", num(e));
         }
         if let Some(alts) = r["alternatives"].as_array() {
             let _ = writeln!(out, "     alternatives (choose one):");
             for a in alts {
-                let _ = writeln!(out, "       * {}: {} — suits {}", vstr(a, "id"), vstr(a, "action"), vstr(a, "suits"));
+                let _ = writeln!(out, "       * {}: {}; suits {}", vstr(a, "id"), vstr(a, "action"), vstr(a, "suits"));
             }
         }
         let _ = writeln!(out, "     verify: {}", vstr(r, "verification"));
@@ -419,12 +419,12 @@ fn metric_value(v: &Value, unit: &str) -> String {
 
 pub fn comparison(c: &Value) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Comparison: {}  →  {}", vstr(&c["baseline"], "label"), vstr(&c["candidate"], "label"));
+    let _ = writeln!(out, "Comparison: {}  ->  {}", vstr(&c["baseline"], "label"), vstr(&c["candidate"], "label"));
     // Environment differences come before any number (FR-160.3).
     let state = vstr(&c["comparability"], "state");
     let _ = writeln!(out, "  comparability: {}", state);
     for d in c["comparability"]["differences"].as_array().into_iter().flatten() {
-        let _ = writeln!(out, "    [{}] {}: {} → {}", vstr(d, "severity"), vstr(d, "what"), num(&d["baseline"]), num(&d["candidate"]));
+        let _ = writeln!(out, "    [{}] {}: {} -> {}", vstr(d, "severity"), vstr(d, "what"), num(&d["baseline"]), num(&d["candidate"]));
     }
     if state == "incomparable" {
         let _ = writeln!(out, "  The deltas below describe different conditions and must not be read as a speed-up or regression.");
@@ -480,7 +480,7 @@ pub fn budget(b: &Value) -> String {
         }
     }
     for d in b["comparability"]["differences"].as_array().into_iter().flatten() {
-        let _ = writeln!(out, "    [{}] {}: {} → {}", vstr(d, "severity"), vstr(d, "what"), num(&d["baseline"]), num(&d["candidate"]));
+        let _ = writeln!(out, "    [{}] {}: {} -> {}", vstr(d, "severity"), vstr(d, "what"), num(&d["baseline"]), num(&d["candidate"]));
     }
     let mut rows = Vec::new();
     for e in b["evaluations"].as_array().into_iter().flatten() {
@@ -507,7 +507,7 @@ pub fn budget(b: &Value) -> String {
 
 pub fn benchmark(b: &Value) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Benchmark {}  scenario {} ({})  — {}", vstr(b, "id"), vstr(&b["scenario"], "name"), vstr(&b["scenario"], "cache_state"), vstr(b, "state").to_uppercase());
+    let _ = writeln!(out, "Benchmark {}  scenario {} ({}): {}", vstr(b, "id"), vstr(&b["scenario"], "name"), vstr(&b["scenario"], "cache_state"), vstr(b, "state").to_uppercase());
     if let Some(f) = b["failure"].as_str() {
         let _ = writeln!(out, "  failure: {}", f);
     }
@@ -521,19 +521,19 @@ pub fn benchmark(b: &Value) -> String {
     }
     let _ = writeln!(out, "  samples: {} valid, {} discarded", num(&b["samples_valid"]), num(&b["samples_discarded"]));
     if let Some(m) = b["mutation"].as_object() {
-        let _ = writeln!(out, "  synthetic edit: {} — {}", m["file"].as_str().unwrap_or(""), if m["restored"] == true { "restored" } else { "NOT RESTORED" });
+        let _ = writeln!(out, "  synthetic edit: {}, {}", m["file"].as_str().unwrap_or(""), if m["restored"] == true { "restored" } else { "NOT RESTORED" });
     }
     out
 }
 
 pub fn experiment(e: &Value) -> String {
     let mut out = String::new();
-    let _ = writeln!(out, "Experiment `{}` — {}", vstr(e, "name"), vstr(e, "status").to_uppercase());
+    let _ = writeln!(out, "Experiment `{}`: {}", vstr(e, "name"), vstr(e, "status").to_uppercase());
     let _ = writeln!(out, "  {}", vstr(e, "reason"));
     let _ = writeln!(out, "  candidate settings: {} {}", list(&e["candidate_settings"]["cargo_config"]), list(&e["candidate_settings"]["environment"]));
     let _ = writeln!(out, "  {}", vstr(&e["candidate_settings"], "isolation"));
     let b = &e["dimensions"]["build"];
-    let _ = writeln!(out, "  build time: {}  (run-to-run noise ±{:.1}%)", b["wall_time_delta_percent"].as_f64().map(|d| format!("{:+.1}%", d)).unwrap_or_else(|| "unavailable".into()), b["noise_percent"].as_f64().unwrap_or(0.0));
+    let _ = writeln!(out, "  build time: {}  (run-to-run noise +/-{:.1}%)", b["wall_time_delta_percent"].as_f64().map(|d| format!("{:+.1}%", d)).unwrap_or_else(|| "unavailable".into()), b["noise_percent"].as_f64().unwrap_or(0.0));
     let _ = writeln!(out, "  runtime and debugging:");
     for r in e["dimensions"]["runtime_and_debugging"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "    {}: {}", vstr(r, "setting"), vstr(r, "risk"));
@@ -575,7 +575,7 @@ pub fn remediations(list_: &[Value], patch_only: bool) -> String {
             }
             continue;
         }
-        let _ = writeln!(out, "Remediation for {}  [{} · {}]", vstr(r, "recommendation"), vstr(r, "class"), vstr(r, "state"));
+        let _ = writeln!(out, "Remediation for {}  [{}, {}]", vstr(r, "recommendation"), vstr(r, "class"), vstr(r, "state"));
         let _ = writeln!(out, "  {}", vstr(r, "summary"));
         if let Some(d) = r["diff"].as_str() {
             let _ = writeln!(out, "  id: {}   file: {}   preimage: {}", vstr(r, "id"), vstr(r, "file"), r["preimage_sha256"].as_str().map(|s| &s[..12]).unwrap_or("(file does not exist)"));

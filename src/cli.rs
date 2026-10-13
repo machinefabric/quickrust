@@ -23,19 +23,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 const HELP: &str = "\
-qrust — Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output
+qrust: Cargo, faster. Every Cargo command, with Rust toolchains, a shared build cache and output
 that QuickRust manages
 
 USAGE
-    cargo <args…>                    any Cargo command, through QuickRust (`qrust setup` makes `cargo` QuickRust)
-    qrust <cargo-command> [args…]    the same
-    qrust upstream <args…>           the toolchain's own Cargo as it is: no QuickRust settings, nothing recorded
+    cargo <args...>                  any Cargo command, through QuickRust (`qrust setup` makes `cargo` QuickRust)
+    qrust <cargo-command> [args...]  the same
+    qrust upstream <args...>         the toolchain's own Cargo as it is: no QuickRust settings, nothing recorded
 
 PROGRAMS (built through QuickRust's cache, installed into ~/.qrust/bin)
-    qrust install <CRATE>[@VERSION]… [--git URL [--branch B | --tag T | --rev R] | --path DIR]
-                  [--locked] [--force] [--features F] [--bin NAME]… [--root DIR] [--profile P] [--target T]
+    qrust install <CRATE>[@VERSION]... [--git URL [--branch B | --tag T | --rev R] | --path DIR]
+                  [--locked] [--force] [--features F] [--bin NAME]... [--root DIR] [--profile P] [--target T]
     qrust install --list
-    qrust uninstall <CRATE>… [--bin NAME]… [--root DIR]
+    qrust uninstall <CRATE>... [--bin NAME]... [--root DIR]
 
 OUTPUT OF A BUILD (stored for every build QuickRust rendered in a terminal)
     qrust warnings [--run REF] [--crate NAME] [--lint LINT]
@@ -44,7 +44,7 @@ OUTPUT OF A BUILD (stored for every build QuickRust rendered in a terminal)
 
 ANALYSIS
     qrust analyze [SECTION] [--run REF] [--format text|json]
-                  [--filter FIELD=VALUE]… [--sort FIELD[:asc|desc]] [--limit N]
+                  [--filter FIELD=VALUE]... [--sort FIELD[:asc|desc]] [--limit N]
                                      SECTION: timing rebuilds duplication scripts proc-macros
                                               codegen cache storage recommendations worktrees
                                      filter/sort/limit work on a section's records, e.g.
@@ -59,7 +59,7 @@ MEASUREMENT
     qrust benchmark --scenario NAME [--reps N] [--warmups N] [--edit FILE] [--allow-mutation]
                     [--timeout DURATION] [--format text|json] [-- <cargo args>]
     qrust benchmark --list
-    qrust experiment [codegen|linker] [--name NAME] [--set KEY=VALUE]… [--env KEY=VALUE]…
+    qrust experiment [codegen|linker] [--name NAME] [--set KEY=VALUE]... [--env KEY=VALUE]...
                     [--codegen-units N] [--debug VALUE] [--opt-level VALUE] [--lto VALUE] [--linker NAME]
                     [--scenario NAME] [--reps N] [--warmups N] [--verify '<cargo args>'] [-- <cargo args>]
 
@@ -88,21 +88,21 @@ BUILD OUTPUT LOCATION (QuickRust keeps each workspace's build directory in its c
 
 TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-toolchain.toml choose)
     qrust toolchain list
-    qrust toolchain install <TOOLCHAIN>… [--profile minimal|default|complete] [--component C]… [--target T]…
+    qrust toolchain install <TOOLCHAIN>... [--profile minimal|default|complete] [--component C]... [--target T]...
     qrust toolchain update [--channel C]  bring stable, beta, nightly and 1.xx to their latest release
                                           (QuickRust checks once a day in the background; `toolchain.auto-update`)
-    qrust toolchain remove <TOOLCHAIN>…
+    qrust toolchain remove <TOOLCHAIN>...
     qrust toolchain default [<TOOLCHAIN>]
     qrust toolchain link <NAME> <DIR> | unlink <NAME>
     qrust toolchain which [<TOOL>] [--toolchain T]
-    qrust toolchain component add|remove <NAME>… [--toolchain T]
-    qrust toolchain target add|remove <TRIPLE>… [--toolchain T]
+    qrust toolchain component add|remove <NAME>... [--toolchain T]
+    qrust toolchain target add|remove <TRIPLE>... [--toolchain T]
 
 INSTALLATION
     qrust doctor
     qrust setup [--no-modify-path] [--toolchain T|none]
                                      install QuickRust for this user: ~/.qrust/bin first on PATH (cargo, rustc,
-                                     rustfmt, … are QuickRust), credentials and registries imported once from
+                                     rustfmt, ... are QuickRust), credentials and registries imported once from
                                      ~/.cargo, the stable toolchain installed
     qrust self update                install QuickRust's latest release in place of this one
     qrust self uninstall --yes       remove ~/.qrust and the PATH lines
@@ -343,7 +343,7 @@ fn cmd_analyze(raw: &[OsString]) -> CmdResult {
     let section = a.positional();
     a.finish()?;
     if !view.is_empty() && matches!(section.as_deref(), None | Some("worktrees")) {
-        return Err("--filter, --sort and --limit apply to the records of one section: `qrust analyze <section> …`".into());
+        return Err("--filter, --sort and --limit apply to the records of one section: `qrust analyze <section> ...`".into());
     }
     let ctx = Ctx::load()?;
     if section.as_deref() == Some("worktrees") {
@@ -406,7 +406,7 @@ fn cmd_report(raw: &[OsString]) -> CmdResult {
     match output {
         Some(path) => {
             util::write_atomic(&ctx.cwd.join(&path), body.as_bytes()).map_err(|e| format!("could not write {}: {}", path, e))?;
-            eprintln!("qrust: wrote {}", path);
+            crate::ui::say(crate::ui::Tag::Ok, &format!("Wrote {}", path));
         }
         None => print!("{}", body),
     }
@@ -578,10 +578,10 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 let channels: Vec<String> = st.channels.iter().filter(|(_, c)| c.toolchain == tc.id).map(|(k, _)| k.strip_suffix(&format!("-{}", host)).unwrap_or(k).to_string()).collect();
                 let targets: Vec<String> = rec.iter().flat_map(|r| r.components.iter().filter(|(p, t, _)| p == "rust-std" && *t != r.host).map(|(_, t, _)| t.clone())).collect();
                 let comps = rec.as_ref().map(|r| r.components.len()).unwrap_or(0);
-                println!("{:<44} Rust {:<18} {}{} components{}", tc.id, rec.as_ref().map(|r| r.version.as_str()).unwrap_or("?"), if channels.is_empty() { String::new() } else { format!("{} · ", channels.join(", ")) }, comps, if targets.is_empty() { String::new() } else { format!(" · targets {}", targets.join(", ")) });
+                println!("{:<44} Rust {:<18} {}{} components{}", tc.id, rec.as_ref().map(|r| r.version.as_str()).unwrap_or("?"), if channels.is_empty() { String::new() } else { format!("{}; ", channels.join(", ")) }, comps, if targets.is_empty() { String::new() } else { format!("; targets {}", targets.join(", ")) });
             }
             for (name, dir) in &st.linked {
-                println!("{:<44} linked → {}", name, dir.display());
+                println!("{:<44} linked -> {}", name, dir.display());
             }
             println!();
             println!("default: {}", st.default);
@@ -605,7 +605,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 let sel = Selection { spec: Spec::parse(&spec)?, source: Source::Plus, file: None };
                 let mut progress = crate::ui::ToolchainProgress::new(&spec);
                 match toolchain::ensure(&layout, &sel, &needs, &server, &mut progress) {
-                    Ok(tc) if !progress.worked() => println!("{} is installed: {}", spec, tc.id),
+                    Ok(tc) if !progress.worked() => crate::ui::say_out(crate::ui::Tag::Ok, &format!("{} is installed: {}", spec, tc.id)),
                     Ok(tc) => progress.finish(&tc),
                     Err(e) => {
                         progress.fail(&e);
@@ -643,13 +643,13 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             };
             progress.clear();
             if moved.is_empty() {
-                println!("Every channel is at its latest release.");
+                crate::ui::say_out(crate::ui::Tag::Ok, "Every channel is at its latest release");
             }
             for m in moved {
-                println!("{}: {} → {} (the old one is removed after a day without use)", m.channel, m.from, m.to);
+                crate::ui::say_out(crate::ui::Tag::Ok, &format!("Updated {}: {} -> {} (the old one is removed after a day without use)", m.channel, m.from, m.to));
             }
             for r in retired {
-                println!("removed {}, which no channel names and which was not used for a day", r);
+                crate::ui::say_out(crate::ui::Tag::Ok, &format!("Removed {}, which no channel names and which was not used for a day", r));
             }
             Ok(0)
         }
@@ -664,7 +664,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 // A channel name removes the toolchain it names.
                 let id = st.channels.get(&format!("{}-{}", given, toolchain::host())).map(|c| c.toolchain.clone()).unwrap_or(given);
                 toolchain::remove(&layout, &id, &mut crate::ui::ToolchainProgress::new(&id))?;
-                println!("removed {}", id);
+                crate::ui::say_out(crate::ui::Tag::Ok, &format!("Removed {}", id));
             }
             Ok(0)
         }
@@ -687,7 +687,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                         st.default = s.clone();
                         Ok(())
                     })?;
-                    println!("default toolchain: {}", s);
+                    crate::ui::say_out(crate::ui::Tag::Ok, &format!("Default toolchain: {}", s));
                 }
             }
             Ok(0)
@@ -714,14 +714,14 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 st.linked.insert(name.clone(), dir.clone());
                 Ok(())
             })?;
-            println!("linked {} → {}", name, dir.display());
+            crate::ui::say_out(crate::ui::Tag::Ok, &format!("Linked {} -> {}", name, dir.display()));
             Ok(0)
         }
         "unlink" => {
             let name = a.positional().ok_or("`qrust toolchain unlink` needs a name")?;
             a.finish()?;
             state::update(&layout.toolchains(), |st| st.linked.remove(&name).map(|_| ()).ok_or_else(|| format!("no toolchain is linked as `{}`", name)))?;
-            println!("unlinked {}", name);
+            crate::ui::say_out(crate::ui::Tag::Ok, &format!("Unlinked {}", name));
             Ok(0)
         }
         "which" => {
@@ -753,7 +753,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 "add" => {
                     let needs = if action == "target" { Needs { targets: names, ..Default::default() } } else { Needs { components: names, ..Default::default() } };
                     let tc = chosen(&mut b, &needs)?;
-                    println!("{} has {}", tc.id, needs.components.iter().chain(&needs.targets).cloned().collect::<Vec<_>>().join(", "));
+                    crate::ui::say_out(crate::ui::Tag::Ok, &format!("{} has {}", tc.id, needs.components.iter().chain(&needs.targets).cloned().collect::<Vec<_>>().join(", ")));
                     Ok(0)
                 }
                 "remove" => {
@@ -771,7 +771,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                         .collect::<Result<_, String>>()?;
                     let locked = toolchain::install::lock(&layout, &tc.id, &mut crate::ui::ToolchainProgress::new(&tc.id))?;
                     toolchain::install::remove_components(&locked, &tc.dir, &which)?;
-                    println!("removed {} from {}", names.join(", "), tc.id);
+                    crate::ui::say_out(crate::ui::Tag::Ok, &format!("Removed {} from {}", names.join(", "), tc.id));
                     Ok(0)
                 }
                 other => Err(format!("unknown `qrust toolchain {}` action `{}` (add, remove)", action, other)),
@@ -814,7 +814,7 @@ fn cmd_inspect(raw: &[OsString]) -> CmdResult {
     println!("  host            {}", t["host"].as_str().unwrap_or("unavailable"));
     println!("  capabilities    {}", t["capabilities"].as_array().map(|c| c.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")).unwrap_or_default());
     println!("Environment");
-    println!("  machine         {} {} · {} · {} logical CPUs · {}", vstr(m, "os"), vstr(m, "arch"), m["cpu_model"].as_str().unwrap_or("cpu unavailable"), m["logical_cpus"], m["memory_bytes"].as_u64().map(human_bytes).unwrap_or_else(|| "memory unavailable".into()));
+    println!("  machine         {} {}, {}, {} logical CPUs, {}", vstr(m, "os"), vstr(m, "arch"), m["cpu_model"].as_str().unwrap_or("cpu unavailable"), m["logical_cpus"], m["memory_bytes"].as_u64().map(human_bytes).unwrap_or_else(|| "memory unavailable".into()));
     println!("  class           {}   filesystem {}", vstr(m, "class"), m["filesystem"].as_str().unwrap_or("unavailable"));
     for (k, v) in snap["environment"]["variables"]["vars"].as_object().into_iter().flatten() {
         println!("  {:<15} {}", k, v["value"].as_str().unwrap_or(""));
@@ -972,8 +972,8 @@ fn cmd_baseline(raw: &[OsString]) -> CmdResult {
                 return Err("refusing to promote a failed run to a baseline".into());
             }
             let path = compare::save_baseline(&root, &name, &ctx.export(&subject))?;
-            println!("Baseline `{}` set from {} → {}", name, vstr(&subject, "label"), path.display());
-            println!("Commit this file so CI evaluates budgets against the same numbers.");
+            crate::ui::say_out(crate::ui::Tag::Ok, &format!("Baseline `{}` set from {} -> {}", name, vstr(&subject, "label"), path.display()));
+            println!("{}Commit this file so CI evaluates budgets against the same numbers.", crate::ui::INDENT);
             Ok(0)
         }
         Some("list") => {
@@ -1083,7 +1083,7 @@ fn cmd_inventory(raw: &[OsString]) -> CmdResult {
     }
     print!("{}", out);
     for g in global {
-        println!("Shared cache [{}]  {}  — {} allocated, {} files", vstr(&g, "category"), vstr(&g, "root"), g["allocated_bytes"].as_u64().map(human_bytes).unwrap_or_default(), g["files"]);
+        println!("Shared cache [{}]  {}: {} allocated, {} files", vstr(&g, "category"), vstr(&g, "root"), g["allocated_bytes"].as_u64().map(human_bytes).unwrap_or_default(), g["files"]);
     }
     Ok(0)
 }
@@ -1119,10 +1119,10 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         return Ok(0);
     }
     for (kind, path, bytes, why) in &done.removed {
-        println!("  {} {:<10} {}  {} ({})", if dry_run { "would remove" } else { "removed" }, human_bytes(*bytes), kind.name(), path.display(), why);
+        println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, if dry_run { "would remove" } else { "removed" }, human_bytes(*bytes), kind.name(), path.display(), why);
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
-    phase.finish(true, &format!("{} {} · QuickRust's cache {} → {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(" · {} in use left alone", done.skipped_in_use) } else { String::new() }));
+    phase.finish(true, &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
     Ok(0)
 }
 
@@ -1171,7 +1171,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         Some(bin) => match crate::cache::stats(bin) {
             Ok(s) => ("local", Some(s)),
             Err(e) => {
-                eprintln!("qrust: warning: {}", e);
+                crate::ui::say(crate::ui::Tag::Warn, &e);
                 ("degraded", None)
             }
         },
@@ -1200,7 +1200,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     match hc["usage"].as_object().filter(|u| u["counted"] != json!(false)) {
         Some(u) => {
             let total = u["total_bytes"].as_u64().unwrap_or(0);
-            println!("QuickRust's cache: {} · counted {} · {}", human_bytes(total), u["scanned_ns"].as_u64().map(|t| util::human_ago(t, now)).unwrap_or_default(), qrust_cache.display());
+            println!("QuickRust's cache: {}, counted {}, {}", human_bytes(total), u["scanned_ns"].as_u64().map(|t| util::human_ago(t, now)).unwrap_or_default(), qrust_cache.display());
             let mut kinds_sum = 0;
             for (kind, k) in u["by_kind"].as_object().into_iter().flatten() {
                 kinds_sum += k["bytes"].as_u64().unwrap_or(0);
@@ -1214,7 +1214,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
                 println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
             }
         }
-        None => println!("QuickRust's cache: not counted yet · {} · `qrust gc --dry-run` counts it", qrust_cache.display()),
+        None => println!("QuickRust's cache: not counted yet, {}; `qrust gc --dry-run` counts it", qrust_cache.display()),
     }
     if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
         // A size setting reads back in bytes; `auto` and a share of the disk as written.
@@ -1222,11 +1222,11 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
             let v = ctx.cfg.str(key);
             v.parse::<u64>().map(human_bytes).unwrap_or_else(|_| v.to_string())
         };
-        println!("  {:<24} at most {} (cache.max-size = {}) · keeps {} of the disk free (cache.min-free = {}) · {} free now", "bounds", human_bytes(m), setting("cache.max-size"), human_bytes(f), setting("cache.min-free"), human_bytes(free));
+        println!("  {:<24} at most {} (cache.max-size = {}), keeps {} of the disk free (cache.min-free = {}), {} free now", "bounds", human_bytes(m), setting("cache.max-size"), human_bytes(f), setting("cache.min-free"), human_bytes(free));
     }
     for c in hc["recent_collections"].as_array().into_iter().flatten() {
         let at = util::parse_iso8601(&vstr(c, "at")).map(|t| util::human_ago(t, now)).unwrap_or_else(|| vstr(c, "at"));
-        println!("  {:<24} {} · {} → {} · {} removed", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
+        println!("  {:<24} {}, {} -> {}, {} removed", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
     }
     println!();
     // A compiler cache (sccache) besides QuickRust's own: what it is and what it did.
@@ -1237,7 +1237,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     println!("Compiler cache: {}", state);
     println!("  policy            cache.provider = {} ({}), cache.fail = {}", provider, ctx.cfg.origin("cache.provider"), ctx.cfg.str("cache.fail"));
     match &existing {
-        Some((w, s)) => println!("  existing wrapper  {} ({}) — preserved; the QuickRust wrapper runs outside it", w, s),
+        Some((w, s)) => println!("  existing wrapper  {} ({}), preserved; the QuickRust wrapper runs outside it", w, s),
         None => println!("  existing wrapper  none"),
     }
     if let Some(s) = &v["server_statistics"].as_object() {
@@ -1266,13 +1266,13 @@ fn cmd_fix(raw: &[OsString]) -> CmdResult {
     if let Some(id) = a.opt("--apply")? {
         a.finish()?;
         let r = remedy::apply(&ctx.store, &id)?;
-        println!("Applied {} to {}. Undo with: {}", id, vstr(&r, "file"), vstr(&r["rollback"], "command"));
+        crate::ui::say_out(crate::ui::Tag::Ok, &format!("Applied {} to {}; undo with: {}", id, vstr(&r, "file"), vstr(&r["rollback"], "command")));
         return Ok(0);
     }
     if let Some(id) = a.opt("--rollback")? {
         a.finish()?;
         let r = remedy::rollback(&ctx.store, &id)?;
-        println!("Rolled back {} ({} restored).", id, vstr(&r, "file"));
+        crate::ui::say_out(crate::ui::Tag::Ok, &format!("Rolled back {} ({} restored)", id, vstr(&r, "file")));
         return Ok(0);
     }
     // Remediation is preview-only unless a specific previewed change is applied by id (FR-170.1).
@@ -1310,7 +1310,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     let mut problems = 0;
     let mut problem = |msg: String| {
         problems += 1;
-        println!("  PROBLEM: {}", msg);
+        crate::ui::say_out(crate::ui::Tag::Fail, &msg);
     };
     let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "(unset)".into());
     let (exe, _) = resolve::self_identity();
@@ -1362,7 +1362,7 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
     let subset = resolve::cargo_config_subset(&cwd, &[]);
     match resolve::existing_rustc_wrapper(&subset) {
-        Some((w, src)) => println!("  existing rustc wrapper   {} ({}) — preserved inside the QuickRust wrapper", w, src),
+        Some((w, src)) => println!("  existing rustc wrapper   {} ({}), preserved inside the QuickRust wrapper", w, src),
         None => println!("  existing rustc wrapper   none"),
     }
     println!("Workspace");
@@ -1398,18 +1398,19 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     }
     println!("  active sessions    {}", store::active_sessions().len());
     if let Some(cfg) = &cfg {
-        println!("  cache policy       provider {} · fail {}", cfg.str("cache.provider"), cfg.str("cache.fail"));
+        println!("  cache policy       provider {}, fail {}", cfg.str("cache.provider"), cfg.str("cache.fail"));
         println!("  nested cargo       {}", cfg.str("compatibility.nested-cargo"));
     }
     match util::which("sccache") {
         Some(s) => println!("  sccache            {} ({})", s.display(), version_of(&s, &["--version"]).unwrap_or_default()),
         None => println!("  sccache            not installed"),
     }
+    println!();
     if problems == 0 {
-        println!("\nNo problems found.");
+        crate::ui::say_out(crate::ui::Tag::Ok, "");
         Ok(0)
     } else {
-        println!("\n{} problem(s) found.", problems);
+        crate::ui::say_out(crate::ui::Tag::Fail, &format!("{} problem{}", problems, if problems == 1 { "" } else { "s" }));
         Ok(1)
     }
 }
@@ -1423,18 +1424,19 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let opts = crate::setup::Options { modify_path, toolchain: (toolchain != "none").then_some(toolchain) };
     let phase = crate::ui::Phase::start();
     let done = crate::setup::setup(&opts)?;
-    phase.finish(true, &format!("QuickRust {} installed in {} · cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
+    phase.finish(true, &format!("QuickRust {} installed in {}: cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
+    let i = crate::ui::INDENT;
     match (&done.path_edits[..], modify_path) {
-        (_, false) => println!("  PATH left alone (--no-modify-path): put {} first on PATH yourself", util::tilde(&done.bin)),
-        ([], true) => println!("  PATH: already set up"),
-        (files, true) => println!("  PATH: {} first, from {}", util::tilde(&done.bin), files.iter().map(|f| util::tilde(f)).collect::<Vec<_>>().join(", ")),
+        (_, false) => eprintln!("{}PATH left alone (--no-modify-path): put {} first on PATH yourself", i, util::tilde(&done.bin)),
+        ([], true) => eprintln!("{}PATH: already set up", i),
+        (files, true) => eprintln!("{}PATH: {} first, from {}", i, util::tilde(&done.bin), files.iter().map(|f| util::tilde(f)).collect::<Vec<_>>().join(", ")),
     }
     if let Some((from, imported, skipped)) = &done.import {
         if !imported.is_empty() {
-            println!("  imported from {}: {}", util::tilde(from), imported.join(", "));
+            eprintln!("{}imported from {}: {}", i, util::tilde(from), imported.join(", "));
         }
         if !skipped.is_empty() {
-            println!("  not imported: {} (builds of projects under your home still read {}/config.toml)", skipped.join(", "), util::tilde(from));
+            eprintln!("{}not imported: {} (builds of projects under your home still read {}/config.toml)", i, skipped.join(", "), util::tilde(from));
         }
     }
     if let Some(spec) = &opts.toolchain {
@@ -1449,7 +1451,7 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
                 tc
             }
             Ok(tc) => {
-                println!("  Rust: {} is installed ({})", spec, tc.id);
+                eprintln!("{}Rust: {} is installed ({})", crate::ui::INDENT, spec, tc.id);
                 tc
             }
             Err(e) => {
@@ -1464,7 +1466,7 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {
         // As a shell takes it: `~` is not expanded inside quotes, `$HOME` is.
         let home = util::qrust_home();
-        println!("\nOpen a new shell, or run:  . \"{}\"  (fish: source \"{}\")", crate::setup::shell_path(&home.join("env")), crate::setup::shell_path(&home.join("env.fish")));
+        crate::ui::say(crate::ui::Tag::Note, &format!("open a new shell, or run:  . \"{}\"  (fish: source \"{}\")", crate::setup::shell_path(&home.join("env")), crate::setup::shell_path(&home.join("env.fish"))));
     }
     Ok(0)
 }
@@ -1492,7 +1494,7 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
         Some("uninstall") if !yes => Err(format!("`qrust self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `qrust setup` added", util::qrust_home().display())),
         Some("uninstall") => {
             for r in crate::setup::uninstall()? {
-                println!("removed {}", r);
+                crate::ui::say_out(crate::ui::Tag::Ok, &format!("Removed {}", r));
             }
             Ok(0)
         }

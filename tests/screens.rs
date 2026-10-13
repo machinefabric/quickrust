@@ -37,6 +37,10 @@ impl<'a> Screens<'a> {
     fn check(&mut self, name: &str, cwd: &std::path::Path, args: &str) {
         let mut c = self.sb.cargo_in_terminal(cwd, args).expect("the screens need util-linux `script`");
         let shown = normalize(&screen(&run(&mut c).stdout), self.sb);
+        // What a terminal shows is ASCII, which every terminal can show.
+        if let Some(c) = shown.chars().find(|c| !c.is_ascii()) {
+            self.mismatches.push(format!("`cargo {}` shows {:?}, which is not ASCII:\n{}\n", args, c, shown));
+        }
         let path = self.dir.join(format!("{}.screen", name));
         if self.update {
             fs::create_dir_all(&self.dir).unwrap();
@@ -130,8 +134,8 @@ fn quantity(s: &[char]) -> Option<(usize, &'static str)> {
 #[test]
 fn placeholders_replace_only_what_varies() {
     let sb = Sandbox::new("normalize");
-    let line = format!("Built 1.84s · 3 compiled · 45ms · 2m03.5s · 5.6 MiB · 12 B · {}/cache/builds/app-0123456789abcdef/debug/app · v1.2.3 · x86_64 · 10 warnings · 174 files", sb.home.display());
-    assert_eq!(normalize(&line, &sb), "Built <time> · 3 compiled · <time> · <time> · <size> · <size> · <home>/cache/builds/app-<id>/debug/app · v1.2.3 · x86_64 · 10 warnings · <count> files");
+    let line = format!("OK   Built: 3 compiled, 45ms, 2m03.5s, 5.6 MiB, 12 B, {}/cache/builds/app-0123456789abcdef/debug/app, v1.2.3, x86_64, 10 warnings, 174 files [1.84s]", sb.home.display());
+    assert_eq!(normalize(&line, &sb), "OK   Built: 3 compiled, <time>, <time>, <size>, <size>, <home>/cache/builds/app-<id>/debug/app, v1.2.3, x86_64, 10 warnings, <count> files [<time>]");
 }
 
 #[test]

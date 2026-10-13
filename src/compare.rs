@@ -478,7 +478,7 @@ pub fn exit_code(result: &Value, budgets: &Budgets) -> Option<i32> {
 /// The verdict goes to stderr; Cargo's stdout is never touched (AC-016).
 pub fn enforce_on_build(store: &WsStore, cfg: &Config, report: &Value) -> (Option<i32>, Value) {
     let misconfigured = |reason: String| {
-        eprintln!("qrust: error: ci.enforce-on-build is set but budgets cannot be evaluated: {}", reason);
+        crate::ui::say(crate::ui::Tag::Fail, &format!("ci.enforce-on-build is set but budgets cannot be evaluated: {}", reason));
         (Some(crate::EXIT_QRUST_ERROR), json!({ "result": "error", "reason": reason, "evaluations": [] }))
     };
     let Some(root) = &store.root else { return misconfigured("the command did not run inside a Cargo workspace".into()) };
@@ -495,8 +495,11 @@ pub fn enforce_on_build(store: &WsStore, cfg: &Config, report: &Value) -> (Optio
     };
     let result = evaluate(&budgets, baseline.as_ref(), &summarize_run(report));
     let verdict = util::vstr(&result, "result");
-    if verdict != "pass" {
-        eprintln!("qrust: budget {}: {}", verdict, crate::render::budget_one_line(&result));
+    match verdict.as_str() {
+        "pass" => {}
+        "fail" => crate::ui::say(crate::ui::Tag::Fail, &format!("budget: {}", crate::render::budget_one_line(&result))),
+        "warn" => crate::ui::say(crate::ui::Tag::Warn, &format!("budget: {}", crate::render::budget_one_line(&result))),
+        other => crate::ui::say(crate::ui::Tag::Warn, &format!("budget {}: {}", other, crate::render::budget_one_line(&result))),
     }
     (exit_code(&result, &budgets), result)
 }

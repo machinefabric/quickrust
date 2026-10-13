@@ -214,9 +214,9 @@ impl Filter {
         } else if let Some(what) = verb.strip_prefix("Running ") {
             // `Running unittests src/lib.rs (<target>/debug/deps/app-…)`
             let what = what.rsplit_once(" (").map(|(w, _)| w).unwrap_or(what);
-            Some(dim(format!("  {}", what)))
+            Some(dim(format!("{}{}", crate::ui::INDENT, what)))
         } else {
-            verb.strip_prefix("Doc-tests ").map(|crate_name| dim(format!("  doc-tests {}", crate_name)))
+            verb.strip_prefix("Doc-tests ").map(|crate_name| dim(format!("{}doc-tests {}", crate::ui::INDENT, crate_name)))
         }
     }
 }
@@ -293,7 +293,7 @@ mod tests {
             "\x1b[0m\x1b[0m\x1b[1m\x1b[92m     Running\x1b[0m tests/it.rs (/h/x)\n",
             "test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n",
         ]);
-        assert_eq!(text, "  unittests src/lib.rs\n\nrunning 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out; finished in 0.00s\n\n  doc-tests app\n  tests/it.rs\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n");
+        assert_eq!(text, "     unittests src/lib.rs\n\nrunning 2 tests\ntest a ... ok\ntest b ... ok\n\ntest result: ok. 2 passed; 0 failed; 1 ignored; 0 measured; 3 filtered out; finished in 0.00s\n\n     doc-tests app\n     tests/it.rs\ntest result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s\n");
         assert_eq!(totals, Totals { programs: 2, passed: 3, failed: 1, ignored: 1, measured: 0, filtered: 3 });
     }
 
@@ -305,7 +305,7 @@ mod tests {
         assert_eq!(f.feed(b"ok\n"), b"ok\n");
         // Cargo's lines arrive whole, but until the verb is known nothing shows.
         assert_eq!(f.feed(b"     Run"), b"");
-        assert_eq!(f.feed(b"ning tests/a.rs (/p)\n"), "  tests/a.rs\n".as_bytes());
+        assert_eq!(f.feed(b"ning tests/a.rs (/p)\n"), "     tests/a.rs\n".as_bytes());
         // Text that merely starts like a verb shows as soon as it differs.
         assert_eq!(f.feed(b"  Runner says hi"), b"  Runner says hi");
         // Indented further than any of Cargo's verbs: not Cargo's.
@@ -319,6 +319,6 @@ mod tests {
         for b in b"\x1b[1m\x1b[92m     Running\x1b[0m tests/b.rs (/p)\n\x1b[32mtest\x1b[0m" {
             out.extend(f.feed(&[*b]));
         }
-        assert_eq!(String::from_utf8(out).unwrap(), "  tests/b.rs\n\x1b[32mtest\x1b[0m");
+        assert_eq!(String::from_utf8(out).unwrap(), "     tests/b.rs\n\x1b[32mtest\x1b[0m");
     }
 }

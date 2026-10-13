@@ -143,7 +143,7 @@ pub fn fetch(work: &Path, repo: &Path, w: &Workload, sealed: &Sealed) -> Result<
             Source::Git(url) => {
                 fs::create_dir_all(&src).map_err(|e| e.to_string())?;
                 git(&src, &["init", "--quiet"])?;
-                eprintln!("qrust-bench: fetching {} {}", url, w.rev);
+                eprintln!("     fetching {} {}", url, w.rev);
                 git(&src, &["fetch", "--quiet", "--depth", "1", url, &w.rev])?;
             }
         }
@@ -159,7 +159,7 @@ pub fn fetch(work: &Path, repo: &Path, w: &Workload, sealed: &Sealed) -> Result<
             return Err(format!("{}: the edit anchor occurs {} times in {} (must be exactly once): {:?}", w.name, n, e.file, e.find));
         }
     }
-    eprintln!("qrust-bench: downloading dependencies of {}", w.name);
+    eprintln!("     downloading dependencies of {}", w.name);
     let mut cmd = sealed.command(&sealed.cargo, &tree, &tree.join("target"), true);
     cmd.args(["fetch", "--locked"]).stdout(Stdio::null());
     let status = cmd.status().map_err(|e| format!("cargo fetch: {}", e))?;
