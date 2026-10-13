@@ -377,7 +377,11 @@ pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::T
             return Err(format!("{} is {} bytes; the release manifest says {}", release.url, size, release.size));
         }
         let unpacked = work.join("qrust");
-        crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, release.root(), &unpacked, 1 << 30).map_err(|e| e.to_string())?;
+        match release.archive {
+            crate::release::Archive::TarGz => crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, crate::release::ARCHIVE_ROOT, &unpacked, 1 << 30),
+            crate::release::Archive::Zip => crate::archive::unpack_zip_file(&archive, crate::release::ARCHIVE_ROOT, &unpacked, 1 << 30),
+        }
+        .map_err(|e| e.to_string())?;
         let new = util::exe_candidates(&unpacked, "qrust").remove(0);
         // It must run, and be the release it was published as.
         let says = std::process::Command::new(&new).arg("--version").output().map_err(|e| format!("the downloaded QuickRust does not run: {}", e))?;

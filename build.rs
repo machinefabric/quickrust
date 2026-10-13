@@ -3,21 +3,24 @@
 //! A released QuickRust knows four things about its own release line, all given by the release
 //! build and none read at run time:
 //!
+//! - `MFR_RELEASE_CHANNEL`: the channel it is published on (`release` or `nightly`);
 //! - `MFR_RELEASES_BASE_URL`: the release registry its manifest is published in;
-//! - `MFR_RELEASE_CHANNEL`: the channel it was published on (`release` or `nightly`);
 //! - `MFR_SIGNING_ENVIRONMENT`: the environment the registry's release key is certified for
 //!   (`prod` or `staging`);
 //! - `MFR_CARTRIDGE_ROOT_PUBKEYS`: the root public keys a release-key certificate must be signed
-//!   by, comma-separated (the workspace's one root set; at least three, of which two must sign).
+//!   by, comma-separated (at least three, of which two must sign).
 //!
-//! They come together or not at all. A build given none of them is a build from source: it has no
-//! release line, and `qrust self update` says so. A build given some of them stops here, because a
-//! QuickRust that knew where to look for releases and not how to trust them would have to either
-//! refuse every update or install what it cannot check.
+//! The channel is what makes a build a release: nothing is published without one. A build given
+//! no channel is a build from source, whatever else is set around it (the other three describe a
+//! registry, which other builds in the same environment are given too): it has no release line,
+//! and `qrust self update` says so. A build given a channel is given the other three with it, or
+//! stops here, because a QuickRust that knew where to look for releases and not how to trust them
+//! would have to either refuse every update or install what it cannot check.
 
 use std::env;
 
-const INPUTS: [&str; 4] = ["MFR_RELEASES_BASE_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS"];
+const CHANNEL: &str = "MFR_RELEASE_CHANNEL";
+const INPUTS: [&str; 4] = ["MFR_RELEASES_BASE_URL", CHANNEL, "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS"];
 /// The roots a certificate is checked against: two of them must have signed it, so fewer than
 /// three leaves no root that can be lost or withheld.
 const MIN_ROOTS: usize = 3;
@@ -30,15 +33,14 @@ fn main() {
         let value = env::var(name).unwrap_or_default().trim().to_string();
         given.push((name, value));
     }
-    let set: Vec<&str> = given.iter().filter(|(_, v)| !v.is_empty()).map(|(n, _)| *n).collect();
-    if set.is_empty() {
+    let value = |name: &str| given.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap();
+    if value(CHANNEL).is_empty() {
         return;
     }
-    if set.len() != INPUTS.len() {
-        let missing: Vec<&str> = given.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| *n).collect();
-        panic!("a release build of QuickRust is given {} together; this one has {} and not {}", INPUTS.join(", "), set.join(", "), missing.join(", "));
+    let missing: Vec<&str> = given.iter().filter(|(_, v)| v.is_empty()).map(|(n, _)| *n).collect();
+    if !missing.is_empty() {
+        panic!("a release build of QuickRust ({} is set) is given {} with it; this one is not given {}", CHANNEL, INPUTS.iter().filter(|n| **n != CHANNEL).copied().collect::<Vec<_>>().join(", "), missing.join(", "));
     }
-    let value = |name: &str| given.iter().find(|(n, _)| *n == name).map(|(_, v)| v.clone()).unwrap();
 
     let url = value("MFR_RELEASES_BASE_URL");
     if !url.starts_with("https://") || url.ends_with('/') {
@@ -71,10 +73,13 @@ fn main() {
         }
     }
 
-    println!("cargo:rustc-env=QRUST_BAKED_RELEASES_URL={}", url);
-    println!("cargo:rustc-env=QRUST_BAKED_CHANNEL={}", channel);
-    println!("cargo:rustc-env=QRUST_BAKED_SIGNING_ENVIRONMENT={}", environment);
-    println!("cargo:rustc-env=QRUST_BAKED_ROOT_PUBKEYS={}", roots.join(","));
+    // One value, so that the release line is there whole or not at all: registry, channel,
+    // environment and the roots (comma-separated), with a space between them. None of them can
+    // hold a space: the checks above have seen to the first three, and base64 has none.
+    if url.contains(' ') {
+        panic!("MFR_RELEASES_BASE_URL holds a space: {:?}", url);
+    }
+    println!("cargo:rustc-env=QRUST_BAKED_RELEASE_LINE={} {} {} {}", url, channel, environment, roots.join(","));
 }
 
 /// A minisign public key is 42 bytes in base64: `Ed`, an 8-byte key id, a 32-byte ed25519 key.

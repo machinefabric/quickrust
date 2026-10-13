@@ -1,6 +1,6 @@
 [package]
 name = "quickrust"
-version = "0.146.1391"
+version = "1.147.1402"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
@@ -9,7 +9,7 @@ default-run = "qrust"
 
 # The benchmark harness is a separate member so its code never ships in QuickRust.
 [workspace]
-members = [".", "bench"]
+members = [".", "bench", "tools/quickrust-dist"]
 
 [lib]
 name = "quickrust"
@@ -41,6 +41,8 @@ ureq = { version = "2.12", default-features = false, features = ["tls", "proxy-f
 liblzma = { version = "0.4", features = ["static"] }
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
+# QuickRust's own Windows release archive is a .zip (`qrust self update` unpacks it).
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 semver = "1"
 # Release manifests are signed: raw ed25519 over their exact bytes, by a release key that two of
 # the build's root keys certify (`src/release.rs`). Verification only.

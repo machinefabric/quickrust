@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 pub mod registry;
+pub mod release_line;
 
 use std::ffi::OsString;
 use std::fs;

@@ -28,6 +28,9 @@ use std::fmt;
 
 /// The product's name in the release registry.
 pub const APP_ID: &str = "quickrust";
+/// The one directory every release archive unpacks to, holding `qrust`, `qrust-rustc-wrapper`,
+/// the licences and the README.
+pub const ARCHIVE_ROOT: &str = "quickrust";
 const CERTIFICATE_FORMAT: &str = "machinefabric-release-key-cert/1";
 const ENVELOPE_FORMAT: &str = "machinefabric-manifest-sig/1";
 const MANIFEST_SCHEMA_MAJOR: &str = "5";
@@ -55,16 +58,18 @@ pub struct Trust {
 
 /// This build's release line, or `None` for a build from source.
 pub fn identity() -> Option<Identity> {
-    let registry = option_env!("QRUST_BAKED_RELEASES_URL")?;
-    // `build.rs` bakes all four or none.
-    let channel = option_env!("QRUST_BAKED_CHANNEL").expect("baked with the registry");
-    let environment = option_env!("QRUST_BAKED_SIGNING_ENVIRONMENT").expect("baked with the registry");
-    let roots = option_env!("QRUST_BAKED_ROOT_PUBKEYS").expect("baked with the registry");
-    Some(Identity {
-        registry: registry.to_string(),
-        channel: channel.to_string(),
-        trust: Trust { roots: roots.split(',').map(str::to_string).collect(), environment: environment.to_string() },
-    })
+    option_env!("QRUST_BAKED_RELEASE_LINE").map(parse_baked)
+}
+
+/// The release line as `build.rs` wrote it: registry, channel, environment and the roots
+/// (comma-separated), with a space between them. It checked every part before it wrote them, so
+/// a value of another shape is not something a build can produce.
+fn parse_baked(baked: &str) -> Identity {
+    let parts: Vec<&str> = baked.split(' ').collect();
+    let [registry, channel, environment, roots] = parts[..] else {
+        panic!("this QuickRust's baked release line has {} parts, not 4: {:?}", parts.len(), baked);
+    };
+    Identity { registry: registry.to_string(), channel: channel.to_string(), trust: Trust { roots: roots.split(',').map(str::to_string).collect(), environment: environment.to_string() } }
 }
 
 /// The registry's name for the platform this QuickRust runs on, or `None` where it is not
@@ -277,23 +282,50 @@ fn base64_decode(text: &str) -> Option<Vec<u8>> {
     (acc == 0).then_some(out)
 }
 
+/// The form a platform's archive is published in: a `.zip` for Windows, a `.tar.gz` for every
+/// other platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archive {
+    TarGz,
+    Zip,
+}
+
+impl Archive {
+    pub fn of(platform: &str) -> Archive {
+        if platform.starts_with("windows-") {
+            Archive::Zip
+        } else {
+            Archive::TarGz
+        }
+    }
+
+    /// The installer type the release manifest records it under.
+    fn installer_type(self) -> &'static str {
+        match self {
+            Archive::TarGz => "targz",
+            Archive::Zip => "zip",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Archive::TarGz => ".tar.gz",
+            Archive::Zip => ".zip",
+        }
+    }
+}
+
 /// One published archive of QuickRust.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Release {
     pub version: String,
-    /// The archive's file name, `qrust-<version>-<platform>.tar.gz`.
+    /// The archive's file name, `qrust-<version>-<platform>` and the extension of `archive`.
     pub name: String,
+    pub archive: Archive,
     pub url: String,
     /// Lower-case hexadecimal.
     pub sha256: String,
     pub size: u64,
-}
-
-impl Release {
-    /// The directory the archive unpacks to: its name without `.tar.gz`.
-    pub fn root(&self) -> &str {
-        self.name.strip_suffix(".tar.gz").expect("checked when the release was read")
-    }
 }
 
 #[derive(Deserialize)]
@@ -358,16 +390,17 @@ pub fn latest(manifest: &[u8], channel: &str, platform: &str) -> Result<Option<R
         published.sort_unstable();
         return Err(format!("QuickRust {} is not published for {} (it is for {})", version, platform, published.join(", ")));
     };
-    let Some(archive) = for_platform.installers.iter().find(|i| i.kind == "targz") else {
-        return Err(format!("QuickRust {} for {} is published without a tar.gz archive", version, platform));
+    let form = Archive::of(platform);
+    let Some(archive) = for_platform.installers.iter().find(|i| i.kind == form.installer_type()) else {
+        return Err(format!("QuickRust {} for {} is published without a {} archive", version, platform, form.extension()));
     };
-    if archive.name.strip_suffix(".tar.gz").map_or(true, |root| root.is_empty() || root.contains(['/', '\\'])) {
-        return Err(format!("QuickRust {} for {} names its archive {:?}, which is not a tar.gz file name", version, platform, archive.name));
+    if archive.name.strip_suffix(form.extension()).map_or(true, |stem| stem.is_empty() || stem.contains(['/', '\\'])) {
+        return Err(format!("QuickRust {} for {} names its archive {:?}, which is not a {} file name", version, platform, archive.name, form.extension()));
     }
     if archive.sha256.len() != 64 || !archive.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("QuickRust {} for {} carries {:?} as its SHA-256", version, platform, archive.sha256));
     }
-    Ok(Some(Release { version: version.to_string(), name: archive.name.clone(), url: archive.path.clone(), sha256: archive.sha256.to_ascii_lowercase(), size: archive.size }))
+    Ok(Some(Release { version: version.to_string(), name: archive.name.clone(), archive: form, url: archive.path.clone(), sha256: archive.sha256.to_ascii_lowercase(), size: archive.size }))
 }
 
 /// Fetches QuickRust's manifest and its signature from `registry`, verifies the one against the
@@ -392,112 +425,11 @@ pub fn fetch_latest(client: &crate::net::Client, registry: &str, trust: &Trust, 
     latest(&manifest, channel, platform)
 }
 
+/// A release line a test signs itself, shared with the integration tests: QuickRust verifies and
+/// never signs, so the signing lives with the tests.
 #[cfg(test)]
-pub(crate) mod testing {
-    //! A release line a test signs itself: three roots, a release key they certify, and manifests
-    //! signed with it. The signing is here, behind `cfg(test)`, because QuickRust verifies and
-    //! never signs.
-    use ed25519_dalek::{Signer, SigningKey};
-    use serde_json::json;
-
-    pub const ISSUED_AT: u64 = 1_700_000_000;
-    pub const NOT_AFTER: u64 = ISSUED_AT + 365 * 86_400;
-    pub const NOW: u64 = ISSUED_AT + 86_400;
-
-    pub struct Key(SigningKey, [u8; 8]);
-
-    impl Key {
-        /// A key made from `seed`, with `seed` repeated as its minisign key id.
-        pub fn new(seed: u8) -> Key {
-            Key(SigningKey::from_bytes(&[seed; 32]), [seed; 8])
-        }
-        pub fn id(&self) -> String {
-            self.1.iter().map(|b| format!("{:02x}", b)).collect()
-        }
-        /// The public key in minisign's base64 form.
-        pub fn public(&self) -> String {
-            let mut bytes = b"Ed".to_vec();
-            bytes.extend_from_slice(&self.1);
-            bytes.extend_from_slice(self.0.verifying_key().as_bytes());
-            base64(&bytes)
-        }
-        pub fn sign(&self, bytes: &[u8]) -> String {
-            base64(&self.0.sign(bytes).to_bytes())
-        }
-    }
-
-    pub fn base64(bytes: &[u8]) -> String {
-        const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-        let mut out = String::new();
-        for chunk in bytes.chunks(3) {
-            let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
-            for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-                if i <= chunk.len() {
-                    out.push(ALPHABET[(n >> shift) as usize & 63] as char);
-                } else {
-                    out.push('=');
-                }
-            }
-        }
-        out
-    }
-
-    /// A release line: roots A, B and C, and a release key.
-    pub struct Line {
-        pub roots: [Key; 3],
-        pub release: Key,
-    }
-
-    impl Line {
-        pub fn new() -> Line {
-            Line { roots: [Key::new(1), Key::new(2), Key::new(3)], release: Key::new(9) }
-        }
-        pub fn trust(&self, environment: &str) -> super::Trust {
-            super::Trust { roots: self.roots.iter().map(Key::public).collect(), environment: environment.to_string() }
-        }
-        /// The certificate of `key` for `environment`, as the roots sign it.
-        pub fn certificate(key: &Key, environment: &str, issued_at: u64, not_after: u64) -> String {
-            json!({ "format": super::CERTIFICATE_FORMAT, "release_pubkey": key.public(), "key_id": key.id(), "environment": environment, "issued_at": issued_at, "not_after": not_after }).to_string()
-        }
-        /// The signature file of `manifest`: `certificate` signed by `signers`, the manifest
-        /// signed by `by`.
-        pub fn envelope(manifest: &[u8], certificate: &str, signers: &[&Key], by: &Key) -> Vec<u8> {
-            let root_signatures: Vec<_> = signers.iter().map(|root| json!({ "root_key_id": root.id(), "signature": root.sign(certificate.as_bytes()) })).collect();
-            json!({
-                "format": super::ENVELOPE_FORMAT,
-                "certificates": [{ "certificate": certificate, "root_signatures": root_signatures }],
-                "manifest_signature": { "key_id": by.id(), "signature": by.sign(manifest) },
-            })
-            .to_string()
-            .into_bytes()
-        }
-        /// `manifest` signed as a publish does it: the release key certified for `prod` by roots
-        /// A and B.
-        pub fn sign(&self, manifest: &[u8]) -> Vec<u8> {
-            let certificate = Line::certificate(&self.release, "prod", ISSUED_AT, NOT_AFTER);
-            Line::envelope(manifest, &certificate, &[&self.roots[0], &self.roots[1]], &self.release)
-        }
-    }
-
-    /// A manifest with one version on `channel` for `platform`.
-    pub fn manifest(channel: &str, version: &str, platform: &str, name: &str, url: &str, sha256: &str, size: u64) -> Vec<u8> {
-        let other = if channel == "release" { "nightly" } else { "release" };
-        json!({
-            "schemaVersion": "5.0",
-            "appId": super::APP_ID,
-            "name": "QuickRust",
-            "lastUpdated": "2026-10-13T00:00:00Z",
-            "channels": {
-                channel: { "latestVersion": version, "versions": { version: { "publishedAt": "2026-10-13T00:00:00Z", "platforms": { platform: { "label": platform, "installers": [
-                    { "type": "targz", "label": "tar.gz", "name": name, "path": url, "sha256": sha256, "size": size }
-                ] } } } } },
-                other: { "latestVersion": "", "versions": {} },
-            },
-        })
-        .to_string()
-        .into_bytes()
-    }
-}
+#[path = "../tests/common/release_line.rs"]
+pub(crate) mod testing;
 
 #[cfg(test)]
 mod tests {
@@ -506,15 +438,25 @@ mod tests {
 
     const SHA: &str = "b74a72297e9404fc35470af7fc77f157e2899577d2907bcdffe90397f89c14a5";
 
+    fn trust_of(line: &Line, environment: &str) -> Trust {
+        Trust { roots: line.root_keys(), environment: environment.to_string() }
+    }
+
     fn a_manifest() -> Vec<u8> {
         manifest("release", "0.150.0", "linux-x86_64", "qrust-0.150.0-linux-x86_64.tar.gz", "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-linux-x86_64.tar.gz", SHA, 4096)
+    }
+
+    #[test]
+    fn the_baked_release_line_is_read_back_as_it_was_given() {
+        let line = parse_baked("https://release.example nightly staging RWAAAA,RWBBBB,RWCCCC");
+        assert_eq!(line, Identity { registry: "https://release.example".into(), channel: "nightly".into(), trust: Trust { roots: vec!["RWAAAA".into(), "RWBBBB".into(), "RWCCCC".into()], environment: "staging".into() } });
     }
 
     #[test]
     fn a_manifest_signed_by_a_certified_release_key_is_trusted() {
         let line = Line::new();
         let manifest = a_manifest();
-        assert_eq!(verify_manifest(&manifest, &line.sign(&manifest), &line.trust("prod"), NOW), Ok(()));
+        assert_eq!(verify_manifest(&manifest, &line.sign(&manifest), &trust_of(&line, "prod"), NOW), Ok(()));
     }
 
     #[test]
@@ -525,7 +467,7 @@ mod tests {
         let mut other = manifest.clone();
         let at = other.iter().position(|b| *b == b'0').unwrap();
         other[at] = b'1';
-        assert!(matches!(verify_manifest(&other, &envelope, &line.trust("prod"), NOW), Err(ChainError::ManifestSignatureInvalid(_))));
+        assert!(matches!(verify_manifest(&other, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::ManifestSignatureInvalid(_))));
     }
 
     #[test]
@@ -533,7 +475,7 @@ mod tests {
         let line = Line::new();
         let manifest = a_manifest();
         let certificate = Line::certificate(&line.release, "prod", ISSUED_AT, NOT_AFTER);
-        let trust = line.trust("prod");
+        let trust = trust_of(&line, "prod");
         let signed_by = |signers: &[&Key]| verify_manifest(&manifest, &Line::envelope(&manifest, &certificate, signers, &line.release), &trust, NOW);
 
         assert_eq!(signed_by(&[&line.roots[0], &line.roots[2]]), Ok(()), "any two of the three");
@@ -557,7 +499,7 @@ mod tests {
         let forged = Line::certificate(&attacker, "prod", ISSUED_AT, NOT_AFTER);
         let mut envelope: serde_json::Value = serde_json::from_slice(&Line::envelope(&manifest, &signed, &[&line.roots[0], &line.roots[1]], &attacker)).unwrap();
         envelope["certificates"][0]["certificate"] = serde_json::json!(forged);
-        let refused = verify_manifest(&manifest, envelope.to_string().as_bytes(), &line.trust("prod"), NOW);
+        let refused = verify_manifest(&manifest, envelope.to_string().as_bytes(), &trust_of(&line, "prod"), NOW);
         assert_eq!(refused, Err(ChainError::TooFewRootSignatures { key_id: attacker.id(), have: 0 }));
     }
 
@@ -567,11 +509,11 @@ mod tests {
         let manifest = a_manifest();
         let envelope = line.sign(&manifest);
         let id = line.release.id();
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("staging"), NOW), Err(ChainError::WrongEnvironment { key_id: id.clone(), certificate: "prod".into(), build: "staging".into() }));
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("prod"), NOT_AFTER), Ok(()), "valid through its last second");
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("prod"), NOT_AFTER + 1), Err(ChainError::Expired { key_id: id.clone(), not_after: NOT_AFTER, now: NOT_AFTER + 1 }));
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("prod"), ISSUED_AT), Ok(()), "valid from its first second");
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("prod"), ISSUED_AT - 1), Err(ChainError::NotYetValid { key_id: id, issued_at: ISSUED_AT, now: ISSUED_AT - 1 }));
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "staging"), NOW), Err(ChainError::WrongEnvironment { key_id: id.clone(), certificate: "prod".into(), build: "staging".into() }));
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOT_AFTER), Ok(()), "valid through its last second");
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOT_AFTER + 1), Err(ChainError::Expired { key_id: id.clone(), not_after: NOT_AFTER, now: NOT_AFTER + 1 }));
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), ISSUED_AT), Ok(()), "valid from its first second");
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), ISSUED_AT - 1), Err(ChainError::NotYetValid { key_id: id, issued_at: ISSUED_AT, now: ISSUED_AT - 1 }));
     }
 
     #[test]
@@ -581,7 +523,20 @@ mod tests {
         let certificate = Line::certificate(&line.release, "prod", ISSUED_AT, NOT_AFTER);
         let stranger = Key::new(7);
         let envelope = Line::envelope(&manifest, &certificate, &[&line.roots[0], &line.roots[1]], &stranger);
-        assert_eq!(verify_manifest(&manifest, &envelope, &line.trust("prod"), NOW), Err(ChainError::NoCertificateForSigner { key_id: stranger.id() }));
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::NoCertificateForSigner { key_id: stranger.id() }));
+    }
+
+    #[test]
+    fn a_certificate_names_the_key_it_carries() {
+        // The roots signed this certificate as it stands, so only what it says of itself is
+        // wrong: it carries the release key and claims another key's id. A verifier that looked
+        // keys up by the stated id would take the release key for that other key.
+        let line = Line::new();
+        let manifest = a_manifest();
+        let other = Key::new(5);
+        let certificate = serde_json::json!({ "format": "machinefabric-release-key-cert/1", "release_pubkey": line.release.public(), "key_id": other.id(), "environment": "prod", "issued_at": ISSUED_AT, "not_after": NOT_AFTER }).to_string();
+        let envelope = Line::envelope(&manifest, &certificate, &[&line.roots[0], &line.roots[1]], &line.release);
+        assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::KeyIdMismatch { stated: other.id(), actual: line.release.id() }));
     }
 
     #[test]
@@ -593,7 +548,7 @@ mod tests {
         let unsigned = Line::certificate(&other, "prod", ISSUED_AT, NOT_AFTER);
         let mut envelope: serde_json::Value = serde_json::from_slice(&Line::envelope(&manifest, &good, &[&line.roots[0], &line.roots[1]], &line.release)).unwrap();
         envelope["certificates"].as_array_mut().unwrap().push(serde_json::json!({ "certificate": unsigned, "root_signatures": [] }));
-        assert_eq!(verify_manifest(&manifest, envelope.to_string().as_bytes(), &line.trust("prod"), NOW), Err(ChainError::TooFewRootSignatures { key_id: other.id(), have: 0 }));
+        assert_eq!(verify_manifest(&manifest, envelope.to_string().as_bytes(), &trust_of(&line, "prod"), NOW), Err(ChainError::TooFewRootSignatures { key_id: other.id(), have: 0 }));
     }
 
     #[test]
@@ -602,11 +557,11 @@ mod tests {
         let manifest = a_manifest();
         let mut envelope: serde_json::Value = serde_json::from_slice(&line.sign(&manifest)).unwrap();
         envelope["format"] = serde_json::json!("machinefabric-manifest-sig/2");
-        assert_eq!(verify_manifest(&manifest, envelope.to_string().as_bytes(), &line.trust("prod"), NOW), Err(ChainError::UnsupportedEnvelopeFormat("machinefabric-manifest-sig/2".into())));
-        assert!(matches!(verify_manifest(&manifest, b"<html>not found</html>", &line.trust("prod"), NOW), Err(ChainError::MalformedEnvelope(_))));
+        assert_eq!(verify_manifest(&manifest, envelope.to_string().as_bytes(), &trust_of(&line, "prod"), NOW), Err(ChainError::UnsupportedEnvelopeFormat("machinefabric-manifest-sig/2".into())));
+        assert!(matches!(verify_manifest(&manifest, b"<html>not found</html>", &trust_of(&line, "prod"), NOW), Err(ChainError::MalformedEnvelope(_))));
         let mut none: serde_json::Value = serde_json::from_slice(&line.sign(&manifest)).unwrap();
         none["certificates"] = serde_json::json!([]);
-        assert_eq!(verify_manifest(&manifest, none.to_string().as_bytes(), &line.trust("prod"), NOW), Err(ChainError::NoCertificates));
+        assert_eq!(verify_manifest(&manifest, none.to_string().as_bytes(), &trust_of(&line, "prod"), NOW), Err(ChainError::NoCertificates));
     }
 
     #[test]
@@ -628,13 +583,25 @@ mod tests {
     fn the_latest_release_is_the_channels_own_for_this_platform() {
         let manifest = a_manifest();
         let release = latest(&manifest, "release", "linux-x86_64").unwrap().unwrap();
-        assert_eq!(release, Release { version: "0.150.0".into(), name: "qrust-0.150.0-linux-x86_64.tar.gz".into(), url: "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-linux-x86_64.tar.gz".into(), sha256: SHA.into(), size: 4096 });
-        assert_eq!(release.root(), "qrust-0.150.0-linux-x86_64");
+        assert_eq!(release, Release { version: "0.150.0".into(), name: "qrust-0.150.0-linux-x86_64.tar.gz".into(), archive: Archive::TarGz, url: "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-linux-x86_64.tar.gz".into(), sha256: SHA.into(), size: 4096 });
         // The other channel exists and has published nothing: not an error, and not the release
         // channel's version either.
         assert_eq!(latest(&manifest, "nightly", "linux-x86_64"), Ok(None));
         let missing = latest(&manifest, "release", "darwin-arm64").unwrap_err();
         assert_eq!(missing, "QuickRust 0.150.0 is not published for darwin-arm64 (it is for linux-x86_64)");
+    }
+
+    #[test]
+    fn a_windows_release_is_its_zip_and_no_other_platforms_is() {
+        let url = "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-windows-x86_64.zip";
+        let zipped = manifest("release", "0.150.0", "windows-x86_64", "qrust-0.150.0-windows-x86_64.zip", url, SHA, 4096);
+        let release = latest(&zipped, "release", "windows-x86_64").unwrap().unwrap();
+        assert_eq!((release.archive, release.name.as_str()), (Archive::Zip, "qrust-0.150.0-windows-x86_64.zip"));
+        // A tarball published for Windows is not what a Windows QuickRust installs, nor a zip for Linux.
+        let tarball = manifest("release", "0.150.0", "windows-x86_64", "qrust-0.150.0-windows-x86_64.tar.gz", url, SHA, 4096);
+        assert_eq!(latest(&tarball, "release", "windows-x86_64").unwrap_err(), "QuickRust 0.150.0 for windows-x86_64 is published without a .zip archive");
+        let zip_for_linux = manifest("release", "0.150.0", "linux-x86_64", "qrust-0.150.0-linux-x86_64.zip", url, SHA, 4096);
+        assert_eq!(latest(&zip_for_linux, "release", "linux-x86_64").unwrap_err(), "QuickRust 0.150.0 for linux-x86_64 is published without a .tar.gz archive");
     }
 
     #[test]
@@ -649,9 +616,9 @@ mod tests {
         assert_eq!(edit(&|m| m["channels"]["release"]["latestVersion"] = "0.151.0".into()).unwrap_err(), "the release manifest names 0.151.0 as the latest release version and does not list it");
         assert_eq!(edit(&|m| { m["channels"].as_object_mut().unwrap().remove("release"); }).unwrap_err(), "the release manifest has no release channel");
         let installer = |m: &mut serde_json::Value, key: &str, value: serde_json::Value| m["channels"]["release"]["versions"]["0.150.0"]["platforms"]["linux-x86_64"]["installers"][0][key] = value;
-        assert!(edit(&|m| installer(m, "type", "zip".into())).unwrap_err().ends_with("is published without a tar.gz archive"));
+        assert!(edit(&|m| installer(m, "type", "zip".into())).unwrap_err().ends_with("is published without a .tar.gz archive"));
         assert!(edit(&|m| installer(m, "sha256", "abc".into())).unwrap_err().ends_with("carries \"abc\" as its SHA-256"));
-        assert!(edit(&|m| installer(m, "name", "../evil.tar.gz".into())).unwrap_err().ends_with("which is not a tar.gz file name"));
+        assert!(edit(&|m| installer(m, "name", "../evil.tar.gz".into())).unwrap_err().ends_with("which is not a .tar.gz file name"));
         assert!(latest(b"not json", "release", "linux-x86_64").unwrap_err().starts_with("the release manifest cannot be read"));
     }
 
@@ -664,7 +631,7 @@ mod tests {
         let client = crate::net::Client::new();
         let registry = server.url("");
         let registry = registry.trim_end_matches('/');
-        let trust = line.trust("prod");
+        let trust = trust_of(&line, "prod");
         let fetch = || fetch_latest(&client, registry, &trust, "release", "linux-x86_64", NOW);
 
         // Nothing published.

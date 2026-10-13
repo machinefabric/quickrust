@@ -1,6 +1,6 @@
-//! Unpacking the archives QuickRust downloads: toolchain components (`.tar.xz`) and crates (`.crate`,
-//! a `.tar.gz`). Both hold one top-level directory with a known name, and nothing may land
-//! outside it: an entry with an absolute path, a `..` component, a link pointing out of the
+//! Unpacking the archives QuickRust downloads: toolchain components (`.tar.xz`), crates (`.crate`,
+//! a `.tar.gz`) and its own releases (`.tar.gz`, and `.zip` for Windows). Each holds one top-level
+//! directory with a known name, and nothing may land outside it: an entry with an absolute path, a `..` component, a link pointing out of the
 //! tree, an entry beneath a link, a hard link or a device is an error, and so is content beyond a size bound (a
 //! decompression bomb). Files are created anew (a name twice in one archive is an error) with
 //! their mode reduced to executable or not, and their modification time kept.
@@ -48,6 +48,59 @@ pub fn unpack(reader: impl Read, compression: Compression, root: &str, dest: &Pa
 pub fn unpack_file(path: &Path, compression: Compression, root: &str, dest: &Path, max_bytes: u64) -> io::Result<Unpacked> {
     let file = fs::File::open(path)?;
     unpack(io::BufReader::with_capacity(256 * 1024, file), compression, root, dest, max_bytes).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))
+}
+
+/// Unpacks the zip file at `path` into `dest`, which must not exist yet, under the rules of
+/// `unpack`: the content of its top-level directory `root` becomes the content of `dest`, at most
+/// `max_bytes` of file content are written, and on error `dest` is removed. A zip entry is a
+/// directory or a regular file; anything else (a symbolic link) is an error.
+pub fn unpack_zip_file(path: &Path, root: &str, dest: &Path, max_bytes: u64) -> io::Result<Unpacked> {
+    if dest.exists() {
+        return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists already", dest.display())));
+    }
+    let file = fs::File::open(path)?;
+    fs::create_dir_all(dest)?;
+    let out = unpack_zip(io::BufReader::with_capacity(256 * 1024, file), root, dest, max_bytes);
+    if out.is_err() {
+        let _ = fs::remove_dir_all(dest);
+    }
+    out.map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))
+}
+
+fn unpack_zip(reader: impl Read + io::Seek, root: &str, dest: &Path, max_bytes: u64) -> io::Result<Unpacked> {
+    let mut archive = zip::ZipArchive::new(reader).map_err(|e| invalid(format!("not a zip archive: {}", e)))?;
+    let mut done = Unpacked::default();
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|e| invalid(format!("entry {}: {}", index, e)))?;
+        // The name as written, checked here: no normalisation stands between it and the check.
+        let name = PathBuf::from(entry.name().replace('\\', "/"));
+        let Some(rel) = inside(&name, root)? else { continue };
+        let target = dest.join(&rel);
+        // The file type bits of the Unix mode, where the archive carries one.
+        let kind = entry.unix_mode().map(|m| m & 0o170000).filter(|k| *k != 0);
+        if entry.is_dir() {
+            fs::create_dir_all(&target)?;
+            continue;
+        }
+        if kind.is_some_and(|k| k != 0o100000) {
+            return Err(invalid(format!("{}: only directories and regular files are unpacked from a zip", name.display())));
+        }
+        if let Some(dir) = target.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", name.display(), e)))?;
+        // Counted as it is written: the size an entry declares is the archive's word for it.
+        let left = max_bytes - done.bytes;
+        let written = io::copy(&mut (&mut entry).take(left + 1), &mut file)?;
+        if written > left {
+            return Err(invalid(format!("the archive holds more than {} bytes", max_bytes)));
+        }
+        file.flush()?;
+        set_executable(&file, entry.unix_mode().is_some_and(|m| m & 0o111 != 0))?;
+        done.files += 1;
+        done.bytes += written;
+    }
+    Ok(done)
 }
 
 fn unpack_tar(reader: impl Read, root: &str, dest: &Path, max_bytes: u64) -> io::Result<Unpacked> {
@@ -237,6 +290,24 @@ pub mod testing {
         b.into_inner().unwrap()
     }
 
+    /// A zip archive of `(name, content, unix mode)`, names written verbatim. A mode with the
+    /// symbolic-link type bits makes the entry a link, as a Unix zip tool records one.
+    pub fn zip(items: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let mut z = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, data, mode) in items {
+            let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated).unix_permissions(*mode);
+            if name.ends_with('/') {
+                z.add_directory(name.trim_end_matches('/'), options).unwrap();
+            } else if mode & 0o170000 == 0o120000 {
+                z.add_symlink(*name, String::from_utf8_lossy(data), options).unwrap();
+            } else {
+                z.start_file(*name, options).unwrap();
+                z.write_all(data).unwrap();
+            }
+        }
+        z.finish().unwrap().into_inner()
+    }
+
     pub fn gz(bytes: &[u8]) -> Vec<u8> {
         let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         e.write_all(bytes).unwrap();
@@ -252,7 +323,7 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
-    use super::testing::{gz, tar, xz, Item};
+    use super::testing::{gz, tar, xz, zip, Item};
     use super::*;
 
     fn dest() -> PathBuf {
@@ -264,6 +335,54 @@ mod tests {
         let e = unpack(&gz(&tar(items))[..], Compression::Gz, "pkg-1.0", &d, 1 << 20).unwrap_err();
         assert!(e.to_string().contains(expect), "{} (expected {:?})", e, expect);
         assert!(!d.exists(), "a failed unpack leaves nothing");
+    }
+
+    /// The entries of a test zip: name, content, Unix mode.
+    type Zipped<'a> = [(&'a str, &'a [u8], u32)];
+
+    /// Unpacks a zip of `items` whose top-level directory is `quickrust`.
+    fn unzip(items: &Zipped, max_bytes: u64) -> (PathBuf, io::Result<Unpacked>) {
+        let d = dest();
+        fs::create_dir_all(d.parent().unwrap()).unwrap();
+        let file = d.with_file_name("archive.zip");
+        fs::write(&file, zip(items)).unwrap();
+        let out = unpack_zip_file(&file, "quickrust", &d, max_bytes);
+        (d, out)
+    }
+
+    #[test]
+    fn a_zip_unpacks_its_top_level_directory_and_keeps_what_is_executable() {
+        let (d, out) = unzip(&[("quickrust/", b"", 0o755), ("quickrust/qrust.exe", b"MZ program", 0o755), ("quickrust/docs/README.md", b"read me", 0o644)], 1 << 20);
+        assert_eq!(out.unwrap(), Unpacked { files: 2, bytes: 17 });
+        assert_eq!(fs::read(d.join("qrust.exe")).unwrap(), b"MZ program");
+        assert_eq!(fs::read(d.join("docs/README.md")).unwrap(), b"read me");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(d.join("qrust.exe")).unwrap().permissions().mode() & 0o777, 0o755);
+            assert_eq!(fs::metadata(d.join("docs/README.md")).unwrap().permissions().mode() & 0o777, 0o644);
+        }
+    }
+
+    #[test]
+    fn a_zip_lands_nothing_outside_its_directory_and_nothing_beyond_the_bound() {
+        let refused: [(&Zipped, &str); 5] = [
+            (&[("other/qrust", b"x", 0o755)], "is not inside quickrust/"),
+            (&[("quickrust/../evil", b"x", 0o644)], "is not a plain relative path"),
+            (&[("/quickrust/qrust", b"x", 0o644)], "is not inside quickrust/"),
+            (&[("quickrust/qrust", b"/bin/sh", 0o120777)], "only directories and regular files are unpacked from a zip"),
+            (&[("quickrust/a", b"12345678", 0o644), ("quickrust/b", b"12345678", 0o644)], "the archive holds more than 15 bytes"),
+        ];
+        for (items, expect) in refused {
+            let (d, out) = unzip(items, 15);
+            let e = out.unwrap_err();
+            assert!(e.to_string().contains(expect), "{} (expected {:?})", e, expect);
+            assert!(!d.exists(), "a failed unpack leaves nothing");
+        }
+        // Exactly the bound is within it.
+        let (_, out) = unzip(&[("quickrust/a", b"12345678", 0o644), ("quickrust/b", b"1234567", 0o644)], 15);
+        assert_eq!(out.unwrap(), Unpacked { files: 2, bytes: 15 });
+        assert!(unpack_zip_file(Path::new("/nonexistent/archive.zip"), "quickrust", &dest(), 15).is_err());
     }
 
     #[test]
