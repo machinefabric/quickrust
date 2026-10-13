@@ -244,7 +244,7 @@ fn install(r: &Request, inv: &Invocation, cwd: &Path, cfg: &Config, root: &Path)
         }
     }
     if many {
-        let summary = format!("Installed {} of {}{}", installed, targets.len(), if failed.is_empty() { String::new() } else { format!(" · failed: {}", failed.join(", ")) });
+        let summary = format!("Installed {} of {}{}", installed, targets.len(), if failed.is_empty() { String::new() } else { format!(", failed: {}", failed.join(", ")) });
         all.finish(failed.is_empty(), &summary);
     }
     Ok(if failed.is_empty() { 0 } else { 101 })
@@ -374,7 +374,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
         entry[&source.name] = json!({ "version": source.version, "source": source.record, "features": features, "profile": r.profile, "target": r.target, "bins": placed, "toolchain": engine.toolchain.id, "installed_at": util::iso8601(util::now_wall_ns()) });
         save_record(&record)?;
     }
-    phase.finish(true, &format!("Installed {} {} · {} → {}", source.name, source.version, placed.join(", "), util::tilde(&bin_dir)));
+    phase.finish(true, &format!("Installed {} {}: {} -> {}", source.name, source.version, placed.join(", "), util::tilde(&bin_dir)));
     Ok(())
 }
 
@@ -642,10 +642,10 @@ fn uninstall(args: &[String], cwd: &Path) -> Result<i32, String> {
         let from = util::tilde(&root.join("bin"));
         if left.is_empty() {
             pkgs_of_root.remove(pkg);
-            crate::ui::Phase::start().done(&format!("Uninstalled {} · {} removed from {}", what, gone.join(", "), from));
+            crate::ui::Phase::start().done(&format!("Uninstalled {}: {} removed from {}", what, gone.join(", "), from));
         } else {
             pkgs_of_root[pkg]["bins"] = json!(left);
-            crate::ui::Phase::start().done(&format!("Removed {} of {} from {} · {} stays", gone.join(", "), what, from, left.join(", ")));
+            crate::ui::Phase::start().done(&format!("Removed {} of {} from {}; {} stays", gone.join(", "), what, from, left.join(", ")));
         }
     }
     save_record(&record)?;

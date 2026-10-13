@@ -1,2 +1,2 @@
 error: could not find `Cargo.toml` in `<sandbox>/not-a-project` or any parent directory
-Build failed after <time>
+FAIL Build [<time>]

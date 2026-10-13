@@ -469,7 +469,7 @@ pub fn inspect_build_script_run(run_dir: &Path, session_start: u64, session_end:
         "ran_in_session": ran,
         "started_wall_ns": started,
         "duration_ns": if ran { json!(duration) } else { Value::Null },
-        "duration_evidence": "mtime(stderr | root-output) − mtime(invoked.timestamp), as written by Cargo around the script's execution",
+        "duration_evidence": "mtime(stderr | root-output) - mtime(invoked.timestamp), as written by Cargo around the script's execution",
         "has_rerun_directives": !rerun_files.is_empty() || !rerun_env.is_empty(),
         "rerun_if_changed": rerun_files.len(),
         "rerun_if_changed_sample": rerun_files.iter().take(10).collect::<Vec<_>>(),

@@ -102,7 +102,7 @@ impl Mutation {
 impl Drop for Mutation {
     fn drop(&mut self) {
         if let Err(e) = self.restore() {
-            eprintln!("qrust: ERROR: SOURCE FILE NOT RESTORED: {}\n  the original content is saved at {}", e, self.backup.display());
+            crate::ui::say(crate::ui::Tag::Fail, &format!("SOURCE FILE NOT RESTORED: {}; the original content is saved at {}", e, self.backup.display()));
         }
     }
 }
@@ -170,7 +170,7 @@ fn confirm_mutation(file: &Path, opts: &Options, cfg: &Config) -> Result<(), Str
     if !std::io::stdin().is_terminal() {
         return Err(format!("the small-edit scenario temporarily edits {}; pass --allow-mutation or set benchmark.allow-mutation = true to permit it non-interactively", file.display()));
     }
-    eprint!("qrust: the small-edit scenario will temporarily append a comment to {} and restore it afterwards. Proceed? [y/N] ", file.display());
+    eprint!("NOTE the small-edit scenario will temporarily append a comment to {} and restore it afterwards. Proceed? [y/N] ", file.display());
     let _ = std::io::stderr().flush();
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer).map_err(|e| e.to_string())?;
@@ -287,7 +287,7 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
     let root = store.root.clone().ok_or("benchmarks need a Cargo workspace; run this inside one")?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     for r in recover_interrupted(store)? {
-        eprintln!("qrust: warning: restored {} (left edited by an interrupted benchmark)", r);
+        crate::ui::say(crate::ui::Tag::Warn, &format!("restored {} (left edited by an interrupted benchmark)", r));
     }
     let mut args: Vec<OsString> = if opts.cargo_args.is_empty() { default_args.iter().map(OsString::from).collect() } else { opts.cargo_args.clone() };
     let inv = crate::resolve::classify(&args);
@@ -343,7 +343,7 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
             break;
         }
         let total = if phase == "measured" { opts.reps } else { opts.warmups.max(1) };
-        eprintln!("qrust: benchmark {} · {} {}/{} · elapsed {}", opts.scenario, phase, i, total, human_dur(overall.elapsed().as_nanos() as u64));
+        eprintln!("{}Benchmark {}: {} {}/{} [{}]", crate::ui::INDENT, opts.scenario, phase, i, total, human_dur(overall.elapsed().as_nanos() as u64));
         if cold {
             reset_owned_dir(&bench_dir)?;
         }
@@ -372,11 +372,11 @@ pub fn run(opts: &Options, store: &WsStore, cfg: &Config) -> Result<Value, Strin
     let restore_error = mutation.as_mut().and_then(|m| m.restore().err());
     if let Some(e) = &restore_error {
         state = "invalid";
-        eprintln!("qrust: ERROR: SOURCE FILE NOT RESTORED: {}", e);
+        crate::ui::say(crate::ui::Tag::Fail, &format!("SOURCE FILE NOT RESTORED: {}", e));
     }
     let (group, excluded) = compare::homogeneous_group(measured);
     for s in &excluded {
-        eprintln!("qrust: warning: run {} used a different toolchain or machine class and is excluded from the sample group", util::vstr(s, "id"));
+        crate::ui::say(crate::ui::Tag::Warn, &format!("run {} used a different toolchain or machine class and is excluded from the sample group", util::vstr(s, "id")));
     }
     let invalid_measured = records.iter().filter(|r| r["phase"] == json!("measured") && r["valid"] != json!(true)).count();
     if state == "complete" && group.is_empty() {
@@ -446,7 +446,7 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
     }
     let mut base = base_opts.clone();
     base.label = "baseline".into();
-    eprintln!("qrust: experiment `{}`: measuring baseline", exp.name);
+    eprintln!("{}Experiment `{}`: measuring the baseline", crate::ui::INDENT, exp.name);
     let baseline = run(&base, store, cfg)?;
     if baseline["state"] != json!("complete") {
         return Err(format!("the baseline benchmark did not complete ({}); nothing to compare against", baseline["failure"].as_str().unwrap_or(baseline["state"].as_str().unwrap_or("unknown"))));
@@ -455,13 +455,13 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
     cand.label = format!("candidate-{}", exp.name);
     cand.overlays = exp.overlays.clone();
     cand.env.extend(exp.env.iter().cloned());
-    eprintln!("qrust: experiment `{}`: measuring candidate", exp.name);
+    eprintln!("{}Experiment `{}`: measuring the candidate", crate::ui::INDENT, exp.name);
     let candidate = run(&cand, store, cfg)?;
 
     // Functional verification with the candidate settings (FR-080.2).
     let verification = match (&exp.verify, candidate["state"] == json!("complete")) {
         (Some(verify_args), true) => {
-            eprintln!("qrust: experiment `{}`: verifying candidate", exp.name);
+            eprintln!("{}Experiment `{}`: verifying the candidate", crate::ui::INDENT, exp.name);
             let mut args: Vec<OsString> = Vec::new();
             for o in &exp.overlays {
                 args.push("--config".into());
@@ -505,7 +505,7 @@ pub fn experiment(exp: &Experiment, base_opts: &Options, store: &WsStore, cfg: &
         "invalid" if !candidate_built => "the candidate settings did not build".to_string(),
         "invalid" => "the verification command failed with the candidate settings; the candidate is rejected regardless of build time".to_string(),
         "inconclusive" if incomparable => "baseline and candidate ran in incomparable environments".to_string(),
-        "inconclusive" => format!("the difference ({:+.1}%) is within run-to-run noise (±{:.1}%); collect more samples with --reps", delta.unwrap_or(0.0), noise.max(1.0)),
+        "inconclusive" => format!("the difference ({:+.1}%) is within run-to-run noise (+/-{:.1}%); collect more samples with --reps", delta.unwrap_or(0.0), noise.max(1.0)),
         "verified" => "measured and functionally verified".to_string(),
         _ => "measured, but not functionally verified; rerun with --verify before adopting it".to_string(),
     };

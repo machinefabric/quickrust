@@ -103,31 +103,26 @@ pub fn prebuild(how: Prebuild, qrust: &Path, target: &str) -> (Vec<String>, Vec<
 /// added up over every test program.
 #[cfg(unix)]
 pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
-    let r = Renderer::new();
-    let dot = r.paint("2", " · ");
-    let counts: Vec<String> = [(t.failed, "failed"), (t.passed, "passed"), (t.ignored, "ignored"), (t.measured, "measured"), (t.filtered, "filtered out")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
-    // The first count leads, in the colour of the outcome: `3 passed · 1 ignored · 0.12s`.
-    let lead = |code: &str, parts: &[String]| match parts.split_first() {
-        Some((first, rest)) => std::iter::once(r.paint(code, first)).chain(rest.iter().cloned()).collect::<Vec<_>>().join(&dot),
-        None => String::new(),
-    };
-    let line = if exit.signal.is_some() {
-        format!("{} after {}", r.paint("1;33", "Interrupted"), human_dur(ns))
+    let mut counts: Vec<String> = [(t.failed, "failed"), (t.passed, "passed"), (t.ignored, "ignored"), (t.measured, "measured"), (t.filtered, "filtered out")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+    if counts.is_empty() {
+        counts.push("none ran".into());
+    }
+    let (tag, text) = if exit.signal.is_some() {
+        (Tag::Fail, message("Interrupted", &[], Some(ns)))
     } else if t.programs == 0 {
         // Programs that are not libtest's (a custom harness): their own output says it all.
         if exit.success() {
             return;
         }
-        format!("{} after {}", r.paint("1;31", "Tests failed"), human_dur(ns))
+        (Tag::Fail, message("Tests", &[], Some(ns)))
     } else if exit.success() {
-        format!("{}{}{}", lead("1;32", &counts), dot, human_dur(ns))
+        (Tag::Ok, message("Tests", &counts, Some(ns)))
+    } else if t.failed > 0 {
+        (Tag::Fail, message("Tests", &counts, Some(ns)))
     } else {
-        let what = if t.failed > 0 { counts } else { [vec!["A test program failed".to_string()], counts].concat() };
-        format!("{}{}{}", lead("1;31", &what), dot, human_dur(ns))
+        (Tag::Fail, message("Tests", &[vec!["a test program failed".to_string()], counts].concat(), Some(ns)))
     };
-    let mut err = std::io::stderr();
-    let _ = writeln!(err, "{}", line);
-    let _ = err.flush();
+    say(tag, &text);
 }
 
 /// A size as Cargo prints it (`645.0KiB`, `242B`) as QuickRust prints sizes (`645.0 KiB`, `242 B`).
@@ -163,6 +158,104 @@ pub fn color() -> bool {
         return false;
     }
     !matches!(std::env::var("CARGO_TERM_COLOR").as_deref(), Ok("never"))
+}
+
+/// What a line QuickRust writes for people says about an outcome. QuickRust speaks one way
+/// everywhere:
+///
+/// ```text
+/// OK   Built: 12 compiled, 140 fresh [4.21s]
+/// WARN 2 warnings in app: unused_variables x2; `qrust warnings` shows them
+/// FAIL Build: 1 error in app (bin), first at src/main.rs:3:5 [1.20s]
+/// NOTE building QuickRust's compiler driver for Rust 1.99.0 in the background
+///      Downloaded 38 crates, 5.6 MiB [1.84s]
+/// ```
+///
+/// A line that reports an outcome starts with its tag, in a column of its own; a line that
+/// belongs to one (a download, a dependency that moved, the live status line) is indented to
+/// the message column (`INDENT`). A message is a head, then its details after `: `, separated
+/// by `, `; a duration closes the line, in brackets (`message`). Only ASCII: every terminal
+/// shows it, and without colour the tag says what the colour would.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tag {
+    /// It worked.
+    Ok,
+    /// It did not: an error, a failed command, an interruption.
+    Fail,
+    /// It worked, and something deserves a look.
+    Warn,
+    /// What QuickRust does or knows, for information.
+    Note,
+}
+
+impl Tag {
+    fn word(self) -> &'static str {
+        match self {
+            Tag::Ok => "OK",
+            Tag::Fail => "FAIL",
+            Tag::Warn => "WARN",
+            Tag::Note => "NOTE",
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Tag::Ok => "1;32",
+            Tag::Fail => "1;31",
+            Tag::Warn => "1;33",
+            Tag::Note => "1;36",
+        }
+    }
+}
+
+/// The tag column's width: where messages start, and the indentation of the lines that
+/// belong to them.
+pub const INDENT: &str = "     ";
+
+/// `text` under `tag` (the tag alone when `text` is empty), coloured when `color`.
+pub fn tagged(tag: Tag, text: &str, color: bool) -> String {
+    let paint = |w: &str| if color { format!("\x1b[{}m{}\x1b[0m", tag.code(), w) } else { w.to_string() };
+    if text.is_empty() {
+        paint(tag.word())
+    } else {
+        format!("{} {}", paint(&format!("{:<4}", tag.word())), text)
+    }
+}
+
+/// A message: `head: detail, detail [1.24s]`. Any part may be absent.
+pub fn message(head: &str, details: &[String], ns: Option<u64>) -> String {
+    let mut s = head.to_string();
+    if !details.is_empty() {
+        if !s.is_empty() {
+            s.push_str(": ");
+        }
+        s.push_str(&details.join(", "));
+    }
+    if let Some(ns) = ns {
+        if !s.is_empty() {
+            s.push(' ');
+        }
+        s.push_str(&format!("[{}]", human_dur(ns)));
+    }
+    s
+}
+
+/// Whether what QuickRust writes to stderr (`out`: stdout) gets colour.
+fn painted(out: bool) -> bool {
+    let terminal = if out { std::io::stdout().is_terminal() } else { std::io::stderr().is_terminal() };
+    color() && (terminal || matches!(std::env::var("CARGO_TERM_COLOR").as_deref(), Ok("always")))
+}
+
+/// A tagged line on stderr.
+pub fn say(tag: Tag, text: &str) {
+    let mut err = std::io::stderr().lock();
+    let _ = writeln!(err, "{}", tagged(tag, text, painted(false)));
+    let _ = err.flush();
+}
+
+/// A tagged line on stdout (a command whose report is its output).
+pub fn say_out(tag: Tag, text: &str) {
+    let _ = writeln!(std::io::stdout().lock(), "{}", tagged(tag, text, painted(true)));
 }
 
 /// The argument added to the delegated command: Cargo's JSON, whose diagnostics carry rustc's
@@ -271,11 +364,7 @@ impl Phase {
             return;
         }
         self.last_draw = Some(Instant::now());
-        let max = self.width.saturating_sub(1).max(20);
-        let mut text = format!("  {}", text);
-        if text.chars().count() > max {
-            text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
-        }
+        let text = truncate(&format!("{}{}", INDENT, text), self.width);
         let mut err = std::io::stderr().lock();
         let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &text));
         let _ = err.flush();
@@ -293,17 +382,17 @@ impl Phase {
         self.started.elapsed().as_nanos() as u64
     }
 
-    /// The result line: `text · 1.24s`; a failure is an error, `error: text · 1.24s`.
+    /// The result line, `OK   text [1.24s]` (`FAIL` when not `ok`).
     pub fn finish(mut self, ok: bool, text: &str) {
         self.clear();
-        let head = if ok { String::new() } else { format!("{} ", self.paint("1;31", "error:")) };
-        let _ = writeln!(std::io::stderr(), "{}{}{}{}", head, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
+        let text = format!("{} {}", text, message("", &[], Some(self.elapsed_ns())));
+        let _ = writeln!(std::io::stderr(), "{}", tagged(if ok { Tag::Ok } else { Tag::Fail }, &text, self.color));
     }
 
-    /// The result line of something done at once: `text`, no time.
+    /// The result line of something done at once: `OK   text`, no time.
     pub fn done(mut self, text: &str) {
         self.clear();
-        let _ = writeln!(std::io::stderr(), "{}", text);
+        let _ = writeln!(std::io::stderr(), "{}", tagged(Tag::Ok, text, self.color));
     }
 
     /// Takes the status line off the screen (output of something else follows).
@@ -344,13 +433,31 @@ impl Done {
             Done::Documented => "Documented",
         }
     }
+
+    /// What failed: `FAIL Build: …`.
+    fn noun(self) -> &'static str {
+        match self {
+            Done::Built => "Build",
+            Done::Checked => "Check",
+            Done::Documented => "Documentation",
+        }
+    }
 }
 
-/// `text` cut to fit a terminal `width` wide (one column spare), with `…` where it was cut.
+/// `a`, `a and b`, `a, b and c`: names inside a message, whose details `, ` separates.
+fn and_list(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => one.clone(),
+        [init @ .., last] => format!("{} and {}", init.join(", "), last),
+    }
+}
+
+/// `text` cut to fit a terminal `width` wide (one column spare), with `...` where it was cut.
 fn truncate(text: &str, width: usize) -> String {
     let max = width.saturating_sub(1).max(20);
     if text.chars().count() > max {
-        text.chars().take(max.saturating_sub(1)).collect::<String>() + "…"
+        text.chars().take(max.saturating_sub(3)).collect::<String>() + "..."
     } else {
         text.to_string()
     }
@@ -361,18 +468,19 @@ fn disk_full_note() -> String {
     let home = util::qrust_home();
     let free = crate::space::fs_space(&home).map(|f| util::human_bytes(f.available)).unwrap_or_else(|_| "?".into());
     let cache = crate::space::usage(&util::cache_dir()).and_then(|u| u["total_bytes"].as_u64()).map(util::human_bytes).unwrap_or_else(|| "an uncounted amount".into());
-    format!("  the disk is full: {} free where QuickRust keeps its cache, which holds {} · `qrust gc` frees what is not in use, `qrust cache status` shows it", free, cache)
+    format!("the disk is full: {} free where QuickRust keeps its cache, which holds {}; `qrust gc` frees what is not in use, `qrust cache status` shows it", free, cache)
 }
 
-/// A 20-cell progress bar: `━━━━━━━━╺───────────`.
+/// A 20-cell progress bar: `[=======>            ]`.
 pub fn bar(done: u64, total: u64) -> String {
     const CELLS: u64 = 20;
     let filled = (done.min(total) * CELLS).checked_div(total).unwrap_or(0) as usize;
-    let mut s = "━".repeat(filled);
+    let mut s = format!("[{}", "=".repeat(filled));
     if filled < CELLS as usize {
-        s.push('╺');
-        s.push_str(&"─".repeat(CELLS as usize - filled - 1));
+        s.push('>');
+        s.push_str(&" ".repeat(CELLS as usize - filled - 1));
     }
+    s.push(']');
     s
 }
 
@@ -440,7 +548,11 @@ impl crate::toolchain::install::Report for ToolchainProgress {
             Some((what, release)) => format!("Adding {} to Rust {}", what, release),
             None => format!("Installing Rust {}", self.what),
         };
-        let text = format!("{} {}  {}/{} · {}{}", doing, bar(done as u64, total as u64), done, total, util::human_bytes(bytes), if current.is_empty() { String::new() } else { format!(" · {}", current) });
+        let mut details = vec![util::human_bytes(bytes)];
+        if !current.is_empty() {
+            details.push(current.to_string());
+        }
+        let text = format!("{} {} {}/{}, {}", doing, bar(done as u64, total as u64), done, total, details.join(", "));
         self.phase().status(&text, done == total);
     }
 
@@ -456,26 +568,13 @@ pub fn notice_foreign_out_dir(units: u64) {
     if marker.exists() {
         return;
     }
-    let r = Renderer::new();
-    let _ = writeln!(
-        std::io::stderr(),
-        "{} {} crate{} restored from QuickRust's cache include code their build script generated in another target directory: panic messages and debug information for that code name that directory. Program behaviour is the same. (Shown once; `mode = \"compat\"` builds everything here.)",
-        r.paint("2", "note:"),
-        units,
-        if units == 1 { "" } else { "s" }
-    );
+    say(Tag::Note, &format!("{} crate{} restored from QuickRust's cache include code their build script generated in another target directory: panic messages and debug information for that code name that directory. Program behaviour is the same. (Shown once; `mode = \"compat\"` builds everything here.)", units, if units == 1 { "" } else { "s" }));
     let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
 }
 
 /// QuickRust started building its compiler driver for this toolchain (see `driver.rs`).
 pub fn notice_driver_build(release: &str) {
-    let r = Renderer::new();
-    let _ = writeln!(
-        std::io::stderr(),
-        "{} building QuickRust's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)",
-        r.paint("2", "note:"),
-        release
-    );
+    say(Tag::Note, &format!("building QuickRust's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)", release));
 }
 
 /// A note shown at most once an hour (per QuickRust home and `key`).
@@ -491,22 +590,19 @@ pub fn notice_hourly(key: &str, text: &str) {
 
 /// A note of QuickRust's own on stderr.
 pub fn note(text: &str) {
-    let r = Renderer::new();
-    let _ = writeln!(std::io::stderr(), "{} {}", r.paint("2", "note:"), text);
+    say(Tag::Note, text);
 }
 
 /// QuickRust could not start building its compiler driver.
 pub fn notice_driver_unavailable(why: &str) {
-    let r = Renderer::new();
-    let _ = writeln!(std::io::stderr(), "{} QuickRust's compiler driver cannot be built: {}", r.paint("2", "note:"), why);
+    say(Tag::Note, &format!("QuickRust's compiler driver cannot be built: {}", why));
 }
 
 /// The summary of a build QuickRust knows to be fresh without asking Cargo: the build phase of a
 /// `BuildFirst` command whose inputs have not changed since it last succeeded.
 pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
-    let r = Renderer::new();
+    say(Tag::Ok, &message("Up to date", &[format!("{} fresh", units)], None));
     let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "{}{}{} fresh", r.paint("1;32", "Up to date"), r.paint("2", " · "), units);
     if let Some(w) = warnings_line {
         let _ = writeln!(err, "{}", w);
     }
@@ -576,7 +672,7 @@ impl Live {
             Ok(f) => f,
             Err(_) => {
                 // Cargo's result stands; what was lost is said, not hidden.
-                eprintln!("qrust: internal error: the output renderer failed; Cargo's result stands, but this run's output was not stored");
+                say(Tag::Fail, "internal error: the output renderer failed; Cargo's result stands, but this run's output was not stored");
                 Finished { messages: Vec::new(), log: Vec::new(), units: 0, warnings_line: None }
             }
         }
@@ -666,7 +762,14 @@ impl Activity {
                         let size = more.split_once('(').and_then(|(_, r)| r.split_once(')')).map(|(b, _)| cargo_size(b)).unwrap_or_default();
                         // Cargo 1.99 adds `(largest was `encoding_rs` at 1.3MiB)` after the duration.
                         let took = more.split_once(" in ").map(|(_, t)| t.split(' ').next().unwrap_or("")).unwrap_or("");
-                        return Some(format!("{} {}{}{}", n, if n == "1" { "crate" } else { "crates" }, if size.is_empty() { String::new() } else { format!(" · {}", size) }, if took.is_empty() { String::new() } else { format!(" · {}", took) }));
+                        let mut what = format!("{} {}", n, if n == "1" { "crate" } else { "crates" });
+                        if !size.is_empty() {
+                            what.push_str(&format!(", {}", size));
+                        }
+                        if !took.is_empty() {
+                            what.push_str(&format!(" [{}]", took));
+                        }
+                        return Some(what);
                     }
                 }
             }
@@ -686,10 +789,10 @@ impl Activity {
                 return Some("Downloading crates".to_string());
             }
             let done = most.saturating_sub(*remaining);
-            return Some(format!("Downloading {}  {}/{} crates{}", bar(done, *most), done, most, if bytes.is_empty() { String::new() } else { format!(" · {} left", bytes) }));
+            return Some(format!("Downloading {} {}/{} crates{}", bar(done, *most), done, most, if bytes.is_empty() { String::new() } else { format!(", {} left", cargo_size(bytes)) }));
         }
         self.updating.as_ref().map(|u| match self.looked_up {
-            Some(n) => format!("Updating {} · {} {} looked up", u, n, if n == 1 { "package" } else { "packages" }),
+            Some(n) => format!("Updating {}: {} {} looked up", u, n, if n == 1 { "package" } else { "packages" }),
             None => format!("Updating {}", u),
         })
     }
@@ -732,7 +835,7 @@ impl Renderer {
         let lines_doing = self.lines.as_ref().and_then(|l| l.doing.clone());
         let status = self.activity.status().or(lines_doing);
         if let Some(text) = &status {
-            let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &truncate(&format!("  {}", text), self.width)));
+            let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &truncate(&format!("{}{}", INDENT, text), self.width)));
             let _ = err.flush();
             self.status_shown = true;
             return;
@@ -743,19 +846,16 @@ impl Renderer {
             return;
         }
         let mut text = match self.activity.progress {
-            Some((d, t)) => format!("  Building {}  {}/{} · {} compiled · {} fresh", bar(d, t), d, t, self.compiled, self.fresh),
-            None => format!("  Building · {} compiled · {} fresh", self.compiled, self.fresh),
+            Some((d, t)) => format!("{}Building {} {}/{}, {} compiled, {} fresh", INDENT, bar(d, t), d, t, self.compiled, self.fresh),
+            None => format!("{}Building: {} compiled, {} fresh", INDENT, self.compiled, self.fresh),
         };
         if self.errors > 0 {
-            text.push_str(&format!(" · {} error{}", self.errors, if self.errors == 1 { "" } else { "s" }));
+            text.push_str(&format!(", {} error{}", self.errors, if self.errors == 1 { "" } else { "s" }));
         }
         if !self.running.is_empty() {
-            text.push_str(&format!(" · {}", self.running.join(", ")));
+            text.push_str(&format!("; {}", self.running.join(", ")));
         }
-        let max = self.width.saturating_sub(1).max(20);
-        if text.chars().count() > max {
-            text = text.chars().take(max.saturating_sub(1)).collect::<String>() + "…";
-        }
+        let text = truncate(&text, self.width);
         let _ = write!(err, "\r\x1b[2K{}", self.paint("2", &text));
         let _ = err.flush();
         self.status_shown = true;
@@ -805,7 +905,7 @@ impl Renderer {
                     }
                     let mut block = String::new();
                     if self.last_error_crate.as_deref() != Some(label.as_str()) {
-                        block.push_str(&self.paint("1;31", &format!("── {} ", label)));
+                        block.push_str(&self.paint("1;31", &format!("--- {}", label)));
                         block.push('\n');
                         self.last_error_crate = Some(label);
                     }
@@ -837,7 +937,7 @@ impl Renderer {
             return;
         }
         let list = std::mem::take(&mut l.features).join(" ");
-        let text = self.paint("2", &format!("    features {}", list));
+        let text = self.paint("2", &format!("{}features {}", INDENT, list));
         self.print_above(err, &text);
     }
 
@@ -866,12 +966,13 @@ impl Renderer {
         }
         self.flush_features(err);
         if let Some(done) = self.activity.observe(&classified) {
-            let text = format!("{} {}", self.paint("1;36", "Downloaded"), done);
+            let text = format!("{}Downloaded {}", INDENT, done);
             self.print_above(err, &text);
             return;
         }
-        // What happened to a dependency, in a column of its own: `updated    serde …`.
-        let paint_word = |s: &Self, code: &str, w: &str| s.paint(code, &format!("{:<10}", w));
+        // What happened to a dependency, in a column of its own under the message column:
+        // `     updated    serde  1.0.200 -> 1.0.229`.
+        let paint_word = |s: &Self, code: &str, w: &str| format!("{}{}", INDENT, s.paint(code, &format!("{:<10}", w)));
         let out: Option<String> = match classified {
             Line::Progress { verb: v @ ("Building" | "Downloading" | "Fetch"), .. } => {
                 let _ = v;
@@ -901,7 +1002,7 @@ impl Renderer {
             Line::Status { verb: v @ ("Updating" | "Downgrading" | "Adding" | "Removing"), rest } => {
                 let edit = self.lines.as_ref().is_some_and(|l| l.edits_manifest());
                 let shown = match v {
-                    "Updating" | "Downgrading" => change(rest).map(|(n, f, t)| (n.to_string(), format!("{} → {}", f, t))),
+                    "Updating" | "Downgrading" => change(rest).map(|(n, f, t)| (n.to_string(), format!("{} -> {}", f, t))),
                     _ => package(rest).map(|(n, ver)| (n.to_string(), ver.to_string())),
                 };
                 let Some((name, what)) = shown else { return self.print_above(err, line) };
@@ -925,7 +1026,7 @@ impl Renderer {
                 }
                 Some(format!("{} {:<24} {}", paint_word(self, code, word), name, what))
             }
-            Line::Status { verb: "Unchanged", rest } => Some(self.paint("2", &format!("  = {}", rest))),
+            Line::Status { verb: "Unchanged", rest } => Some(self.paint("2", &format!("{}{:<10} {}", INDENT, "unchanged", rest))),
             Line::Status { verb: "Creating" | "Removed" | "Packaged" | "Uploaded" | "Published" | "Vendored", rest } => {
                 if let Some(l) = self.lines.as_mut() {
                     l.result = true;
@@ -937,11 +1038,7 @@ impl Renderer {
                 };
                 // `Removed 125 files, 75.8MiB total`, `Packaged 4 files, 943B (694B compressed)`
                 let rest = cargo_sizes(rest.strip_suffix(" total").filter(|_| verb == "Removed").unwrap_or(rest));
-                let rest = match rest.split_once(" files, ") {
-                    Some((n, more)) if n.parse::<u64>().is_ok() => format!("{} files{}{}", n, self.paint("2", " · "), more),
-                    _ => rest,
-                };
-                Some(format!("{} {}", self.paint("1;32", verb), rest))
+                Some(tagged(Tag::Ok, &format!("{} {}", verb, rest), self.color))
             }
             Line::Status { verb: v @ ("Packaging" | "Verifying" | "Uploading" | "Waiting" | "Vendoring" | "Archiving" | "Compiling" | "Checking" | "Documenting" | "Finished" | "Fresh" | "Blocking" | "Downloaded" | "Generated"), rest } => {
                 if let Some(l) = self.lines.as_mut() {
@@ -949,8 +1046,8 @@ impl Renderer {
                 }
                 None
             }
-            // Cargo's notes (`note: see more `Cargo.toml` keys …`): asides, dimly.
-            Line::Other(t) if t.trim_start().starts_with("note: ") => Some(self.paint("2", t.trim_end())),
+            // Cargo's notes (`note: see more `Cargo.toml` keys …`).
+            Line::Other(t) if t.trim_start().starts_with("note: ") => Some(tagged(Tag::Note, t.trim().trim_start_matches("note: "), self.color)),
             _ => Some(line.to_string()),
         };
         if let Some(text) = out {
@@ -968,7 +1065,7 @@ impl Renderer {
         }
         let classified = crate::cargo_lines::classify(&plain);
         if let Some(done) = self.activity.observe(&classified) {
-            let text = format!("{} {}", self.paint("1;36", "Downloaded"), done);
+            let text = format!("{}Downloaded {}", INDENT, done);
             self.print_above(err, &text);
             return;
         }
@@ -976,7 +1073,7 @@ impl Renderer {
             crate::cargo_lines::Line::Progress { .. } => return,
             // The lockfile changed: said once, dimly (each package is in `qrust log`).
             crate::cargo_lines::Line::Status { verb: "Locking", rest } if !rest.starts_with("0 ") => {
-                let text = self.paint("2", &format!("  Locked {}", rest));
+                let text = self.paint("2", &format!("{}Locked {}", INDENT, rest));
                 self.print_above(err, &text);
                 return;
             }
@@ -1007,30 +1104,26 @@ impl Renderer {
         self.flush_features(err);
         self.clear_status(err);
         let Some(l) = self.lines.take() else { return };
-        let dot = self.paint("2", " · ");
         if !l.locked.is_empty() {
-            let _ = writeln!(err, "{}", self.paint("2", &format!("    locked {}", l.locked.join(" "))));
+            let _ = writeln!(err, "{}", self.paint("2", &format!("{}locked {}", INDENT, l.locked.join(" "))));
         }
-        let s = if exit.signal.is_some() {
-            format!("{} after {}", self.paint("1;33", "Interrupted"), human_dur(wall_ns))
+        let (tag, text) = if exit.signal.is_some() {
+            (Tag::Fail, message("Interrupted", &[], Some(wall_ns)))
         } else if !exit.success() {
-            format!("{} after {}", self.paint("1;31", &format!("cargo {} failed", l.command)), human_dur(wall_ns))
+            (Tag::Fail, message(&format!("cargo {}", l.command), &[], Some(wall_ns)))
         } else if l.result || matches!(l.command.as_str(), "tree" | "metadata") {
             // The command's result says it (`Removed …`), or is what it printed.
             return;
         } else {
             let changes: Vec<String> = [(l.updated, "updated"), (l.downgraded, "downgraded"), (l.added, "added"), (l.removed, "removed")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
-            let head = match l.command.as_str() {
-                "update" | "generate-lockfile" if changes.is_empty() => "Lockfile up to date".to_string(),
-                "update" | "generate-lockfile" => "Lockfile updated".to_string(),
-                "add" | "remove" | "rm" => "Manifest updated".to_string(),
-                "fetch" => "Fetched".to_string(),
-                other => format!("cargo {}", other),
-            };
-            let parts: Vec<String> = std::iter::once(self.paint("1;32", &head)).chain(changes.into_iter().filter(|_| matches!(l.command.as_str(), "update" | "generate-lockfile"))).chain(std::iter::once(human_dur(wall_ns))).collect();
-            parts.join(&dot)
+            match l.command.as_str() {
+                "update" | "generate-lockfile" if changes.is_empty() => (Tag::Ok, message("Lockfile up to date", &[], Some(wall_ns))),
+                "update" | "generate-lockfile" => (Tag::Ok, message("Lockfile updated", &changes, Some(wall_ns))),
+                // What changed is listed above it: the result is that it worked.
+                _ => (Tag::Ok, message("", &[], Some(wall_ns))),
+            }
         };
-        let _ = writeln!(err, "{}", s);
+        let _ = writeln!(err, "{}", tagged(tag, &text, self.color));
         let _ = err.flush();
     }
 
@@ -1039,33 +1132,27 @@ impl Renderer {
             return self.lines_summary(err, exit, wall_ns);
         }
         self.clear_status(err);
-        let dot = self.paint("2", " · ");
         if exit.success() && self.step {
             // Part of a command that reports the result.
         } else if exit.success() {
-            let mut s = format!("{} {}", self.paint("1;32", self.done.word()), human_dur(wall_ns));
-            for (n, what) in [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")] {
-                if n > 0 {
-                    s.push_str(&format!("{}{} {}", dot, n, what));
-                }
-            }
-            let _ = writeln!(err, "{}", s);
+            let counts: Vec<String> = [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+            let _ = writeln!(err, "{}", tagged(Tag::Ok, &message(self.done.word(), &counts, Some(wall_ns)), self.color));
             for g in &self.activity.generated {
-                let _ = writeln!(err, "  {} {}", self.paint("2", "docs"), g);
+                let _ = writeln!(err, "{}docs {}", INDENT, g);
             }
         } else if exit.signal.is_some() {
-            let _ = writeln!(err, "{} after {}", self.paint("1;33", "Interrupted"), human_dur(wall_ns));
+            let _ = writeln!(err, "{}", tagged(Tag::Fail, &message("Interrupted", &[], Some(wall_ns)), self.color));
         } else {
-            let mut s = format!("{} after {}", self.paint("1;31", "Build failed"), human_dur(wall_ns));
+            let mut details = Vec::new();
             if self.errors > 0 {
-                s.push_str(&format!("{}{} error{} in {}", dot, self.errors, if self.errors == 1 { "" } else { "s" }, self.error_crates.join(", ")));
+                details.push(format!("{} error{} in {}", self.errors, if self.errors == 1 { "" } else { "s" }, and_list(&self.error_crates)));
             }
             if let Some(first) = &self.first_error {
-                s.push_str(&format!("{}first at {}", dot, first));
+                details.push(format!("first at {}", first));
             }
-            let _ = writeln!(err, "{}", s);
+            let _ = writeln!(err, "{}", tagged(Tag::Fail, &message(self.done.noun(), &details, Some(wall_ns)), self.color));
             if self.activity.disk_full {
-                let _ = writeln!(err, "{}", self.paint("1;31", &disk_full_note()));
+                let _ = writeln!(err, "{}", tagged(Tag::Note, &disk_full_note(), self.color));
             }
         }
         if let Some(line) = self.warnings_line() {
@@ -1074,23 +1161,19 @@ impl Renderer {
         let _ = err.flush();
     }
 
+    /// `WARN 3 warnings in app: unused_variables x2, dead_code x1; `qrust warnings` shows them`.
     fn warnings_line(&self) -> Option<String> {
-        if self.warning_total > 0 {
-            let dot = self.paint("2", " · ");
-            let mut lints: Vec<(&String, &u64)> = self.warnings.iter().collect();
-            lints.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
-            let shown: Vec<String> = lints.iter().take(3).map(|(k, n)| format!("{} ×{}", k, n)).collect();
-            let more = if lints.len() > 3 { format!(", +{} more", lints.len() - 3) } else { String::new() };
-            return Some(format!(
-                "{} in {}: {}{}{}`qrust warnings` to show them",
-                self.paint("1;33", &format!("{} warning{}", self.warning_total, if self.warning_total == 1 { "" } else { "s" })),
-                self.warning_crates.join(", "),
-                shown.join(", "),
-                more,
-                dot
-            ));
+        if self.warning_total == 0 {
+            return None;
         }
-        None
+        let mut lints: Vec<(&String, &u64)> = self.warnings.iter().collect();
+        lints.sort_by(|a, b| b.1.cmp(a.1).then(a.0.cmp(b.0)));
+        let mut shown: Vec<String> = lints.iter().take(3).map(|(k, n)| format!("{} x{}", k, n)).collect();
+        if lints.len() > 3 {
+            shown.push(format!("+{} more", lints.len() - 3));
+        }
+        let head = format!("{} warning{} in {}", self.warning_total, if self.warning_total == 1 { "" } else { "s" }, and_list(&self.warning_crates));
+        Some(tagged(Tag::Warn, &format!("{}; `qrust warnings` shows them", message(&head, &shown, None)), self.color))
     }
 
     fn run(mut self, rx: Receiver<Ev>) -> Finished {
@@ -1216,34 +1299,61 @@ mod tests {
     }
 
     #[test]
+    fn every_outcome_line_starts_with_its_tag_in_one_column() {
+        assert_eq!(tagged(Tag::Ok, "Built: 2 compiled [1.20s]", false), "OK   Built: 2 compiled [1.20s]");
+        assert_eq!(tagged(Tag::Fail, "Build [1.20s]", false), "FAIL Build [1.20s]");
+        assert_eq!(tagged(Tag::Warn, "1 warning in app", false), "WARN 1 warning in app");
+        assert_eq!(tagged(Tag::Note, "x", false), "NOTE x");
+        // Nothing to add to the outcome: the tag alone.
+        assert_eq!(tagged(Tag::Ok, "", false), "OK");
+        // In colour, the tag carries it; the message is left as it is.
+        assert_eq!(tagged(Tag::Fail, "Build", true), "\x1b[1;31mFAIL\x1b[0m Build");
+        assert_eq!(strip_ansi(&tagged(Tag::Ok, "Built", true)), tagged(Tag::Ok, "Built", false));
+        assert_eq!(INDENT.len(), "FAIL ".len(), "lines that belong to an outcome start where its message does");
+    }
+
+    #[test]
+    fn a_message_is_a_head_its_details_and_a_closing_duration() {
+        assert_eq!(message("Built", &["2 compiled".into(), "1 fresh".into()], Some(1_200_000_000)), "Built: 2 compiled, 1 fresh [1.20s]");
+        assert_eq!(message("Built", &[], Some(920_000_000)), "Built [920ms]");
+        assert_eq!(message("Up to date", &["3 fresh".into()], None), "Up to date: 3 fresh");
+        assert_eq!(message("", &[], Some(920_000_000)), "[920ms]");
+        assert_eq!(message("", &["a".into()], None), "a");
+        assert_eq!(and_list(&["app".into(), "util".into(), "core".into()]), "app, util and core");
+        assert_eq!(bar(1, 4), "[=====>              ]");
+        assert_eq!(bar(4, 4), "[====================]");
+        assert_eq!(bar(0, 0), "[>                   ]");
+    }
+
+    #[test]
     fn lockfile_changes_are_listed_and_summed_up() {
         // Cargo 1.99's lines.
         let out = lines("update", &["    Updating crates.io index", "     Locking 3 packages to latest Rust 1.99.0 compatible versions", "    Updating serde v1.0.200 -> v1.0.229", "      Adding itoa v1.0.18", "    Removing autocfg v1.3.0"], 0);
         assert_eq!(
             out,
-            "updated    serde                    1.0.200 → 1.0.229\nadded      itoa                     1.0.18\nremoved    autocfg                  1.3.0\nLockfile updated · 1 updated · 1 added · 1 removed · 920ms\n"
+            "     updated    serde                    1.0.200 -> 1.0.229\n     added      itoa                     1.0.18\n     removed    autocfg                  1.3.0\nOK   Lockfile updated: 1 updated, 1 added, 1 removed [920ms]\n"
         );
-        assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "Lockfile up to date · 920ms\n");
+        assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "OK   Lockfile up to date [920ms]\n");
     }
 
     #[test]
     fn manifest_edits_and_their_features_read_as_one() {
         let out = lines("add", &["    Updating crates.io index", "      Adding serde v1.0.229 to dependencies", "             Features:", "             + derive", "             + std", "             - alloc", "    Updating crates.io index", "     Locking 7 packages to latest compatible versions"], 0);
-        assert_eq!(out, "added      serde                    1.0.229 to dependencies\n    features +derive +std -alloc\nManifest updated · 920ms\n");
+        assert_eq!(out, "     added      serde                    1.0.229 to dependencies\n     features +derive +std -alloc\nOK   [920ms]\n");
         // What the edit locked is one line, at the end.
         let out = lines("add", &["      Adding greet =1.0.0 to dev-dependencies", "     Locking 2 packages to latest compatible versions", "      Adding greet v1.0.0", "      Adding itoa v1.0.18"], 0);
-        assert_eq!(out, "added      greet                    =1.0.0 to dev-dependencies\n    locked +greet 1.0.0 +itoa 1.0.18\nManifest updated · 920ms\n");
-        assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "removed    serde                    from dependencies\nManifest updated · 920ms\n");
+        assert_eq!(out, "     added      greet                    =1.0.0 to dev-dependencies\n     locked +greet 1.0.0 +itoa 1.0.18\nOK   [920ms]\n");
+        assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "     removed    serde                    from dependencies\nOK   [920ms]\n");
     }
 
     #[test]
     fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
-        assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
-        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "Removed 125 files · 75.8 MiB\n");
-        assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "Packaged 4 files · 943 B (694 B compressed)\n");
+        assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "OK   Created binary (application) `demo` package\nNOTE see more `Cargo.toml` keys\n");
+        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "OK   Removed 125 files, 75.8 MiB\n");
+        assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "OK   Packaged 4 files, 943 B (694 B compressed)\n");
         assert_eq!(cargo_sizes("1.5KiB, 3B (x) 10MiBs 2.0Gi"), "1.5 KiB, 3 B (x) 10MiBs 2.0Gi");
         let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
-        assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\ncargo update failed after 920ms\n");
+        assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\nFAIL cargo update [920ms]\n");
     }
 
     #[test]
@@ -1252,16 +1362,16 @@ mod tests {
         let mut sink: Vec<u8> = Vec::new();
         ren.on_stderr(&mut sink, "    Updating crates.io index");
         ren.on_stderr(&mut sink, "       Fetch 26 complete; 4 pending");
-        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 26 packages looked up"));
+        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index: 26 packages looked up"));
         ren.on_stderr(&mut sink, "       Fetch 50 complete; 1 pending");
-        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index · 50 packages looked up"));
+        assert_eq!(ren.activity.status().as_deref(), Some("Updating crates.io index: 50 packages looked up"));
         // Cargo 1.99's summary names the largest crate; QuickRust's line ends at the duration.
         ren.on_stderr(&mut sink, "  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)");
         ren.on_stderr(&mut sink, "    Building [>         ] 0/54: memchr");
         assert_eq!(ren.activity.status(), None);
-        assert_eq!(String::from_utf8(sink).unwrap(), "Downloaded 25 crates · 4.4 MiB · 0.32s\n");
+        assert_eq!(String::from_utf8(sink).unwrap(), "     Downloaded 25 crates, 4.4 MiB [0.32s]\n");
         // Nor by a command that does not build.
-        assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "Lockfile up to date · 920ms\n");
+        assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "OK   Lockfile up to date [920ms]\n");
     }
 
     #[test]
@@ -1273,13 +1383,13 @@ mod tests {
         ren.on_stderr(&mut sink, " Downloading 4 crates");
         ren.on_stderr(&mut sink, "  Downloaded quote v1.0.47");
         ren.on_stderr(&mut sink, " Downloading 3 crates, remaining bytes: 281.0KiB");
-        assert_eq!(ren.activity.status().as_deref(), Some("Downloading ━━━━━╺──────────────  1/4 crates · 281.0KiB left"));
+        assert_eq!(ren.activity.status().as_deref(), Some("Downloading [=====>              ] 1/4 crates, 281.0 KiB left"));
         ren.on_stderr(&mut sink, "  Downloaded 4 crates (645.0KiB) in 0.16s");
         assert_eq!(ren.activity.status(), None);
         ren.on_stderr(&mut sink, "    Building [==>      ] 2/16: syn, quote");
         assert_eq!(ren.activity.progress, Some((2, 16)));
         let text = String::from_utf8(sink).unwrap();
-        assert_eq!(text, "Downloaded 4 crates · 645.0 KiB · 0.16s\n");
+        assert_eq!(text, "     Downloaded 4 crates, 645.0 KiB [0.16s]\n");
     }
 
     #[test]
@@ -1305,8 +1415,8 @@ mod tests {
         assert!(!text.contains("unused variable"), "warnings are not dumped: {}", text);
         assert!(text.contains("failed to run custom build command"), "unrecognised lines pass through: {}", text);
         assert!(!text.contains("could not compile"), "Cargo's tallies are replaced by the summary: {}", text);
-        assert!(text.contains("Build failed after 1.20s · 1 error in app (bin) · first at src/main.rs:3:5"), "{}", text);
-        assert!(text.contains("1 warning in app (bin): unused_variables ×1"), "{}", text);
+        assert!(text.contains("FAIL Build: 1 error in app (bin), first at src/main.rs:3:5 [1.20s]"), "{}", text);
+        assert!(text.contains("WARN 1 warning in app (bin): unused_variables x1; `qrust warnings` shows them"), "{}", text);
     }
 
     #[test]
@@ -1317,9 +1427,9 @@ mod tests {
         ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": true, "target": { "name": "dep", "kind": ["lib"] } }).to_string());
         ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 3);
         let text = String::from_utf8(sink).unwrap();
-        assert!(text.contains("Built 4.21s · 1 compiled · 1 fresh · 3 restored from QuickRust's cache"), "{}", text);
+        assert!(text.contains("OK   Built: 1 compiled, 1 fresh, 3 restored from QuickRust's cache [4.21s]"), "{}", text);
         // What the command did: `cargo check` and Clippy build nothing to run.
-        for (command, says) in [("check", "Checked "), ("clippy", "Checked "), ("doc", "Documented "), ("test", "Built "), ("run", "Built ")] {
+        for (command, says) in [("check", "OK   Checked ["), ("clippy", "OK   Checked ["), ("doc", "OK   Documented ["), ("test", "OK   Built ["), ("run", "OK   Built [")] {
             let mut ren = Renderer { done: Done::of(command), ..r() };
             let mut sink: Vec<u8> = Vec::new();
             ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 0);

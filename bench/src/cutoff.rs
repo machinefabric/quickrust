@@ -277,7 +277,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             let original = fs::read_to_string(&path).unwrap_or_else(|e| fail(&format!("cannot read {}: {}", path.display(), e)));
             let Some(edited) = edit.apply(&original) else { continue };
             fs::write(&path, &edited).unwrap_or_else(|e| fail(&e.to_string()));
-            let label = format!("{}:{} {} → {}", edit.file, edit.line, edit.from, edit.to);
+            let label = format!("{}:{} {} -> {}", edit.file, edit.line, edit.from, edit.to);
             // A: the developer's loop, with the state the previous builds left.
             if build(&home_a).is_err() {
                 skipped += 1;
@@ -333,7 +333,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             done += 1;
             println!("  {} {}", if pass { "SAME" } else { "DIFFERENT" }, label);
             let listed = |v: &[&str]| if v.is_empty() { "none".to_string() } else { v.join(", ") };
-            println!("      restored {} · relinked {} · compiled {} · {} outputs compared", listed(&restored), listed(&relinked), compiled.join(", "), b_out.len());
+            println!("      restored {}, relinked {}, compiled {}, {} outputs compared", listed(&restored), listed(&relinked), compiled.join(", "), b_out.len());
             for d in differ.iter().take(10) {
                 println!("      differs: {}", d);
             }

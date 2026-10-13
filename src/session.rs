@@ -346,7 +346,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         "inner": inner.as_ref().map(|(w, _)| w.clone()),
         "inner_source": inner.as_ref().map(|(_, s)| s.clone()),
         "workspace_wrapper": std::env::var("RUSTC_WORKSPACE_WRAPPER").ok().filter(|v| !v.is_empty()),
-        "order": "qrust-rustc-wrapper → existing RUSTC_WRAPPER → RUSTC_WORKSPACE_WRAPPER (applied by Cargo) → rustc",
+        "order": "qrust-rustc-wrapper -> existing RUSTC_WRAPPER -> RUSTC_WORKSPACE_WRAPPER (applied by Cargo) -> rustc",
     });
     Ok(p)
 }
@@ -423,7 +423,7 @@ pub fn exec_upstream(args: Vec<OsString>) -> ! {
 }
 
 pub fn fail(msg: &str) -> ! {
-    eprintln!("qrust: error: {}", msg);
+    crate::ui::say(crate::ui::Tag::Fail, msg);
     std::process::exit(crate::EXIT_QRUST_ERROR)
 }
 
@@ -457,7 +457,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // The disk nearly full: QuickRust's cache gives back what it can first (for ten seconds at most).
     if let Some(freed) = crate::space::before_command(&cfg) {
         match freed {
-            Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: QuickRust's cache gave back {} ({} → {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
+            Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: QuickRust's cache gave back {} ({} -> {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
             // Nothing of QuickRust's left to give: said once an hour, not on every command.
             Ok(c) => crate::ui::notice_hourly("disk-full", &format!("the disk is nearly full, and nothing in QuickRust's cache ({}) can go now", util::human_bytes(c.after))),
             Err(e) => crate::ui::note(&format!("the disk is nearly full, and QuickRust's cache could not give back space: {}", e)),
@@ -538,13 +538,14 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if render_build {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
     }
-    // Cargo's progress (units done of all, crates left to download) for QuickRust's status line; and
-    // its colours for the lines QuickRust shows as they are, though it writes into a pipe. Given
+    // Cargo's progress (units done of all, crates left to download) for QuickRust's status line; its
+    // colours for the lines QuickRust shows as they are, though it writes into a pipe; and ASCII
+    // where Cargo would draw (`cargo tree`), as everything QuickRust shows is. Given
     // as arguments, not environment: they are for this Cargo alone, not for what it runs (build
     // scripts, nested Cargo, the second Cargo of a `BuildFirst` command and its program), which
     // write to the terminal or pipes of their own.
     if render {
-        let mut term = vec!["--config".to_string(), "term.progress.when=\"always\"".to_string(), "--config".to_string(), "term.progress.width=1000".to_string()];
+        let mut term = vec!["--config".to_string(), "term.progress.when=\"always\"".to_string(), "--config".to_string(), "term.progress.width=1000".to_string(), "--config".to_string(), "term.unicode=false".to_string()];
         if rendering == Rendering::Lines && crate::ui::color() {
             term.extend(["--config".to_string(), "term.color=\"always\"".to_string()]);
         }
@@ -577,7 +578,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         cmd.stdout(Stdio::from(std::io::stderr()));
     }
     for w in &plan.warnings {
-        eprintln!("qrust: warning: {}", w);
+        crate::ui::say(crate::ui::Tag::Warn, w);
     }
     let lock = store::register_active(&id, ws_root.as_deref(), &cwd);
     let overhead_pre = preflight.elapsed().as_nanos() as u64;
@@ -707,7 +708,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let mut outcome = Outcome { exit, session_id: None, store: None, report: None, policy_exit: None };
     if !store_ok {
         // Observation is optional; the build result stands on its own (NFR-020).
-        eprintln!("qrust: warning: state directory {} is not writable; this run was not recorded", store.dir.display());
+        crate::ui::say(crate::ui::Tag::Warn, &format!("state directory {} is not writable; this run was not recorded", store.dir.display()));
         if cfg.bool("measurement.strict") && exit.success() {
             outcome.policy_exit = Some(crate::EXIT_QRUST_ERROR);
         }
@@ -810,7 +811,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
     if let Some(e) = &telemetry_error {
-        eprintln!("qrust: warning: {}", e);
+        crate::ui::say(crate::ui::Tag::Warn, e);
         if strict && exit.success() {
             outcome.policy_exit = Some(crate::EXIT_QRUST_ERROR);
         }

@@ -1,4 +1,4 @@
 warning: manifest has no description, license, license-file, documentation, homepage or repository
   |
   = note: see https://doc.rust-lang.org/cargo/reference/manifest.html#package-metadata for more info
-Packaged <count> files · <size> (<size> compressed)
+OK   Packaged <count> files, <size> (<size> compressed)

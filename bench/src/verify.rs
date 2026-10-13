@@ -76,7 +76,7 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
                     // Empty QuickRust state for the first round; the second keeps the artifact cache.
                     ctx.fresh_qrust_home(v, w);
                 }
-                eprintln!("qrust-bench: verify {} · {} · round {}/{}", w.name, v.name, round + 1, ROUNDS);
+                eprintln!("     verify {}, {}, round {}/{}", w.name, v.name, round + 1, ROUNDS);
                 let (_, outcomes) = run_suite(ctx, v, w, &co, None);
                 per_variant.entry(v.name.clone()).or_default().push(outcomes);
             }
@@ -104,7 +104,7 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
             for n in &candidates {
                 let (theirs, ours) = (reference[0].get(n), runs[0].get(n));
                 if candidates.len() <= MAX_CONFIRMED && !n.starts_with('<') {
-                    eprintln!("qrust-bench: verify {} · {} differs; running it alone on both sides", w.name, n);
+                    eprintln!("     verify {}, {} differs; running it alone on both sides", w.name, n);
                     let (a, b) = (confirm(ctx, cargo, w, &last("cargo"), n, theirs), confirm(ctx, v, w, &last(&v.name), n, ours));
                     if a.len() > 1 || b.len() > 1 {
                         unstable.insert(n.clone());
@@ -117,9 +117,9 @@ pub fn verify(ctx: &Ctx, variants: &[Variant], workloads: &[Workload]) -> (Value
             let failing = runs[0].iter().filter(|(n, r)| *r == "FAILED" && reference[0].get(*n) == Some(*r)).count();
             let agree = differ.is_empty();
             all_agree &= agree;
-            println!("  {:<14} {} · {} tests, {} failing under both{} · {}", v.name, if agree { "SAME OUTCOME" } else { "DIFFERENT OUTCOME" }, tests, failing, if unstable.is_empty() { String::new() } else { format!(", {} flaky", unstable.len()) }, if agree { String::new() } else { format!("{} test(s) differ", differ.len()) });
+            println!("  {:<14} {}, {} tests, {} failing under both{}, {}", v.name, if agree { "SAME OUTCOME" } else { "DIFFERENT OUTCOME" }, tests, failing, if unstable.is_empty() { String::new() } else { format!(", {} flaky", unstable.len()) }, if agree { String::new() } else { format!("{} test(s) differ", differ.len()) });
             for d in differ.iter().take(10) {
-                println!("      {}: cargo {} · {} {}", d["test"].as_str().unwrap_or(""), d["cargo"].as_str().unwrap_or("absent"), v.name, d["variant"].as_str().unwrap_or("absent"));
+                println!("      {}: cargo {}, {} {}", d["test"].as_str().unwrap_or(""), d["cargo"].as_str().unwrap_or("absent"), v.name, d["variant"].as_str().unwrap_or("absent"));
             }
             rows.push(json!({ "variant": v.name, "agree": agree, "tests": tests, "failing_under_both": failing, "flaky": unstable, "differ": differ }));
         }

@@ -1,1 +1,1 @@
-qrust: error: toolchain no-such-toolchain-xyz (from `+toolchain` argument): no toolchain is named `no-such-toolchain-xyz` (`qrust toolchain link no-such-toolchain-xyz <dir>` names one)
+FAIL toolchain no-such-toolchain-xyz (from `+toolchain` argument): no toolchain is named `no-such-toolchain-xyz` (`qrust toolchain link no-such-toolchain-xyz <dir>` names one)

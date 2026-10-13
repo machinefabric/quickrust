@@ -244,7 +244,7 @@ fn qrust_installs_programs_into_its_own_bin() {
     let said = stderr(&out);
     let result = said.lines().find(|l| l.contains("Installed hello-tool 1.1.0")).unwrap_or_else(|| panic!("{}", said));
     // The time it states is the install's, resolution and build included.
-    let stated = result.rsplit(" · ").next().and_then(|d| d.strip_suffix("ms").map(|m| m.parse::<f64>().ok().map(|m| m / 1e3)).unwrap_or_else(|| d.strip_suffix('s').and_then(|s| s.parse::<f64>().ok()))).unwrap_or_else(|| panic!("{}", result));
+    let stated = result.rsplit_once(" [").and_then(|(_, d)| d.strip_suffix(']')).and_then(|d| d.strip_suffix("ms").map(|m| m.parse::<f64>().ok().map(|m| m / 1e3)).unwrap_or_else(|| d.strip_suffix('s').and_then(|s| s.parse::<f64>().ok()))).unwrap_or_else(|| panic!("{}", result));
     assert!(stated >= took.as_secs_f64() / 2.0, "{} for an install of {:?}", result, took);
     assert_eq!(run_tool("hello-tool"), "hello 1.1\n");
     assert!(!sb.dir.join(".cargo").exists() && !sb.dir.join("target").exists());
@@ -739,7 +739,7 @@ fn qa026_cache_outage_fails_open_or_closed_by_policy() {
 
     let open = run(sb.cargo(&p).arg("build").env("PATH", &path).env("QRUST_CACHE_PROVIDER", "sccache"));
     assert!(open.status.success(), "fail-open must compile locally: {}", stderr(&open));
-    assert!(stderr(&open).contains("qrust: warning") && stderr(&open).contains("compiling without it"), "{}", stderr(&open));
+    assert!(stderr(&open).contains("WARN sccache is unavailable") && stderr(&open).contains("compiling without it"), "{}", stderr(&open));
     assert!(sb.target_dir(&p).join("debug/p").exists());
     let s = sb.sessions().pop().unwrap();
     assert_eq!(s["policy"]["cache"]["state"], "degraded");
@@ -764,7 +764,7 @@ fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     // API-004: report generation failure leaves the Cargo result alone …
     let out = run(sb.cargo(&p).arg("build").env("QRUST_REPORT", blocker.join("report.json")));
     assert!(out.status.success(), "{}", stderr(&out));
-    assert!(stderr(&out).contains("qrust: warning: could not write report"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("WARN could not write report"), "{}", stderr(&out));
     // … unless strict reporting was requested.
     let strict = run(sb.cargo(&p).arg("build").env("QRUST_REPORT", blocker.join("report.json")).env("QRUST_MEASUREMENT_STRICT", "true"));
     assert_eq!(strict.status.code(), Some(2));

@@ -1,6 +1,6 @@
-Built <time> · 1 compiled · 1 fresh
-  unittests src/main.rs
+OK   Built: 1 compiled, 1 fresh [<time>]
+     unittests src/main.rs
 running 1 test
 test greets ... ok
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in <time>
-1 passed · <time>
+OK   Tests: 1 passed [<time>]

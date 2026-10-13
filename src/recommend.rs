@@ -116,7 +116,7 @@ pub fn generate(report: &Value, index: &Index) -> Vec<Value> {
         } else {
             unknown_impact("not every version was observed compiling, so the saving cannot be stated")
         };
-        let mut evidence: Vec<String> = versions.iter().map(|v| format!("{} from {} is required via {}", vstr(v, "version"), source_label(&v["source"]), v["required_by"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" → ")).unwrap_or_default())).collect();
+        let mut evidence: Vec<String> = versions.iter().map(|v| format!("{} from {} is required via {}", vstr(v, "version"), source_label(&v["source"]), v["required_by"].as_array().map(|p| p.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(" -> ")).unwrap_or_default())).collect();
         evidence.push("the versions are SemVer-compatible; Cargo keeps them apart because their sources differ".into());
         out.push(
             rec(
@@ -503,7 +503,7 @@ mod tests {
         let recs = generate(&r, &Index::empty());
         assert_eq!(recs[0]["rule"], "duplicate_dependency_versions");
         assert_eq!(recs[0]["impact"]["avoidable_time_ns"], 1_000_000_000u64, "all but the most expensive version");
-        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("0.8.4 from a local path is required via app → old"), "{}", recs[0]["evidence"]);
+        assert!(recs[0]["evidence"][0].as_str().unwrap().contains("0.8.4 from a local path is required via app -> old"), "{}", recs[0]["evidence"]);
         assert!(recs[0]["evidence"][1].as_str().unwrap().contains("from the registry https://github.com/rust-lang/crates.io-index"), "{}", recs[0]["evidence"]);
         // One version not observed compiling: the saving is not stated.
         r["duplication"]["versions"][0]["versions"][1]["observed_compile_ns"] = Value::Null;
