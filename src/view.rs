@@ -44,8 +44,13 @@ impl View {
         self.limit
     }
 
+    /// The filters as given, `KEY=VALUE` joined by `, ` (empty without filters).
+    pub fn filters(&self) -> String {
+        self.filters.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<_>>().join(", ")
+    }
+
     /// Narrows and orders the record lists of `section` in `report`.
-    pub fn apply(&self, report: &mut Value, section: &str) -> Result<(), String> {
+    pub fn apply(&self, report: &mut Value, section: &str) -> Result<Kept, String> {
         let paths = lists(section).ok_or_else(|| format!("`qrust analyze {}` has no list of records to filter, sort or limit; sections that have: {}", section, SECTIONS_WITH_RECORDS.join(", ")))?;
         // The fields the section's records have, to reject a key none of them has.
         let mut fields: BTreeSet<String> = BTreeSet::new();
@@ -57,11 +62,14 @@ impl View {
                 return Err(format!("the records of `{}` have no field `{}`; they have: {}", section, key, fields.iter().cloned().collect::<Vec<_>>().join(", ")));
             }
         }
+        let mut kept = Kept::default();
         for path in paths {
             let mut lists: Vec<&mut Vec<Value>> = Vec::new();
             collect(Some(&mut *report), path, &mut lists);
             for list in lists {
+                kept.records += list.len();
                 list.retain(|r| self.filters.iter().all(|(k, v)| matches(&r[k.as_str()], v)));
+                kept.matching += list.len();
                 if let Some((field, desc)) = &self.sort {
                     list.sort_by(|a, b| order(&a[field.as_str()], &b[field.as_str()], *desc));
                 }
@@ -70,8 +78,15 @@ impl View {
                 }
             }
         }
-        Ok(())
+        Ok(kept)
     }
+}
+
+/// How many records a section had, and how many of them the filters matched.
+#[derive(Debug, Default, PartialEq)]
+pub struct Kept {
+    pub records: usize,
+    pub matching: usize,
 }
 
 /// Sections with records, for messages.
@@ -193,16 +208,18 @@ mod tests {
     #[test]
     fn filters_all_match_and_list_fields_match_by_membership() {
         let mut r = report();
-        View::parse(vec!["kind=lib".into(), "source=registry".into(), "features=full".into()], None, None).unwrap().apply(&mut r, "timing").unwrap();
+        let kept = View::parse(vec!["kind=lib".into(), "source=registry".into(), "features=full".into()], None, None).unwrap().apply(&mut r, "timing").unwrap();
         assert_eq!(packages(&r), ["syn"]);
+        assert_eq!(kept, Kept { records: 4, matching: 1 });
         assert_eq!(r["critical_path"].as_array().unwrap().len(), 1, "the critical path is context, never cut");
     }
 
     #[test]
     fn numbers_sort_largest_first_text_from_a_and_records_without_the_field_last() {
         let mut r = report();
-        View::parse(vec![], Some("duration_ns".into()), Some(2)).unwrap().apply(&mut r, "timing").unwrap();
+        let kept = View::parse(vec![], Some("duration_ns".into()), Some(2)).unwrap().apply(&mut r, "timing").unwrap();
         assert_eq!(packages(&r), ["app", "syn"]);
+        assert_eq!(kept, Kept { records: 4, matching: 4 }, "a limit shortens what is shown, not what matches");
         let mut r = report();
         View::parse(vec![], Some("duration_ns:asc".into()), None).unwrap().apply(&mut r, "timing").unwrap();
         assert_eq!(packages(&r), ["serde", "syn", "app", "quote"]);

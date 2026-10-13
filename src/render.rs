@@ -58,6 +58,22 @@ fn table(out: &mut String, headers: &[&str], rows: &[Vec<String>]) {
 
 pub const SECTIONS: &[&str] = &["summary", "timing", "rebuilds", "duplication", "scripts", "proc-macros", "codegen", "cache", "storage", "recommendations"];
 
+/// The heading a section's text starts with.
+pub fn title(section: &str) -> &'static str {
+    match section {
+        "timing" => "Timing",
+        "rebuilds" => "Rebuild reasons",
+        "duplication" => "Duplication",
+        "scripts" => "Build scripts",
+        "proc-macros" => "Procedural macros",
+        "codegen" => "Codegen and linking",
+        "cache" => "Compiler cache",
+        "storage" => "Storage",
+        "recommendations" => "Recommendations",
+        _ => unreachable!("no analysis section {:?}", section),
+    }
+}
+
 fn pkg(u: &Value) -> String {
     let v = vstr(u, "version");
     if v.is_empty() {
@@ -96,10 +112,11 @@ pub fn summary(r: &Value, out: &mut String) {
 }
 
 pub fn timing(r: &Value, out: &mut String, p: Presentation) {
-    let _ = writeln!(out, "Timing");
+    let _ = writeln!(out, "{}", title("timing"));
     let units: Vec<&Value> = r["units"].as_array().into_iter().flatten().filter(|u| u["duration_ns"].is_u64()).collect();
     if units.is_empty() {
-        let _ = writeln!(out, "  {}", why(r, "units").map(|w| format!("Unavailable: {}", w)).unwrap_or_else(|| "Nothing was compiled in this run.".into()));
+        let none = if p.filtered { "No unit the filter matches was compiled in this run." } else { "Nothing was compiled in this run." };
+        let _ = writeln!(out, "  {}", why(r, "units").map(|w| format!("Unavailable: {}", w)).unwrap_or_else(|| none.into()));
         return;
     }
     let model = &r["critical_path_model"];
@@ -126,7 +143,7 @@ pub fn timing(r: &Value, out: &mut String, p: Presentation) {
 }
 
 pub fn rebuilds(r: &Value, out: &mut String, p: Presentation) {
-    let _ = writeln!(out, "Rebuild reasons");
+    let _ = writeln!(out, "{}", title("rebuilds"));
     let s = &r["rebuilds"]["summary"];
     let units = r["rebuilds"]["units"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     if units.is_empty() {
@@ -146,7 +163,7 @@ pub fn rebuilds(r: &Value, out: &mut String, p: Presentation) {
 }
 
 pub fn duplication(r: &Value, out: &mut String, p: Presentation) {
-    let _ = writeln!(out, "Duplication");
+    let _ = writeln!(out, "{}", title("duplication"));
     let d = &r["duplication"];
     match d["versions"].as_array() {
         None => {
@@ -183,7 +200,7 @@ pub fn duplication(r: &Value, out: &mut String, p: Presentation) {
 }
 
 pub fn scripts(r: &Value, out: &mut String) {
-    let _ = writeln!(out, "Build scripts");
+    let _ = writeln!(out, "{}", title("scripts"));
     let list_ = r["build_scripts"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     if list_.is_empty() {
         let _ = writeln!(out, "  {}", why(r, "units").map(|w| format!("Unavailable: {}", w)).unwrap_or_else(|| "No build script was involved in the units compiled by this run.".into()));
@@ -211,7 +228,7 @@ pub fn scripts(r: &Value, out: &mut String) {
 }
 
 pub fn proc_macros(r: &Value, out: &mut String) {
-    let _ = writeln!(out, "Procedural macros");
+    let _ = writeln!(out, "{}", title("proc-macros"));
     let units = r["proc_macros"]["units"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     if units.is_empty() {
         let _ = writeln!(out, "  {}", why(r, "units").map(|w| format!("Unavailable: {}", w)).unwrap_or_else(|| "No proc-macro crate was compiled or linked against in this run.".into()));
@@ -223,7 +240,7 @@ pub fn proc_macros(r: &Value, out: &mut String) {
 }
 
 pub fn codegen(r: &Value, out: &mut String) {
-    let _ = writeln!(out, "Codegen and linking");
+    let _ = writeln!(out, "{}", title("codegen"));
     let settings = r["codegen"]["settings"].as_array().map(Vec::as_slice).unwrap_or(&[]);
     if settings.is_empty() {
         let _ = writeln!(out, "  {}", why(r, "units").map(|w| format!("Unavailable: {}", w)).unwrap_or_else(|| "Nothing was compiled in this run.".into()));
@@ -251,7 +268,7 @@ pub fn codegen(r: &Value, out: &mut String) {
 }
 
 pub fn cache(r: &Value, out: &mut String) {
-    let _ = writeln!(out, "Compiler cache");
+    let _ = writeln!(out, "{}", title("cache"));
     let c = &r["cache"];
     if c["hits"].is_null() {
         let _ = writeln!(out, "  {}: {}", num(&c["state"]), c["unavailable"].as_str().or(c["detail"].as_str()).unwrap_or("no statistics"));
@@ -290,7 +307,7 @@ pub fn inventory(inv: &Value, out: &mut String) {
 }
 
 pub fn storage(r: &Value, out: &mut String, p: Presentation) {
-    let _ = writeln!(out, "Storage");
+    let _ = writeln!(out, "{}", title("storage"));
     match r["artifacts"].as_array() {
         Some(a) if !a.is_empty() => a.iter().for_each(|inv| {
             inventory(inv, out);
@@ -332,7 +349,7 @@ fn candidates(inv: &Value, rows: usize, out: &mut String) {
 }
 
 pub fn recommendations(recs: &Value, out: &mut String) {
-    let _ = writeln!(out, "Recommendations");
+    let _ = writeln!(out, "{}", title("recommendations"));
     let recs = recs.as_array().map(Vec::as_slice).unwrap_or(&[]);
     if recs.is_empty() {
         let _ = writeln!(out, "  None: the recorded evidence supports no recommendation.");
@@ -376,6 +393,8 @@ pub fn recommendations(recs: &Value, out: &mut String) {
 pub struct Presentation {
     pub as_given: bool,
     pub limit: Option<usize>,
+    /// `--filter` narrowed the records.
+    pub filtered: bool,
 }
 
 impl Presentation {
