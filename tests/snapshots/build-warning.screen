@@ -1,2 +1,2 @@
-✓ Built <time> · 1 compiled · 1 fresh
-⚠ 1 warning in app (bin): unused_variables ×1 · `qrust warnings` to show them
+Built <time> · 1 compiled · 1 fresh
+1 warning in app (bin): unused_variables ×1 · `qrust warnings` to show them

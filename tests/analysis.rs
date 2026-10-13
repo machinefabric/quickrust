@@ -421,23 +421,23 @@ fn every_command_speaks_quickrusts_language_in_a_terminal() {
     let Some(mut add) = sb.cargo_in_terminal(&p, "add greet@=1.0.0") else { return };
     let shown = screen(&run(&mut add).stdout);
     let durations = |s: &str| s.split(" · ").map(|part| if part.ends_with("ms") || part.ends_with('s') && part.chars().next().is_some_and(|c| c.is_ascii_digit()) { "<time>" } else { part }).collect::<Vec<_>>().join(" · ");
-    assert_eq!(durations(&shown), "+ greet                    =1.0.0 → dependencies\n    locked +greet 1.0.0\n✓ Manifest updated · <time>", "{}", shown);
+    assert_eq!(durations(&shown), "added      greet                    =1.0.0 to dependencies\n    locked +greet 1.0.0\nManifest updated · <time>", "{}", shown);
     // A build that downloads: one line for the downloads, the summary.
     sb.file("p/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
     let mut build = sb.cargo_in_terminal(&p, "build").unwrap();
     let shown = screen(&run(&mut build).stdout);
     let lines: Vec<&str> = shown.lines().collect();
-    assert!(lines.iter().any(|l| l.starts_with("↓ Downloaded 1 crate")), "{}", shown);
-    assert!(lines.last().is_some_and(|l| l.starts_with("✓ Built ")), "{}", shown);
+    assert!(lines.iter().any(|l| l.starts_with("Downloaded 1 crate")), "{}", shown);
+    assert!(lines.last().is_some_and(|l| l.starts_with("Built ")), "{}", shown);
     assert!(!shown.contains("Downloading") && !shown.contains("Compiling") && !shown.contains("Updating crates.io index"), "nothing of Cargo's own progress stays on screen:\n{}", shown);
     // The lockfile moved on: listed, then summed up.
     sb.file("p/Cargo.toml", &fs::read_to_string(p.join("Cargo.toml")).unwrap().replace("\"=1.0.0\"", "\"1\""));
     let mut update = sb.cargo_in_terminal(&p, "update").unwrap();
     let shown = screen(&run(&mut update).stdout);
-    assert_eq!(durations(&shown), "↑ greet                    1.0.0 → 1.1.0\n✓ Lockfile updated · 1 updated · <time>", "{}", shown);
+    assert_eq!(durations(&shown), "updated    greet                    1.0.0 → 1.1.0\nLockfile updated · 1 updated · <time>", "{}", shown);
     let mut clean = sb.cargo_in_terminal(&p, "clean").unwrap();
     let shown = screen(&run(&mut clean).stdout);
-    assert!(shown.starts_with("✓ Removed ") && shown.lines().count() == 1, "{}", shown);
+    assert!(shown.starts_with("Removed ") && shown.lines().count() == 1, "{}", shown);
 }
 
 #[test]
@@ -1507,7 +1507,7 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let out = run(&mut build);
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{}", screen);
-    assert!(screen.contains("✓ Built"), "a summary: {}", screen);
+    assert!(screen.contains("Built "), "a summary: {}", screen);
     assert!(!screen.contains("   Compiling p v0.1.0"), "no line per crate: {}", screen);
     assert!(!screen.contains("let unused = 1"), "warnings are counted, not shown: {}", screen);
     assert!(screen.contains("1 warning in p: unused_variables ×1"), "{}", screen);
@@ -1522,18 +1522,18 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(!out.status.success());
     assert!(screen.contains("cannot add `&str` to `u32`"), "the error in full: {}", screen);
-    assert!(screen.contains("✗ Build failed") && screen.contains("first at src/lib.rs:2:"), "{}", screen);
+    assert!(screen.contains("Build failed") && screen.contains("first at src/lib.rs:2:"), "{}", screen);
     assert!(stdout(&ok(sb.qrust(&p).arg("errors"))).contains("cannot add `&str` to `u32`"));
 
     // Through a pipe, Cargo's own output is untouched.
     let piped = run(sb.cargo(&p).arg("build"));
-    assert!(stderr(&piped).contains("error[E0277]") && !stderr(&piped).contains("✗ Build failed"));
+    assert!(stderr(&piped).contains("error[E0277]") && !stderr(&piped).contains("Build failed"));
 
     // With colour, the same holds and rustc's own colours are kept.
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n");
     let out = run(sb.cargo_in_terminal(&p, "build").unwrap().env("CARGO_TERM_COLOR", "always"));
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("\x1b["), "{}", screen);
+    assert!(out.status.success() && screen.contains("\x1b[1;32mBuilt\x1b[0m "), "the summary's word in colour: {:?}", screen);
     assert!(stdout(&ok(sb.qrust(&p).arg("warnings"))).contains("unused variable: `unused`"));
 }
 
@@ -1541,8 +1541,10 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
 fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let sb = Sandbox::new("render-run");
     let p = sb.package("p", "p");
-    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n");
-    sb.file("p/src/main.rs", "use std::io::IsTerminal;\nfn main() {\n    let args: Vec<String> = std::env::args().skip(1).collect();\n    println!(\"terminal={} args={:?} sum={}\", std::io::stdout().is_terminal(), args, p::add(1, 2));\n}\n");
+    // The programs report the Cargo settings they inherit: QuickRust's settings for the Cargo whose
+    // output it renders (a progress bar 1000 columns wide, drawn into a pipe) are not theirs.
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n    assert_eq!(std::env::vars().filter(|(k, _)| k.starts_with(\"CARGO_TERM_PROGRESS\")).count(), 0);\n}\n");
+    sb.file("p/src/main.rs", "use std::io::IsTerminal;\nfn main() {\n    let args: Vec<String> = std::env::args().skip(1).collect();\n    let term: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| k.starts_with(\"CARGO_TERM_PROGRESS\")).collect();\n    println!(\"terminal={} args={:?} sum={} term={:?}\", std::io::stdout().is_terminal(), args, p::add(1, 2), term);\n}\n");
     let Some(mut first) = sb.cargo_in_terminal(&p, "run -- one two") else {
         eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
         return;
@@ -1565,8 +1567,10 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let out = run(&mut first);
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success(), "{}", screen);
-    assert!(screen.contains("✓ Built") && screen.contains("1 warning in p: unused_variables ×1"), "QuickRust's summary of the build: {}", screen);
-    assert!(screen.contains(r#"terminal=true args=["one", "two"] sum=3"#), "the program has the terminal and its arguments: {}", screen);
+    assert!(screen.contains("Built ") && screen.contains("1 warning in p: unused_variables ×1"), "QuickRust's summary of the build: {}", screen);
+    assert!(screen.contains(r#"terminal=true args=["one", "two"] sum=3 term=[]"#), "the program has the terminal, its arguments and none of QuickRust's Cargo settings: {}", screen);
+    // The Cargo that runs the program draws no progress either (nor reports it to the terminal).
+    assert!(!screen.contains("\x1b]9;4"), "{:?}", screen);
     assert_eq!(screen.matches("terminal=").count(), 1, "the program ran once: {}", screen);
     assert!(!screen.contains("let unused = 1") && !screen.contains(crate_noop()), "nothing replayed, nothing of the build's mechanics: {}", screen);
     compiled_once(&sb);
@@ -1575,18 +1579,18 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     // running it, still checks.
     let out = run(&mut sb.cargo_in_terminal(&p, "run -- again").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success() && screen.contains("✓ Up to date") && screen.contains("1 warning in p"), "{}", screen);
-    assert!(screen.contains(r#"terminal=true args=["again"] sum=3"#), "{}", screen);
+    assert!(out.status.success() && screen.contains("Up to date") && screen.contains("1 warning in p"), "{}", screen);
+    assert!(screen.contains(r#"terminal=true args=["again"] sum=3 term=[]"#), "{}", screen);
     // An edit is built again.
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    y + x\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n");
     let out = run(&mut sb.cargo_in_terminal(&p, "run").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success() && screen.contains("✓ Built") && !screen.contains("Up to date") && screen.contains("sum=3"), "{}", screen);
+    assert!(out.status.success() && screen.contains("Built ") && !screen.contains("Up to date") && screen.contains("sum=3"), "{}", screen);
     compiled_once(&sb);
 
     let out = run(&mut sb.cargo_in_terminal(&p, "test").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(out.status.success() && screen.contains("✓ Built") && screen.contains("test adds ... ") && screen.contains("1 passed"), "{}", screen);
+    assert!(out.status.success() && screen.contains("Built ") && screen.contains("test adds ... ") && screen.contains("1 passed"), "{}", screen);
     assert!(!screen.contains("let unused = 1") && !screen.contains("Compiling p v0.1.0"), "{}", screen);
     compiled_once(&sb);
 
@@ -1595,7 +1599,7 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let out = run(&mut sb.cargo_in_terminal(&p, "run").unwrap());
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert_eq!(out.status.code(), Some(101), "{}", screen);
-    assert!(screen.contains("✗ Build failed") && screen.contains("mismatched types") && !screen.contains("terminal="), "{}", screen);
+    assert!(screen.contains("Build failed") && screen.contains("mismatched types") && !screen.contains("terminal="), "{}", screen);
 }
 
 /// The argument under which QuickRust is the do-nothing runner of `cargo run`'s build.
@@ -1796,7 +1800,7 @@ fn qrust_says_up_to_date_only_when_cargo_would_build_nothing() {
             cargo.env(k, v);
         }
         let screen = String::from_utf8_lossy(&run(&mut qrust).stdout).into_owned();
-        assert!(screen.contains('✓'), "{}: {}", what, screen);
+        assert!(screen.contains("Built ") || screen.contains("Up to date"), "{}: {}", what, screen);
         if screen.contains("Up to date") {
             skipped.push(*what);
             // Asked through a pipe, where QuickRust never judges, Cargo must find nothing to do.

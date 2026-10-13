@@ -134,8 +134,8 @@ In a terminal, QuickRust shows a build the way you need it: one live status line
 warnings counted by lint and crate instead of dumped, and a one-line summary:
 
 ```text
-✓ Built 4.21s · 12 compiled · 140 fresh · 37 restored from QuickRust's cache
-⚠ 23 warnings in app, util: unused_variables ×17, dead_code ×4, +2 more · `qrust warnings` to show them
+Built 4.21s · 12 compiled · 140 fresh · 37 restored from QuickRust's cache
+23 warnings in app, util: unused_variables ×17, dead_code ×4, +2 more · `qrust warnings` to show them
 ```
 
 Nothing is lost. Every line is stored with the run:
@@ -157,17 +157,17 @@ of their output are a terminal's), showing Cargo's lines its way and closing wit
 of every test program added up:
 
 ```text
-✓ Built 0.42s · 1 compiled · 1 fresh
-  ▸ unittests src/lib.rs
+Built 0.42s · 1 compiled · 1 fresh
+  unittests src/lib.rs
 running 132 tests
 …
 test result: ok. 132 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.31s
-  ▸ tests/cli.rs
+  tests/cli.rs
 …
-✓ 140 passed · 2 ignored · 1.12s
+140 passed · 2 ignored · 1.12s
 ```
 
-When nothing the last such build depended on has changed, QuickRust says so (`✓ Up to date`)
+When nothing the last such build depended on has changed, QuickRust says so (`Up to date`)
 and goes straight to the command, which still checks freshness itself.
 
 The same holds for a plain `qrust build` / `check` / `clippy` in a terminal, where QuickRust's
@@ -180,9 +180,9 @@ get Cargo. A test drives a series of changes and checks that whenever QuickRust 
 Cargo asked directly finds nothing to do.
 
 Downloads, lock waits and index updates show in the same status line, then as one line
-(`↓ Downloaded 38 crates · 5.6 MiB · 1.84s`), for `cargo tree` and `cargo metadata` too. Commands that do not build speak the same
-language: `cargo update` lists what moved (`↑ serde  1.0.209 → 1.0.210`, `+ hashbrown
-0.15.0`, `− autocfg 1.3.0`) and sums it up, `cargo add` shows the dependency with its
+(`Downloaded 38 crates · 5.6 MiB · 1.84s`), for `cargo tree` and `cargo metadata` too. Commands that do not build speak the same
+language: `cargo update` lists what moved (`updated  serde  1.0.209 → 1.0.210`, `added  hashbrown
+0.15.0`, `removed  autocfg  1.3.0`) and sums it up, `cargo add` shows the dependency with its
 features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line, and
 `qrust install` shows its build's progress and one line for the result. What a terminal shows
 for each command is kept in snapshots (`tests/snapshots/`), compared whole in the test suite.
