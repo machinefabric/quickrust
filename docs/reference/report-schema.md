@@ -142,7 +142,8 @@ an argument file, or dependency binaries other than build scripts), `restore_tim
 ## `policy`
 
 - `fast` { `mode` (`fast` \| `compat`), `applied` [ { `key`, `value`, `why` } ]: the
-  profile settings QuickRust passed to Cargo and the parallel frontend (`rustc -Zthreads`),
+  profile settings QuickRust passed to Cargo, the parallel frontend (`rustc -Zthreads`) and
+  the linker (`linker`, when wild is used),
   `yielded` [ { `key`, `because` } ]: settings QuickRust left alone because the user made
   them, naming where }
 - `workload` (`local-dev` \| `ci`)

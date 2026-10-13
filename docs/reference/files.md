@@ -1,0 +1,114 @@
+# Files and directories
+
+Everything QuickRust keeps on disk: its home directory, its cache, what it writes into a repository, and how long records are kept.
+
+QuickRust creates its directories with mode 0700. Paths below use the default home, `~/.qrust`; `QRUST_HOME` moves all of it.
+
+## QuickRust's home
+
+| Path | Content | Deleting it |
+|---|---|---|
+| `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`); `cargo` and the toolchain programs as links to `qrust` ([Commands](commands.md#toolchain-programs)); programs `qrust install` installed | the links are recreated by the next command; installed programs are lost |
+| `~/.qrust/config.toml` | the user's QuickRust configuration ([Configuration](configuration.md)) | yours |
+| `~/.qrust/setup.json` | what `qrust setup` did: where it installed, which shell files it changed, what it imported; read by `qrust doctor` and `qrust self uninstall` | `qrust setup` writes it again |
+| `~/.qrust/env`, `~/.qrust/env.fish` | the scripts the shell startup files source to put `~/.qrust/bin` first on `PATH` | `qrust setup` writes them again |
+| `~/.qrust/installs.json` | what `qrust install` installed, by root and package (`qrust install --list`) | use `qrust uninstall` instead |
+| `~/.qrust/toolchains/` | the Rust toolchains QuickRust installed (`qrust toolchain list`); `channels.json` says which release each channel names, the default, and the linked toolchains | use `qrust toolchain remove`; a deleted toolchain is installed again on its next use |
+| `~/.qrust/cargo/` | QuickRust's Cargo home: `config.toml`, `credentials.toml` (mode 0600), the registry index and sources, git checkouts | the registry and git directories are downloaded again; `config.toml` and `credentials.toml` are yours |
+| `~/.qrust/workspaces/<id>/` | per workspace: `workspace.json` (its root), `sessions/` (run records), `events/` (raw rustc events and stored output), `runs/` (analysed reports), `index/units.json` (last known unit fingerprints), `benchmarks/`, `remediations/`, `restore/` (journals of benchmark edits in progress) | history is lost |
+| `~/.qrust/workspaces/<id>/prebuilt/` | stamps of builds that succeeded in a terminal: the files each depended on, with sizes and times (at most 32 per workspace) | the next build asks Cargo |
+| `~/.qrust/active/` | one file per running session | only while no QuickRust command runs |
+| `~/.qrust/linker/ld` | a link to the `wild` in use ([Fast mode](fast-mode.md#linker)) | recreated by the next build |
+| `~/.qrust/notices/` | markers of notes shown once or once an hour | the notes are shown again |
+| `~/.qrust/cache/` | QuickRust's cache (below) | see below |
+
+`<id>` is the first 16 hexadecimal digits of the SHA-256 of the workspace root's canonical path.
+
+## QuickRust's cache
+
+Everything under `~/.qrust/cache/` can be rebuilt or downloaded again. QuickRust keeps it within `cache.max-size` and leaves `cache.min-free` of the disk free ([Configuration](configuration.md#keys)), removing what was used least recently.
+
+| Path | Content |
+|---|---|
+| `builds/<name>-<id>/` | each workspace's target directory (`qrust path`): Cargo's build output. `<name>` is the workspace directory's name (at most 24 characters; other than letters, digits, `-` and `_` replaced by `_`) |
+| `builds/<name>-<id>.json`, `builds/<name>-<id>.lock` | which workspace a build directory belongs to and when it was last used; the lock a command holds while it uses the directory |
+| `builds/<name>-<id>/qrust-bench/` | benchmark and experiment build directories, each with a `.qrust-owned` marker and its own artifact cache (`.qrust-artifacts/`) |
+| `artifacts/` | the artifact cache |
+| `drivers/<commit>-<host>-<source>/` | QuickRust's compiler driver for one compiler and driver source (`qrust driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on |
+| `src/` | sources of programs being or having been installed: crates copied from QuickRust's Cargo home (their published lockfile kept as `.qrust-published.lock`) and `--git` clones; `<copy>.lock` while an install uses one |
+| `downloads/` | toolchain archives being downloaded (resumed after an interruption) |
+| `memo/rustc/` | each compiler's `rustc -vV`, asked once per binary |
+| `memo/roots/` | which workspace a directory belongs to, as `cargo locate-project` said (asked again when a `Cargo.toml` from there up changes) |
+| `tmp/` | what a collection is deleting; renamed here first |
+| `usage.json` | the cache's last count |
+| `gc-log.jsonl` | what collections removed (the last 200) |
+| `gc.lock` | held by a running collection |
+
+### Collection
+
+A collection removes, in this order:
+
+1. whatever nothing can use any more: build directories of workspaces that are gone, drivers of toolchains that are gone, week-old unfinished downloads, month-old memos, leftovers in `tmp/`;
+2. while the cache is above `cache.max-size` or the disk below `cache.min-free`: build directories, artifact entries and sources of installed programs, least recently used first, until the cache is under 90% of `cache.max-size` and the disk has 125% of `cache.min-free` free;
+3. crates and git checkouts downloaded into QuickRust's Cargo home, removed by Cargo itself (`cargo -Zgc clean gc`): by Cargo's usual ages at every collection and, while the bounds are still exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn.
+
+Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a source an install holds; an artifact entry whose files a build directory in use links. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
+
+| Trigger | Collection |
+|---|---|
+| after every command, when the disk is below `cache.min-free`, the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds | `qrust gc --background`, detached, at the lowest priority |
+| before a command, when the disk is below a quarter of `cache.min-free` | in the command, for at most ten seconds, with a `NOTE` |
+| `qrust gc` | now |
+
+`qrust cache status` shows the last count and recent collections; `qrust gc --dry-run` lists what a collection would remove.
+
+## Toolchain programs inside a toolchain
+
+| Path | Content |
+|---|---|
+| `~/.qrust/toolchains/<id>/bin/.qrust-engine` (`.qrust-engine.exe` on Windows) | a hard link of the toolchain's `cargo`, which QuickRust runs so that Cargo passes QuickRust's `cargo` on as `CARGO` ([Compatibility](compatibility.md#nested-invocations)); not for linked toolchains |
+
+## In a build directory
+
+| Path | Content |
+|---|---|
+| `<target>/<profile>/deps/<unit>.qrust-svh` | a library's interface hash (early cut-off) |
+| `<target>/<profile>/deps/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | a binary's kept objects and what they were compiled from, for relinking |
+
+They go with the rest of the directory (`cargo clean`).
+
+## In a repository
+
+QuickRust writes into a repository only on request.
+
+| Path | Written by |
+|---|---|
+| `.qrust/config.toml` | you, or `qrust fix --apply` for a `safe` remediation |
+| `.qrust/budgets.toml` | you ([Budgets](budgets.md)) |
+| `.qrust/baselines/<name>.json` | `qrust baseline set` |
+| the path of `measurement.report` / `QRUST_REPORT` | every build, when set |
+| the file of `qrust report -o FILE` | that command |
+| a source file of the workspace, temporarily | the `small-edit` benchmark scenario, which restores it ([Benchmarks](benchmarks.md#source-edits)) |
+
+No `target/` directory is created in a project.
+
+## Setup
+
+`qrust setup` writes:
+
+- `~/.qrust/bin/` with `qrust`, `qrust-rustc-wrapper` and the program links; it refuses to replace a file there that is not QuickRust's;
+- `~/.qrust/env` and `~/.qrust/env.fish`;
+- one line marked `# Added by `qrust setup`: QuickRust's bin first on PATH` in `~/.profile`, and in `~/.bash_profile`, `~/.bashrc` and `~/.zshenv` where they exist (`~/.zshenv` also when `zsh` is on `PATH`); `~/.config/fish/conf.d/qrust.fish` when `~/.config/fish` exists; on Windows, the user's `PATH` through PowerShell (none of this with `--no-modify-path`);
+- once, from `$CARGO_HOME` or `~/.cargo`: `credentials.toml`, and the `[registries]`, `[registry]`, `[source]`, `[net]` and `[http]` tables of `config.toml`, into `~/.qrust/cargo/` (the tables it did not import are listed);
+- `~/.qrust/setup.json`.
+
+`qrust self uninstall --yes` removes `~/.qrust` and the lines and files above that `qrust setup` added. rustup and `~/.cargo` are never changed.
+
+## Retention
+
+| Key | Default | Kept per workspace |
+|---|---|---|
+| `measurement.keep-runs` | 200 | run records and reports |
+| `measurement.keep-raw-events` | 20 | raw rustc events and stored output, of analysed runs |
+
+Pruning runs on about one command in 32. Prebuilt stamps: at most 32 per workspace. Collection log: the last 200 entries.

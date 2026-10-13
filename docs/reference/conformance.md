@@ -1,6 +1,6 @@
 # Conformance to the specification
 
-Status of [spec.md](spec.md) in this implementation. "Tested" names where the
+Status of the [specification](specification.md) in this implementation. "Tested" names where the
 behaviour is asserted.
 
 ## P0 checklist
@@ -36,7 +36,7 @@ behaviour is asserted.
 | Cross-platform process abstraction | done; on Windows a CI smoke run (setup, build, run, test) | `src/proc.rs` · `.github/workflows/ci.yml` |
 | Compatibility corpus QA-001…030 | done except QA-024 (Windows) | tests/compat.rs |
 | Performance-overhead test | done | `dispatch_overhead_stays_within_budget` |
-| Migration / uninstall documentation; `doctor`; escape hatch | done | [migration.md](migration.md) · `doctor_setup_and_uninstall` |
+| Migration / uninstall documentation; `doctor`; escape hatch | done | [How to adopt QuickRust gradually](../how-to/adopt-gradually.md), [How to install QuickRust](../how-to/install.md) · `doctor_setup_and_uninstall` |
 
 ## Not in this release (P1 and later in the specification)
 
@@ -135,8 +135,9 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     `-Zallow-features=` so that `#![feature]` is rejected as on stable (with rustc's
     "not in the list of allowed features" error instead of the stable-channel one).
     Never for build scripts or the compiler probes they run, so crates do not switch to
-    nightly code paths; not on a nightly compiler; and no such lever applies when the
-    user sets `RUSTC_BOOTSTRAP` themselves.
+    nightly code paths. A nightly compiler accepts `-Z` flags and `#![feature]` anyway, so
+    there no `-Zallow-features=` is added. No such lever applies when the user sets
+    `RUSTC_BOOTSTRAP` themselves.
 
 13. **QuickRust's compiler driver compiles the units Cargo schedules (fast mode, `fast.early-cutoff`).**
     The driver is the toolchain's own rustc (`librustc_driver`, its LLVM, its release) run

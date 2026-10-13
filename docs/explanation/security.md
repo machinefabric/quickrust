@@ -1,16 +1,19 @@
 # Security and privacy
 
+QuickRust sits in front of Cargo and rustc, on every build, with the permissions of the user who runs it. That position deserves scrutiny: what does it add to what a user already trusts, what does it keep about builds, and what can it delete? This page explains the trust model and the reasoning behind each boundary. Where things live on disk is listed in the [files reference](../reference/files.md).
+
 ## Trust model
 
 QuickRust adds no network service and no daemon. It runs with the permissions of the
 user who runs Cargo and delegates to the Cargo and rustc that user already
 trusts. What it adds to the trusted path:
 
-- the `qrust` binary, in the position of `cargo`;
-- `qrust-rustc-wrapper`, in front of every rustc invocation.
+- the `qrust` binary, in the position of `cargo` (and, after `qrust setup`, of `rustc`, `rustfmt` and the other toolchain programs, which it runs from the selected toolchain);
+- `qrust-rustc-wrapper`, in front of every rustc invocation;
+- in fast mode, QuickRust's compiler driver: rustc's own `librustc_driver` from the toolchain, run through a small program QuickRust builds from sources it carries, against that toolchain's `rustc-dev` component ([early cut-off](early-cutoff.md)).
 
-Both forward the user's arguments and environment unchanged. What they add, in
-fast mode (compat mode adds nothing):
+QuickRust and its wrapper forward the user's arguments and environment unchanged. What
+they add, in fast mode (compat mode adds nothing):
 
 - the profile settings, as `--config` arguments before the subcommand;
 - `-Zthreads=N` for the units Cargo schedules that are compiled from scratch, with
@@ -20,13 +23,17 @@ fast mode (compat mode adds nothing):
   rejected as under plain stable Cargo. Build scripts and the compiler probes they run
   never see it, and nothing of this applies when the user sets `RUSTC_BOOTSTRAP`;
 - the artifact cache (below);
+- early cut-off: units compiled by the compiler driver, which computes a library's crate
+  hash from what its dependents can observe and keeps binaries' object files for
+  relinking; with no such setting active its outputs are rustc's byte for byte;
 - when the user has installed `wild`, linking with it: the binary found on `PATH` is
   trusted like any tool there, through the link `~/.qrust/linker/ld`;
 - installing toolchains: manifests and archives from the dist server
   (`toolchain.dist-server`, HTTPS to static.rust-lang.org by default), each manifest checked
   against its published SHA-256 and each archive against the manifest's; archives are
   unpacked with nothing allowed outside their directory (no absolute paths, `..`, links
-  leading out, or entries beneath links).
+  leading out, or entries beneath links; no hard links or devices; a bound on unpacked
+  size). Crates that `qrust install` unpacks get the same treatment.
 
 The wrapper writes one event file per invocation into the session's private event
 directory, and the build's output is stored next to them.
@@ -34,8 +41,8 @@ directory, and the build's output is stored next to them.
 ## QuickRust's artifact cache
 
 In fast mode QuickRust restores compiler outputs instead of compiling when the same unit was
-compiled before. It is local to the user (`~/.qrust/cache/artifacts`, mode 0700), has no
-network component, and is never consulted behind a rustc wrapper the user configured.
+compiled before. It is local to the user (`~/.qrust/cache/artifacts`, inside `~/.qrust/cache`,
+which is created with mode 0700), has no network component, and is never consulted behind a rustc wrapper the user configured.
 
 - **Key.** rustc's identity by its own account (`rustc -vV`: release, commit, LLVM,
   host — asked once per compiler binary and toolchain selection), every argument with
@@ -98,8 +105,8 @@ no rendered output.
 
 ## Paths
 
-State under `~/.qrust` keeps real local paths (directories are created with mode
-0700). Everything exported — `QRUST_REPORT`, `--format json`, HTML, baselines —
+State under `~/.qrust` keeps real local paths (the directories holding run records and
+QuickRust's cache are created with mode 0700). Everything exported — `QRUST_REPORT`, `--format json`, HTML, baselines —
 replaces the workspace root, the home directory, QuickRust's Cargo home and QuickRust's home
 with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_HOME`
 (`security.redact-path-home`, on by default).
@@ -108,9 +115,12 @@ with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_HOME`
 
 QuickRust deletes only inside its own cache (`~/.qrust/cache`), whose content it created and can
 rebuild or download again: workspaces' build directories, artifact cache entries, compiler
-drivers, unfinished downloads, remembered answers. It never deletes in a project, in a target
-directory the user chose, in QuickRust's Cargo home or among toolchains (`qrust toolchain remove`,
-and channels' superseded releases after a day unused, aside). A collection never removes
+drivers, sources of installed programs, unfinished downloads, remembered answers. Crates and git
+checkouts downloaded into QuickRust's Cargo home are removed by Cargo itself (`cargo -Zgc clean gc`,
+which waits for builds reading them), at QuickRust's request; QuickRust never deletes anything else
+there, and never your configuration or credentials. It never deletes in a project, in a target
+directory the user chose, or among toolchains (`qrust toolchain remove`, and channels' superseded
+releases after a day unused, aside). A collection never removes
 anything used in the last 15 minutes, a build directory a QuickRust command holds (its lock) or one
 a Cargo holds a lock in; it renames what it removes into `cache/tmp` before deleting it, so
 nothing is ever seen half deleted, and logs every removal (`cache/gc-log.jsonl`). The scans

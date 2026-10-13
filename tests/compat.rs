@@ -53,7 +53,7 @@ fn no_rebuild_when_alternating_with_upstream() {
 #[test]
 fn fast_mode_and_upstream_keep_separate_artifacts_instead_of_rebuilding_each_other() {
     // Fast mode builds with other profile settings, so Cargo names its artifacts differently. After
-    // each side has built once, alternating between them compiles nothing (docs/migration.md).
+    // each side has built once, alternating between them compiles nothing (docs/how-to/adopt-gradually.md).
     let sb = Sandbox::new("alternate-fast");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));

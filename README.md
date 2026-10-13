@@ -1,31 +1,21 @@
 # QuickRust
 
-QuickRust is a drop-in replacement for the `cargo` command, and the only thing you install:
-it downloads and manages the Rust toolchains itself (`+toolchain`, `RUSTUP_TOOLCHAIN` and
-`rust-toolchain.toml` choose, as with rustup). Every invocation runs, argument for
-argument, the toolchain's own Cargo and rustc as QuickRust's engine. QuickRust owns everything
-around them and uses it to speed up, observe, explain and police builds.
+QuickRust is a drop-in replacement for the `cargo` command that makes Rust builds faster, with nothing to configure. It is the only thing you install: it downloads and manages the Rust toolchains itself (`+toolchain`, `RUSTUP_TOOLCHAIN` and `rust-toolchain.toml` choose, as with rustup) and runs every command, argument for argument, through the toolchain's own Cargo and rustc. Around them it adds what makes builds fast, and it records every build so that it can explain where the time and the disk space went.
 
 ```text
-developer / IDE / CI ──► cargo (QuickRust) ──► toolchain's Cargo ──► qrust-rustc-wrapper ──► [your wrapper / sccache] ──► rustc
-                           ▲   │                      │                  │
-                           │   └── session record     │                  └── one event per rustc invocation
-                           └──────────────────────────┘  $CARGO: Clippy, nextest, build scripts — nested builds come back to QuickRust
+OK   Built: 12 compiled, 140 fresh, 37 restored from QuickRust's cache [4.21s]
+WARN 23 warnings in app and util: unused_variables x17, dead_code x4, +2 more; `qrust warnings` shows them
 ```
 
 What you get on top of an unchanged Cargo:
 
-- **timing** per build unit, the observed dependency DAG and its critical path;
-- **why each unit rebuilt** (source, dependency, compiler, profile, features, flags, environment, build script, cache miss — or an honest `unknown`);
-- **duplication**: several versions of a dependency, and one version built in several variants, with the dependents responsible;
-- **build scripts** and **proc macros**: cost, rerun behaviour, what waits on them;
-- **cache** behaviour with sccache: hits, misses and non-cacheable requests as separate numbers;
-- **storage**: what is in the build directory by category and what in it is stale, and a cache that keeps itself within its space (`cache.max-size`, `cache.min-free`, `qrust gc`);
-- **benchmarks**, A/B **experiments**, **baselines** and CI **regression budgets**;
-- ranked, evidence-backed **recommendations** and reviewable **remediation previews**.
+- **faster builds by default**: lighter debug information, rustc's parallel frontend, the wild linker when installed, a global artifact cache shared by every checkout, and early cut-off, which stops a rebuild at a crate whose interface an edit did not change. The program you build behaves exactly the same; settings you make yourself always win.
+- **no `target/` in your projects**: builds live in QuickRust's cache, which keeps itself within a size and a free-space bound.
+- **readable output**: one status line, errors in full, warnings counted and kept, one line per outcome (`OK`, `FAIL`, `WARN`, `NOTE`), plain ASCII.
+- **answers about builds**: timing and the critical path, why each crate rebuilt, duplicated dependencies, build scripts and procedural macros, cache behaviour, disk use.
+- **measurement**: benchmarks, A/B experiments of build settings, baselines and CI budgets.
 
-The specification this implements is [docs/spec.md](docs/spec.md); the research
-behind it is [docs/report.md](docs/report.md).
+How much faster, measured against plain Cargo on real projects: [benchmarks/PROGRESS.md](benchmarks/PROGRESS.md). At the latest checkpoint the speed index (the geometric mean of Cargo's time over QuickRust's, across a developer's build loop) is 2.16.
 
 ## Install
 
@@ -34,251 +24,46 @@ curl -fsSL https://github.com/jowharshamshiri/quickrust/releases/latest/download
 # Windows: irm https://github.com/jowharshamshiri/quickrust/releases/latest/download/install.ps1 | iex
 ```
 
-The script downloads the release for your machine (Linux builds are static and run on any
-distribution), checks it against its published checksum and runs `qrust setup`: QuickRust into
-`~/.qrust/bin`, first on PATH (`cargo`, `rustc`, `rustfmt`, … are QuickRust), credentials and
-registries imported once from `~/.cargo`, stable Rust installed. `qrust self update` installs
-newer releases; `qrust doctor` shows what QuickRust uses and whether anything is wrong. From source:
+From source, with Rust 1.80 or newer:
 
 ```bash
-cargo build --release --locked  # builds `qrust` and `qrust-rustc-wrapper`
+cargo build --release --locked
 target/release/qrust setup
 ```
 
-QuickRust installs the toolchains it builds with into `~/.qrust/toolchains` on first use (from
-static.rust-lang.org, or `toolchain.dist-server`); `qrust toolchain` manages them. QuickRust
-itself builds with Rust 1.80 or newer. `--locked` uses the tested dependency versions: without it Cargo
-picks the newest, and some of those need a newer Rust than 1.80. sccache and Git are
-optional.
+Then open a new shell: `cargo` is now QuickRust. Details, updates and uninstalling: [How to install, update and uninstall QuickRust](docs/how-to/install.md).
 
-## Use
-
-After `qrust setup`, `cargo` is QuickRust (see [docs/migration.md](docs/migration.md)):
+## A first look
 
 ```bash
-cargo build                     # through QuickRust; so are rustc, rustfmt, cargo clippy, rust-analyzer's calls
-qrust build                     # the same, by QuickRust's own name
-qrust upstream build            # the toolchain's Cargo, nothing else — the escape hatch, always available
+cargo build                      # through QuickRust
+qrust warnings                   # the warnings it counted, in full
+qrust analyze                    # everything about the latest build
+qrust analyze rebuilds           # why each crate rebuilt
+qrust path                       # where the build went
+qrust upstream build             # the toolchain's own Cargo with nothing added
 ```
 
-After any build that went through QuickRust:
-
-```bash
-qrust analyze                   # everything about the latest build run
-qrust analyze rebuilds          # one section: timing rebuilds duplication scripts proc-macros codegen cache storage recommendations
-qrust analyze worktrees         # identical units built in other worktrees / workspaces
-qrust analyze timing --filter source=registry --sort duration_ns --limit 10
-                                # a section's records, narrowed (FIELD=VALUE, all must match), ordered, cut
-qrust report --format html -o report.html
-qrust runs                      # recorded runs; refer to them as latest, latest~1, or by id prefix
-qrust compare latest~1 latest
-```
-
-Measuring and gating:
-
-```bash
-qrust benchmark --scenario clean --reps 5           # also: no-change, small-edit, test-build, release
-qrust experiment codegen --codegen-units 16 --scenario small-edit --allow-mutation --verify test -- build
-qrust baseline set main --benchmark <ID>            # writes .qrust/baselines/main.json — commit it
-qrust ci evaluate                                   # exit 3 when a blocking budget fails
-```
-
-Storage and policy:
-
-```bash
-qrust inventory --caches
-qrust gc --dry-run --older-than 14 --max-size 20GiB
-qrust policy explain                                # every effective setting and where it came from
-qrust cache status
-qrust fix --dry-run                                 # remediation previews; nothing is written
-```
-
-A machine-readable report for any ordinary build:
-
-```bash
-QRUST_REPORT=build-report.json cargo build
-```
-
-## Fast by default
-
-The goal: `cargo build` through QuickRust is faster than plain Cargo, on any project, with
-no configuration. In the default `mode = "fast"`, QuickRust applies build settings that keep
-your program's behaviour identical:
-
-| Setting | What changes |
-|---|---|
-| `profile.dev.debug = "line-tables-only"` | dev builds keep file and line information (backtraces, stepping, breakpoints) but not local-variable and type information, the bulk of the debug data that has to be generated, linked and stored |
-| `profile.dev.package."*".debug = false` | no debug information for dependencies in dev builds, as Cargo's own build-performance guide recommends |
-| rustc's parallel frontend (`-Zthreads`, up to 8) | units compiled from scratch use several threads: dependencies, release and CI builds, and each workspace crate's first compilation in a target directory (a fresh clone or a `cargo clean`). Applied by QuickRust's rustc wrapper, with `RUSTC_BOOTSTRAP=1` for the compiler processes so it works on stable, and `-Zallow-features=` so `#![feature]` stays rejected as on stable; incremental rebuilds are faster without it. Build scripts and their compiler probes see the compiler exactly as it is. `fast.frontend-threads = "off"` disables it |
-| the wild linker, when installed (`cargo install wild-linker`; Linux with glibc) | relinking after an edit is markedly faster than with rustc's bundled LLD (measured: ripgrep 22%, a small binary 34%). For host builds of binaries, tests and proc-macros, unless you configured a linker. `fast.linker = "off"` disables it |
-| a global artifact cache | a unit compiled once is restored instead of compiled again: dependencies across all your checkouts, your own crates within the same checkout (after `cargo clean`, when switching branches back and forth). One visible difference: a dependency that includes code its build script generated (serde does) and was first built in another target directory names that directory in panic messages and debug information for the generated code; QuickRust notes it the first time it happens, and the run report counts such units (`cache.artifacts.restored_with_foreign_out_dir`). `cache.artifacts = "off"` disables it |
-| early cut-off, through QuickRust's compiler driver | after an edit inside a function body that other crates cannot see into, the crates that depend on the edited one are restored instead of compiled again, and binaries and tests built on it are only linked again (their own code is compiled apart from linking and kept): ripgrep rebuilds in ~140 ms instead of ~720 ms after such an edit to one of its libraries. The driver is your toolchain's own rustc, built against its `rustc-dev` component with one change: a library's crate hash covers what its dependents can observe rather than every body. QuickRust builds it once per toolchain, when it installs the toolchain (`qrust setup`, a channel's new release), so that the first build already uses it, or else in the background after a build that finds it missing; a crate it ever fails on is compiled by rustc. `fast.early-cutoff = "off"` disables it |
-
-The profile settings reach Cargo as `--config` arguments; nothing in your repository changes. A setting
-you made yourself, in `Cargo.toml`, a `.cargo/config.toml`, a `CARGO_PROFILE_*` variable or
-`--config`, always wins: QuickRust then leaves it, and the settings that depend on it, alone.
-Want full debug info back? Set `[profile.dev] debug = true` as you would with Cargo.
-Every run records what QuickRust applied, what it left alone and why (`policy.fast` in the
-report).
-
-`mode = "compat"` (or `QRUST_MODE=compat`) builds exactly what upstream Cargo builds.
-`qrust upstream` is upstream Cargo with no QuickRust at all.
-
-How much faster, measured on real projects against plain Cargo:
-[benchmarks/PROGRESS.md](benchmarks/PROGRESS.md) (method: [benchmarks/README.md](benchmarks/README.md)).
-
-## Build output
-
-In a terminal, QuickRust shows a build the way you need it: one live status line instead of a
-`Compiling` line per crate, every error in full as it arrives (rustc's own rendering),
-warnings counted by lint and crate instead of dumped, and a one-line summary:
-
-```text
-OK   Built: 12 compiled, 140 fresh, 37 restored from QuickRust's cache [4.21s]
-WARN 23 warnings in app and util: unused_variables x17, dead_code x4, +2 more; `qrust warnings` shows them
-```
-
-QuickRust speaks one way everywhere. A line that reports an outcome starts with its tag:
-`OK`, `FAIL` (an error, a failed command, an interruption), `WARN` (it worked, and something
-deserves a look) or `NOTE` (what QuickRust does or knows). Lines that belong to an outcome (a
-download, a dependency that moved, the live status line) are indented to where messages start.
-A message is a head, then its details after `: `; a duration closes the line in brackets. It
-is all ASCII, so every terminal shows it, and without colour the tags say what colour would.
-
-Nothing is lost. Every line is stored with the run:
-
-```bash
-qrust warnings                      # all warnings of the latest build, as rustc wrote them
-qrust warnings --crate app --lint dead_code
-qrust errors                        # the errors again
-qrust log [--raw]                   # everything, in order
-```
-
-`cargo run`, `cargo test` and `cargo bench` get the same build output, and then the
-program, the tests or the benchmarks run: QuickRust first builds exactly what the command needs
-(`test --no-run`; for `run`, Cargo's own selection of the binary, with a runner that does
-not run it), then runs the command, which finds everything fresh. The program's output is
-never touched, and the warnings Cargo would replay are not repeated. Tests and benchmarks
-run in a terminal of their own that QuickRust relays as it comes (colours, `isatty` and the order
-of their output are a terminal's), showing Cargo's lines its way and closing with the counts
-of every test program added up:
-
-```text
-OK   Built: 1 compiled, 1 fresh [0.42s]
-     unittests src/lib.rs
-running 132 tests
-...
-test result: ok. 132 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.31s
-     tests/cli.rs
-...
-OK   Tests: 140 passed, 2 ignored [1.12s]
-```
-
-When nothing the last such build depended on has changed, QuickRust says so (`OK   Up to date: 152 fresh`)
-and goes straight to the command, which still checks freshness itself.
-
-The same holds for a plain `qrust build` / `check` / `clippy` in a terminal, where QuickRust's
-verdict is the answer and Cargo is not started at all (axum: 21 ms instead of 123 ms). QuickRust
-records what a build's freshness depends on: every source the compiler read, build scripts'
-declared inputs (every file of the package for a script that declares none), manifests,
-`Cargo.lock`, Cargo configuration, toolchain files and the compiler, the outputs, the
-environment. It judges only when it runs a toolchain's own Cargo; pipes, IDEs and CI always
-get Cargo. A test drives a series of changes and checks that whenever QuickRust says up to date,
-Cargo asked directly finds nothing to do.
-
-Downloads, lock waits and index updates show in the same status line, then as one line
-(`Downloaded 38 crates, 5.6 MiB [1.84s]`), for `cargo tree` and `cargo metadata` too (whose trees
-are drawn in ASCII). Commands that do not build speak the same language: `cargo update` lists what moved (`updated  serde  1.0.209 -> 1.0.210`, `added  hashbrown
-0.15.0`, `removed  autocfg  1.3.0`) and sums it up, `cargo add` shows the dependency with its
-features in one line, `cargo new`, `clean`, `package`, `publish` end in one result line (`OK` alone, with
-the time, when the lines above already say what happened), and `qrust install` shows its build's progress and one line for the result. What a terminal shows
-for each command is kept in snapshots (`tests/snapshots/`), compared whole in the test suite.
-
-Lines QuickRust does not recognise (build script failures, `cargo:warning=…`, resolution errors)
-are shown as Cargo printed them. Pipes, IDEs, CI logs, `-v`, `-q`, `--message-format` and
-`cargo test --doc` get Cargo's output untouched.
-`output = "cargo"` (or `QRUST_OUTPUT=cargo`) turns it off; compat mode leaves the terminal
-to Cargo unless you set `output = "qrust"`.
-
-## What "drop-in" means here
-
-- Arguments, stdin, stdout, stderr, the environment, the exit status and
-  terminating signals pass through unchanged. `--message-format=json` output is
-  byte-for-byte what the delegated Cargo prints.
-- In fast mode, the build settings above differ from Cargo's defaults and nothing
-  else does; in compat mode the build is Cargo's own.
-- Unknown flags and commands are forwarded; Cargo decides whether they are valid.
-- `cargo install` / `qrust install` are QuickRust's: Cargo's resolver picks the release (registries,
-  source replacement and the toolchain's Rust version count as in a build), QuickRust builds it like
-  any build and puts its binaries into `~/.qrust/bin` (`--root` elsewhere), never over QuickRust's
-  own programs or another package's without `--force`; `--list` and `uninstall` as usual.
-- `cargo +toolchain`, `RUSTUP_TOOLCHAIN` and `rust-toolchain.toml` choose the toolchain
-  in rustup's order; QuickRust installs it, its components and targets on first use. Builds
-  use QuickRust's Cargo home (`~/.qrust/cargo`) and never rustup.
-- An existing `RUSTC_WRAPPER` (from the environment or `.cargo/config.toml`) and
-  `RUSTC_WORKSPACE_WRAPPER` keep working; QuickRust's wrapper runs outside them.
-- Builds go to QuickRust's cache (`~/.qrust/cache/builds/<workspace>-<id>/`), never into a
-  `target/` beside your sources. The cache keeps itself within `cache.max-size` and leaves
-  `cache.min-free` of the disk free, removing what was used least recently, in the
-  background; anything it removes is built or downloaded again when needed. Cargo and
-  every tool under it learn the directory from `CARGO_TARGET_DIR` and `cargo metadata`;
-  `qrust path` prints it. A target directory you
-  choose (`--target-dir`, `CARGO_TARGET_DIR`) is used as it is.
-- `cargo clean` is upstream `cargo clean` on that directory.
-- Nothing is written into your repository unless you ask (`QRUST_REPORT`,
-  `qrust baseline set`, `qrust fix --apply`). State lives in `~/.qrust`.
-- A build never fails because QuickRust could not record or analyse it.
-
-The test suite checks these against the toolchain's own Cargo as the oracle
-(`tests/compat.rs`, the QA corpus of the specification).
-
-## Configuration
-
-QuickRust has its own namespace and never interprets Cargo's configuration for
-execution:
-
-```text
-built-in defaults  <  ~/.qrust/config.toml  <  <repo>/.qrust/config.toml  <  QRUST_* environment
-```
-
-```toml
-# .qrust/config.toml
-[cache]
-provider = "sccache"     # inherit (default) | none | sccache
-fail = "open"            # open: compile locally if the cache is unavailable | closed
-
-[incremental]
-local-dev = "cargo-default"
-ci = "off"               # recorded with its rationale in every run
-
-[measurement]
-report = ".qrust/runs/{session}.json"
-```
-
-Unknown keys, values and `QRUST_*` variables are errors that name the field and
-its source. `qrust policy explain` lists every key with its environment variable.
+[Your first build with QuickRust](docs/tutorials/first-build.md) takes ten minutes and shows the rest.
 
 ## Documentation
 
-- [docs/migration.md](docs/migration.md) — adopting QuickRust in stages, uninstalling, rollback
-- [docs/operations.md](docs/operations.md) — CI, budgets, sccache, exit statuses, platform notes
-- [docs/report-schema.md](docs/report-schema.md) — the versioned JSON report
-- [docs/security.md](docs/security.md) — trust model, secrets, state on disk
-- [docs/conformance.md](docs/conformance.md) — what of the specification is implemented, and where reality forced a deviation
+The [documentation](docs/README.md) has four parts:
+
+- **Tutorials**, to learn by doing: [Your first build with QuickRust](docs/tutorials/first-build.md), [Finding where a build's time goes](docs/tutorials/where-the-time-goes.md).
+- **How-to guides**, for a task at hand: installing, adopting QuickRust gradually, toolchains, finding build outputs, building exactly as Cargo does, disk space, sccache, CI budgets, measuring a change, and more.
+- **Reference**: [commands](docs/reference/commands.md), [configuration](docs/reference/configuration.md), [environment variables](docs/reference/environment.md), [fast mode](docs/reference/fast-mode.md), [output](docs/reference/output.md), [files](docs/reference/files.md), [compatibility with Cargo](docs/reference/compatibility.md), the [run report schema](docs/reference/report-schema.md), the [specification](docs/reference/specification.md) and its [conformance](docs/reference/conformance.md).
+- **Explanation**: [how QuickRust works](docs/explanation/architecture.md), [why it is fast by default](docs/explanation/fast-by-default.md), the [artifact cache](docs/explanation/artifact-cache.md), [early cut-off](docs/explanation/early-cutoff.md), [security and privacy](docs/explanation/security.md), and the [research](docs/explanation/compile-time-research.md) it started from.
 
 ## Tracking
 
-Work is tracked on the private [project board](https://github.com/users/jowharshamshiri/projects/6):
-delivered work, findings and decisions as cards carrying their context, and the
-remaining work by release (P0, P1, P2, Future).
+Work is tracked on the private [project board](https://github.com/users/jowharshamshiri/projects/6): delivered work, findings and decisions as cards carrying their context, and the remaining work by release (P0, P1, P2, Future).
 
 ## Development
 
 ```bash
-cargo test                      # unit tests + compatibility corpus + management-surface suite (real builds)
+cargo test                      # unit tests, the compatibility corpus and the management-surface suite (real builds)
 cargo clippy --all-targets
 ```
 
-The suites build with toolchains QuickRust installs into a store shared between runs
-(`QRUSTTEST_TOOLCHAINS`, default `~/.cache/qrust-test-toolchains`; the first run downloads
-them), and with crates from a registry served by the test itself.
+The suites build with toolchains QuickRust installs into a store shared between runs (`QRUSTTEST_TOOLCHAINS`, default `~/.cache/qrust-test-toolchains`; the first run downloads them), and with crates from a registry served by the test itself. The documentation follows the four-part structure described in [docs/README.md](docs/README.md#how-this-documentation-is-written); output shown in it is copied from real runs.
