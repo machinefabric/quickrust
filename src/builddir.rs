@@ -202,12 +202,33 @@ const HOLD: &str = ".hold-";
 
 /// Records that the process `pid` holds the managed directory `dir`: one empty file per holder
 /// beside it, `<dir>.hold-<pid>`, so holders never write the same file.
+///
+/// A holder does not release its hold: it ends, and its record is then of nobody. A collection
+/// removes such records, but a cache inside its bounds is never collected, and a tool that asks
+/// for a held path at every step left dozens of them a run beside the build directories. So each
+/// new hold first clears the records of holders that are gone.
 pub fn hold(dir: &Path, pid: u32) -> Result<(), String> {
     let builds = dir.parent().ok_or_else(|| format!("{} is not a build directory", dir.display()))?;
     let mut name = dir.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(format!("{}{}", HOLD, pid));
     let file = dir.with_file_name(name);
-    util::create_private_dir(builds).and_then(|_| fs::write(&file, b"")).map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))
+    util::create_private_dir(builds).map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))?;
+    release_ended_holders(builds);
+    fs::write(&file, b"").map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))
+}
+
+/// Removes the hold records in `builds` whose holder is no longer running. One that cannot be
+/// removed is left for the next hold or the next collection, which read it as what it is: the
+/// record of a process that is gone holds nothing.
+fn release_ended_holders(builds: &Path) {
+    let Ok(entries) = fs::read_dir(builds) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if hold_of(&util::lossy(&entry.file_name())).is_some_and(|(_, holder)| !crate::proc::pid_alive(holder)) {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// What a file name beside the build directories says, if it is a hold's: the directory's name
@@ -298,6 +319,41 @@ mod tests {
         for other in ["app-fca2211b77f340ae.json", "app-fca2211b77f340ae.lock", "app-fca2211b77f340ae.hold-", "app-fca2211b77f340ae.hold-x1", ".hold-12", "app.hold-99999999999999999999"] {
             assert_eq!(hold_of(other), None, "{}", other);
         }
+    }
+
+    #[test]
+    fn a_new_hold_clears_the_records_of_holders_that_are_gone() {
+        let builds = std::env::temp_dir().join(format!("qrust-holds-{}", util::new_id())).join("builds");
+        let (app, lib) = (builds.join("app-fca2211b77f340ae"), builds.join("lib-0011223344556677.staging"));
+        // A process that ran and was waited for: its id is nobody's now.
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let gone = child.id();
+        child.wait().unwrap();
+        let me = std::process::id();
+        let record = |dir: &Path, pid: u32| dir.with_file_name(format!("{}.hold-{}", dir.file_name().unwrap().to_string_lossy(), pid));
+
+        hold(&app, me).unwrap();
+        // What a holder that ended left behind, on this directory and on another.
+        fs::write(record(&app, gone), b"").unwrap();
+        fs::write(record(&lib, gone), b"").unwrap();
+        // Files that are not holds, and are not touched.
+        fs::write(builds.join("app-fca2211b77f340ae.json"), b"{}").unwrap();
+        fs::write(builds.join("app-fca2211b77f340ae.lock"), b"").unwrap();
+
+        hold(&lib, me).unwrap();
+        let mut left: Vec<String> = fs::read_dir(&builds).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        assert_eq!(
+            left,
+            [
+                format!("app-fca2211b77f340ae.hold-{}", me),
+                "app-fca2211b77f340ae.json".to_string(),
+                "app-fca2211b77f340ae.lock".to_string(),
+                format!("lib-0011223344556677.staging.hold-{}", me),
+            ],
+            "the records of the holder that is gone are cleared, and nothing else"
+        );
+        fs::remove_dir_all(builds.parent().unwrap()).unwrap();
     }
 
     #[test]
