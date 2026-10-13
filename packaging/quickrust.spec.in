@@ -1,0 +1,55 @@
+# quickrust.spec.in — rpm spec for the prebuilt QuickRust programs.
+#
+# Rendered with @VERSION@ substituted and the staged payload root passed as
+# --define "quickrust_payload <dir>". The payload holds the two programs under /opt/quickrust;
+# this spec only packages them and wires the /usr/bin/qrust launcher symlink. There is no compile
+# step here: the programs are the published release's, verified against the release manifest
+# before they are repackaged.
+
+# Prebuilt, statically linked binaries: no debuginfo extraction, no generated dependencies, and
+# none of rpm's post-install processing. That processing strips every binary in the payload,
+# so the package would carry programs that differ from the published ones they were verified as.
+%global debug_package %{nil}
+%global __os_install_post %{nil}
+AutoReqProv: no
+
+Name:           quickrust
+Version:        @VERSION@
+Release:        1%{?dist}
+Summary:        Cargo, faster: every Cargo command, with managed toolchains and a shared build cache
+License:        MIT OR Apache-2.0
+URL:            https://github.com/machinefabric/quickrust
+
+%description
+QuickRust runs every Cargo command, with Rust toolchains, a shared build cache and build output
+that it manages. Installs the qrust program under /opt/quickrust with a /usr/bin/qrust launcher;
+run `qrust setup` to make it your cargo.
+
+%install
+rm -rf %{buildroot}
+mkdir -p %{buildroot}
+# An undefined macro makes rpmbuild fail, which is intended.
+cp -a %{quickrust_payload}/. %{buildroot}/
+
+%files
+%dir /opt/quickrust
+/opt/quickrust/qrust
+/opt/quickrust/qrust-rustc-wrapper
+
+%post
+if command -v update-alternatives >/dev/null 2>&1; then
+    update-alternatives --install /usr/bin/qrust qrust /opt/quickrust/qrust 100 \
+        || ln -sf /opt/quickrust/qrust /usr/bin/qrust
+else
+    ln -sf /opt/quickrust/qrust /usr/bin/qrust
+fi
+
+%postun
+# $1 == 0 on final uninstall (not on upgrade).
+if [ "$1" = 0 ]; then
+    if command -v update-alternatives >/dev/null 2>&1; then
+        update-alternatives --remove qrust /opt/quickrust/qrust || rm -f /usr/bin/qrust
+    else
+        rm -f /usr/bin/qrust
+    fi
+fi

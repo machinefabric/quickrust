@@ -30,7 +30,6 @@ Setting up and moving over:
 - [How to try QuickRust before making it your cargo, and how to go back](how-to/adopt-gradually.md)
 - [How to choose and manage toolchains](how-to/choose-a-toolchain.md)
 - [How to install programs with qrust install](how-to/install-programs.md)
-- [How to publish a QuickRust release](how-to/publish-a-release.md) (maintainers)
 
 Daily work:
 

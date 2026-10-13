@@ -20,8 +20,8 @@ How much faster, measured against plain Cargo on real projects: [benchmarks/PROG
 ## Install
 
 ```bash
-curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh
-# Windows: irm https://github.com/machinefabric/quickrust/releases/latest/download/install.ps1 | iex
+brew install machinefabric/tap/quickrust && qrust setup
+# apt, dnf, Windows and archives for every platform: docs/how-to/install.md
 ```
 
 From source, with Rust 1.80 or newer:

@@ -33,7 +33,7 @@ behaviour is asserted.
 | JSON sidecar schema | done | [report-schema.md](report-schema.md) |
 | CI regression budgets (FR-130) | done | `budgets_gate_ci…` |
 | Secret / path redaction | done | `secrets_never_reach…`, `qa021` |
-| Cross-platform process abstraction | done; on Windows a CI smoke run (setup, build, run, test) | `src/proc.rs` · `.github/workflows/ci.yml` |
+| Cross-platform process abstraction | done; on Windows a smoke run (setup, build, run, test) | `src/proc.rs` |
 | Compatibility corpus QA-001…030 | done except QA-024 (Windows) | tests/compat.rs |
 | Performance-overhead test | done | `dispatch_overhead_stays_within_budget` |
 | Migration / uninstall documentation; `doctor`; escape hatch | done | [How to adopt QuickRust gradually](../how-to/adopt-gradually.md), [How to install QuickRust](../how-to/install.md) · `doctor_setup_and_uninstall` |

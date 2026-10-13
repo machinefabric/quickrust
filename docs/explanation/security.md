@@ -38,6 +38,43 @@ they add, in fast mode (compat mode adds nothing):
 The wrapper writes one event file per invocation into the session's private event
 directory, and the build's output is stored next to them.
 
+## Updates
+
+`qrust self update` replaces the program that sits in front of every build, so what it
+will install is the narrowest thing on this page.
+
+A released QuickRust is built with four things about its own release line: the release
+registry it is published in, its channel, a signing environment, and the public halves of
+three **root keys**. It reads none of them at run time, and a QuickRust built from source
+has none: it has no release line, and updates nothing.
+
+A release is described by a manifest in the registry, published with a signature beside
+it. The signature file carries a **release-key certificate**: the public half of the key
+that signs manifests, the environment it is for, and the span of time it is valid. An
+update goes ahead only when all of this holds:
+
+- two distinct roots of this build signed the certificate's exact bytes. One root cannot
+  authorize a release key, and one lost root does not stop releases;
+- the certificate is for this build's environment and the clock is inside its validity;
+- the release key it names signed the manifest's exact bytes, as fetched;
+- every certificate in the file holds, not only the one that signed: a file carrying one
+  that does not is a publishing mistake or tampering, and reading past it would hide either;
+- the archive is the one the manifest describes, by SHA-256 and size;
+- the binary in it runs, and says it is the version it was published as.
+
+So the registry's host, the CDN in front of it and a mirror named in `self.update-url` are
+all untrusted: whoever controls them can withhold an update, and cannot make QuickRust
+install anything the release key did not sign. A release key that leaks is contained by
+its certificate's expiry and environment, and replaced by certifying another.
+
+What this does not protect against: a manifest that is genuine and old. Someone who
+controls the registry can serve an earlier signed manifest, and QuickRust then sees no
+newer release. It never installs an older one than it is.
+
+The package managers have their own chain. A copy installed with apt or dnf is verified
+by them against the MachineFabric repository's OpenPGP key, and a Homebrew formula carries
+the archive's SHA-256.
+
 ## QuickRust's artifact cache
 
 In fast mode QuickRust restores compiler outputs instead of compiling when the same unit was

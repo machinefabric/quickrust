@@ -4,19 +4,19 @@ This guide shows you how to build with QuickRust in a CI job, keep a report of e
 
 ## Install QuickRust in the job
 
+Pin the release a job builds with, and check the archive against the SHA-256 the release manifest (`https://release.machinefabric.com/quickrust/manifest`) gives for it:
+
 ```bash
-curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
+version=0.150.0
+sha256=<the manifest's sha256 of qrust-$version-linux-x86_64.tar.gz>
+curl -fLO "https://release.machinefabric.com/quickrust/release/$version/qrust-$version-linux-x86_64.tar.gz"
+echo "$sha256  qrust-$version-linux-x86_64.tar.gz" | sha256sum -c
+tar xzf "qrust-$version-linux-x86_64.tar.gz"
+quickrust/qrust setup --no-modify-path
 export PATH="$HOME/.qrust/bin:$PATH"
 ```
 
-On GitHub Actions, put the directory on `PATH` for the following steps:
-
-```yaml
-- name: QuickRust
-  run: |
-    curl -fsSL https://github.com/machinefabric/quickrust/releases/latest/download/install.sh | sh -s -- --no-modify-path
-    echo "$HOME/.qrust/bin" >> "$GITHUB_PATH"
-```
+On GitHub Actions, put the directory on `PATH` for the following steps with `echo "$HOME/.qrust/bin" >> "$GITHUB_PATH"` instead of the `export`. A job that adds the MachineFabric package repository can `apt install quickrust` (or `brew install machinefabric/tap/quickrust`) and run `qrust setup --no-modify-path`: see [How to install QuickRust](install.md#install-a-release).
 
 Setup installs stable Rust; a `rust-toolchain.toml` in the repository makes the first build install the toolchain it names instead. To avoid downloading toolchains on every run, cache `~/.qrust/toolchains` between runs (for example with `actions/cache`, keyed by the toolchain file).
 

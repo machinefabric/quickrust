@@ -4,13 +4,15 @@ Where QuickRust runs and is tested, what differs between platforms, and what can
 
 ## Support
 
-| Platform | Release archive | Tested |
+| Platform | Release archive (`<platform>` in its name) | Tested |
 |---|---|---|
-| Linux x86_64 | `qrust-x86_64-unknown-linux-musl.tar.gz` (static) | every test suite in CI (`ubuntu-latest`), and with QuickRust built by Rust 1.80, its minimum; by hand on Debian 12, also as root |
-| Linux aarch64 | `qrust-aarch64-unknown-linux-musl.tar.gz` (static) | built by the release workflow; the test suites are not run |
-| macOS aarch64 | `qrust-aarch64-apple-darwin.tar.gz` | every test suite in CI (`macos-latest`) |
-| macOS x86_64 | `qrust-x86_64-apple-darwin.tar.gz` | built by the release workflow; the test suites are not run |
-| Windows x86_64 | `qrust-x86_64-pc-windows-msvc.tar.gz` | a CI run sets QuickRust up from nothing (stable Rust from the dist server, the compiler driver), then creates, builds, runs and tests a project; the integration suites are Unix-only |
+| Linux x86_64 | `linux-x86_64` (static, musl) | every test suite, on Ubuntu; by hand on Debian 12, also as root |
+| Linux aarch64 | `linux-arm64` (static, musl) | built for every release; the test suites are not run |
+| macOS aarch64 | `darwin-arm64` | every test suite |
+| macOS x86_64 | `darwin-x86_64` | built for every release; the test suites are not run |
+| Windows x86_64 | `windows-x86_64` | a run sets QuickRust up from nothing (stable Rust from the dist server, the compiler driver), then creates, builds, runs and tests a project; the integration suites are Unix-only |
+
+An archive is `qrust-<version>-<platform>.tar.gz` (`.zip` for Windows), and unpacks to one directory, `quickrust/`, holding `qrust`, `qrust-rustc-wrapper`, the licences and the README. The release manifest (`https://release.machinefabric.com/quickrust/manifest`) lists, for every release, the platforms it was built for: a platform it does not list has no build of that release.
 
 QuickRust builds with Rust 1.80 or newer. The toolchains it installs are for the host it runs on; on Linux, `-gnu` or `-musl` after the system's C library, whatever QuickRust itself was built against.
 

@@ -1,0 +1,19 @@
+[package]
+name = "quickrust-dist"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+publish = false
+description = "Builds QuickRust's release archives: the two programs of a platform, with the licences and the README"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+flate2 = "1"
+serde_json = "1"
+tar = { version = "0.4", default-features = false }
+toml = "0.8"
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
+
+# The archives are checked against the program that installs them.
+[dev-dependencies]
+quickrust = { path = "../.." }
