@@ -1332,6 +1332,10 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     let (exe, _) = resolve::self_identity();
     println!("QuickRust {}", env!("CARGO_PKG_VERSION"));
     println!("  qrust binary       {}", exe.display());
+    match crate::release::identity() {
+        Some(line) => println!("  release line       the {} channel of {} ({} signing roots, {})", line.channel, line.registry, line.trust.roots.len(), line.trust.environment),
+        None => println!("  release line       none: built from source, so `qrust self update` has nothing to update from"),
+    }
     let (setup, first) = crate::setup::status();
     match &setup {
         Some(r) => println!("  set up             {} (QuickRust {}); its bin is {} on PATH", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"), if first { "first" } else { "NOT first" }),
@@ -1487,7 +1491,8 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     Ok(0)
 }
 
-/// `qrust self uninstall`: QuickRust removed from this machine.
+/// `qrust self update` and `qrust self uninstall`: QuickRust replaced by its latest release, or
+/// removed from this machine.
 fn cmd_self(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let action = a.positional();
