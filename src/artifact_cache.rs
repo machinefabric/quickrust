@@ -2,9 +2,10 @@
 //!
 //! The rustc wrapper looks a compilation up before running rustc. On a hit it restores the
 //! outputs into Cargo's output directory and replays rustc's stderr, so Cargo sees exactly
-//! what a real compilation would have produced, minus the time. This first version caches
-//! only units whose sources cannot change under a name (registry and git dependencies) and
-//! that read nothing a build script produced outside `OUT_DIR`:
+//! what a real compilation would have produced, minus the time. Dependencies (registry and git
+//! sources, which cannot change under a name) are shared by every checkout; workspace units,
+//! whose debug information names their checkout, only within it, and keyed by the content of
+//! every file they read:
 //!
 //! - **key, level 1**: cache format version; rustc identity (and QuickRust's compiler driver, when
 //!   it compiles the unit); every argument, with output and search paths removed and each

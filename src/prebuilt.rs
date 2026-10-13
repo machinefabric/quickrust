@@ -13,6 +13,10 @@
 //! - A build alone: QuickRust's verdict is the answer and Cargo is not started. The toolchain's Cargo
 //!   is in the key, and the files that choose the toolchain are stamped. A test checks QuickRust's
 //!   verdict against Cargo's after every kind of change.
+//!
+//! The stamp keeps the build's stored output beside it: a run found up to date repeats that
+//! build's warnings line, and holds its output, so `qrust warnings` / `qrust log` show what
+//! the line counts.
 
 use crate::util;
 use serde_json::{json, Value};
@@ -21,7 +25,7 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FORMAT: &str = "qrust-prebuilt-1";
+const FORMAT: &str = "qrust-prebuilt-2";
 /// Stamps kept per workspace: one per distinct command line, the least recently written go.
 const KEEP: usize = 32;
 
@@ -44,6 +48,20 @@ fn stamp_path(store_dir: &Path, key: &str) -> PathBuf {
     store_dir.join("prebuilt").join(format!("{}.json", key))
 }
 
+/// The stored output of the build a stamp was taken from (`ui::OUTPUT_FILE`'s format).
+fn output_path(stamp: &Path) -> PathBuf {
+    stamp.with_extension("output.jsonl")
+}
+
+/// A build phase known fresh: what QuickRust summarised for the build it is fresh since.
+#[derive(Debug, PartialEq)]
+pub struct Fresh {
+    pub units: u64,
+    pub warnings_line: Option<String>,
+    /// That build's stored output.
+    pub output: PathBuf,
+}
+
 /// `[path, bytes, mtime]`, or `[path, null, null]` for a file that does not exist.
 fn file_state(p: &Path) -> Value {
     match fs::metadata(p) {
@@ -53,9 +71,9 @@ fn file_state(p: &Path) -> Value {
 }
 
 /// The stamp of the build phase with this key, when every file it names is as it was recorded.
-/// Returns the stamp's summary: units and the warnings line QuickRust printed for that build.
-pub fn fresh(store_dir: &Path, key: &str) -> Option<(u64, Option<String>)> {
-    let stamp = util::read_json(&stamp_path(store_dir, key))?;
+pub fn fresh(store_dir: &Path, key: &str) -> Option<Fresh> {
+    let path = stamp_path(store_dir, key);
+    let stamp = util::read_json(&path)?;
     if stamp["format"] != FORMAT {
         return None;
     }
@@ -64,7 +82,12 @@ pub fn fresh(store_dir: &Path, key: &str) -> Option<(u64, Option<String>)> {
             return None;
         }
     }
-    Some((stamp["units"].as_u64()?, stamp["warnings_line"].as_str().map(str::to_string)))
+    let output = output_path(&path);
+    // A stamp without its output cannot stand for its build.
+    if !output.is_file() {
+        return None;
+    }
+    Some(Fresh { units: stamp["units"].as_u64()?, warnings_line: stamp["warnings_line"].as_str().map(str::to_string), output })
 }
 
 /// Local source files a unit read, from rustc's dep-info next to its outputs. Its paths are
@@ -140,11 +163,13 @@ pub struct Built<'a> {
     /// What QuickRust summarised: units, and the warnings line.
     pub units: u64,
     pub warnings_line: Option<&'a str>,
+    /// The build's output as QuickRust stored it for the run.
+    pub output: &'a [u8],
 }
 
 /// Records the stamp of a successful build from its Cargo messages.
 pub fn record(store_dir: &Path, key: &str, built: &Built) {
-    let Built { messages, cwd, ws_root, cargo, units, warnings_line } = *built;
+    let Built { messages, cwd, ws_root, cargo, units, warnings_line, output } = *built;
     let immutable: Vec<PathBuf> = vec![util::cargo_home().join("registry"), util::cargo_home().join("git")];
     let base = ws_root.unwrap_or(cwd);
     let mut files: BTreeSet<PathBuf> = BTreeSet::new();
@@ -189,15 +214,18 @@ pub fn record(store_dir: &Path, key: &str, built: &Built) {
     let files: Vec<Value> = files.iter().filter(|f| !immutable.iter().any(|i| f.starts_with(i))).map(|f| file_state(f)).collect();
     let stamp = json!({ "format": FORMAT, "units": units, "warnings_line": warnings_line, "files": files });
     let dir = store_dir.join("prebuilt");
-    if util::create_private_dir(&dir).and_then(|_| util::write_json_fast(&stamp_path(store_dir, key), &stamp)).is_err() {
+    let path = stamp_path(store_dir, key);
+    // The output first: the stamp, written last, is what makes the pair count.
+    if util::create_private_dir(&dir).and_then(|_| util::write_atomic_fast(&output_path(&path), output)).and_then(|_| util::write_json_fast(&path, &stamp)).is_err() {
         return;
     }
-    // A stamp per distinct command line: keep the most recent few.
-    let mut stamps: Vec<(u64, PathBuf)> = fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|e| Some((util::mtime_ns(&e.metadata().ok()?), e.path()))).collect();
+    // A stamp per distinct command line: keep the most recent few, each with its output.
+    let mut stamps: Vec<(u64, PathBuf)> = fs::read_dir(&dir).into_iter().flatten().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).filter_map(|e| Some((util::mtime_ns(&e.metadata().ok()?), e.path()))).collect();
     if stamps.len() > KEEP {
         stamps.sort();
         for (_, p) in &stamps[..stamps.len() - KEEP] {
             let _ = fs::remove_file(p);
+            let _ = fs::remove_file(output_path(p));
         }
     }
 }
@@ -222,10 +250,17 @@ mod tests {
         let exe = util::path_str(&ws.join("target/debug/deps/app-0123"));
         let messages = vec![json!({ "reason": "compiler-artifact", "filenames": [exe], "executable": exe, "manifest_path": util::path_str(&ws.join("Cargo.toml")) })];
         let cargo = ws.join("bin/cargo");
-        let built = |warnings_line| Built { messages: &messages, cwd: &ws, ws_root: Some(&ws), cargo: &cargo, units: 3, warnings_line };
+        let output = b"{\"s\":\"out\",\"l\":\"a warning\"}\n";
+        let built = |warnings_line| Built { messages: &messages, cwd: &ws, ws_root: Some(&ws), cargo: &cargo, units: 3, warnings_line, output };
         record(&store, "k", &built(Some("1 warning in p: unused_variables x1")));
-        assert_eq!(fresh(&store, "k"), Some((3, Some("1 warning in p: unused_variables x1".to_string()))));
+        let known = fresh(&store, "k").expect("fresh");
+        assert_eq!((known.units, known.warnings_line.as_deref()), (3, Some("1 warning in p: unused_variables x1")));
+        assert_eq!(fs::read(&known.output).unwrap(), output, "the build's output is kept with its stamp");
         assert_eq!(fresh(&store, "another command"), None);
+        // A stamp whose output is gone cannot stand for its build.
+        fs::remove_file(&known.output).unwrap();
+        assert_eq!(fresh(&store, "k"), None);
+        record(&store, "k", &built(None));
 
         let edit = |p: &Path, text: &str| {
             std::thread::sleep(std::time::Duration::from_millis(5));

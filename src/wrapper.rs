@@ -186,8 +186,8 @@ pub fn main() {
             bootstrap = true;
         }
     }
-    // Relinking (fast mode, with QuickRust's driver): a binary or test executable is compiled apart
-    // from linking (rustc's `-Zno-link`, then `-Zlink-only`), its objects kept. When a later
+    // Relinking (fast mode, with QuickRust's driver): a binary or test executable's objects are
+    // kept when it is compiled. When a later
     // build finds it compiled from the same sources against the same dependency interfaces (an
     // edit below it was cut off, and only what it links changed), it is only linked again: for
     // a large binary a fraction of compiling it (ripgrep's: ~45 ms of ~350 ms). Not for a unit

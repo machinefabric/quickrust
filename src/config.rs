@@ -2,7 +2,7 @@
 //! interpreted here for execution semantics (COMP-050).
 //!
 //! Precedence: built-in defaults < `$QRUST_HOME/config.toml`
-//! < repository `.qrust/config.toml` < `QRUST_*` environment < flags.
+//! < repository `.qrust/config.toml` < `QRUST_*` environment.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -257,15 +257,6 @@ impl Config {
         Ok(c)
     }
 
-    /// Applies an explicit management flag (`--set section.key=value`), the highest precedence.
-    pub fn set_flag(&mut self, assignment: &str) -> Result<(), String> {
-        let (name, raw) = assignment.split_once('=').ok_or_else(|| format!("expected KEY=VALUE, got {:?}", assignment))?;
-        let key = KEYS.iter().find(|k| k.name == name).ok_or_else(|| format!("unknown configuration key `{}`", name))?;
-        let v = parse_scalar(key, raw, "flag")?;
-        self.settings.insert(key.name, Setting { value: v, origin: "flag".into() });
-        Ok(())
-    }
-
     pub fn str(&self, key: &str) -> &str {
         match self.settings.get(key).map(|s| &s.value) {
             Some(Val::Str(s)) => s,
@@ -340,8 +331,6 @@ mod tests {
         assert_eq!((c.str("cache.max-size"), c.str("cache.min-free")), ((2u64 << 30).to_string().as_str(), "7%"));
         assert_eq!(frontend_threads(c.str("fast.frontend-threads")), Some(4));
         assert!(c.origin("cache.provider").ends_with("config.toml"));
-        c.set_flag("cache.provider=none").unwrap();
-        assert_eq!(c.origin("cache.provider"), "flag");
         fs::remove_dir_all(&dir).ok();
     }
 }

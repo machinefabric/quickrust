@@ -400,10 +400,10 @@ impl Phase {
         self.clear();
     }
 
-    /// A line printed above the status line.
-    pub fn line(&mut self, text: &str) {
+    /// A note printed above the status line.
+    pub fn note(&mut self, text: &str) {
         self.clear();
-        let _ = writeln!(std::io::stderr(), "{}", text);
+        let _ = writeln!(std::io::stderr(), "{}", tagged(Tag::Note, text, self.color));
     }
 }
 

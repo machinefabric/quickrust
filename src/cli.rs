@@ -56,7 +56,7 @@ ANALYSIS
     qrust compare <BASE> <CANDIDATE> [--format text|json]
 
 MEASUREMENT
-    qrust benchmark --scenario NAME [--reps N] [--warmups N] [--edit FILE] [--allow-mutation]
+    qrust benchmark [--scenario NAME] [--reps N] [--warmups N] [--edit FILE] [--allow-mutation]
                     [--timeout DURATION] [--format text|json] [-- <cargo args>]
     qrust benchmark --list
     qrust experiment [codegen|linker] [--name NAME] [--set KEY=VALUE]... [--env KEY=VALUE]...
@@ -268,6 +268,17 @@ pub fn main() {
     }
     let command = args.first().map(|a| util::lossy(a)).unwrap_or_default();
     let rest = if args.is_empty() { &args[..] } else { &args[1..] };
+    // Commands that only read and print end quietly when what reads their output stops reading
+    // (`qrust runs | head`), as other command-line tools do. Rust ignores SIGPIPE, which would
+    // make the next write fail, and `println!` panic. Commands that change anything keep their
+    // own handling of an interruption.
+    #[cfg(unix)]
+    if matches!(command.as_str(), "" | "help" | "--help" | "-h" | "version" | "--version" | "-V" | "warnings" | "errors" | "log" | "analyze" | "report" | "runs" | "inspect" | "path" | "compare" | "policy") {
+        // SAFETY: restores the default disposition before any thread is started.
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+        }
+    }
     let result: CmdResult = match command.as_str() {
         "" | "help" | "--help" | "-h" => {
             print!("{}", HELP);
@@ -1147,7 +1158,7 @@ fn cmd_policy(raw: &[OsString]) -> CmdResult {
         ctx.print_json(&json!({ "workload": workload, "repository_config": ctx.cfg.repo_config.as_ref().map(|p| path_str(p)), "user_config": path_str(&util::qrust_home().join("config.toml")), "settings": list }));
         return Ok(0);
     }
-    println!("Effective QuickRust configuration (precedence: default < user < repository < environment < flag)");
+    println!("Effective QuickRust configuration (precedence: default < user < repository < environment)");
     println!("  user config        {}", util::qrust_home().join("config.toml").display());
     println!("  repository config  {}", ctx.cfg.repo_config.as_ref().map(|p| path_str(p)).unwrap_or_else(|| "none found".into()));
     println!("  workload class     {}  (decides which incremental.* policy applies)", workload);
@@ -1219,7 +1230,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
                 println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
             }
         }
-        None => println!("QuickRust's cache: not counted yet, {}; `qrust gc --dry-run` counts it", qrust_cache.display()),
+        None => println!("QuickRust's cache: not counted yet, {}; it is counted in the background after the next command, or now by `qrust gc`", qrust_cache.display()),
     }
     if let (Some(m), Some(f), Some(free)) = (hc["max_bytes"].as_u64(), hc["min_free"].as_u64(), hc["free"].as_u64()) {
         // A size setting reads back in bytes; `auto` and a share of the disk as written.

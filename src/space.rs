@@ -972,7 +972,13 @@ mod tests {
         let held = util::ExclusiveLock::acquire(&c.join("gc.lock")).unwrap();
         assert!(collecting_in(&c));
         drop(held);
-        assert!(!collecting_in(&c));
+        // A process another test starts at this moment holds the lock's file description from
+        // its fork until its exec: released within moments, not at once.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while collecting_in(&c) {
+            assert!(std::time::Instant::now() < deadline, "the lock outlives its holder");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     #[cfg(unix)]

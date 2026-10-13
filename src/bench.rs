@@ -242,14 +242,12 @@ fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario
             }
         })
     });
-    let started = Instant::now();
     let outcome = session::execute(&spec);
     done.store(true, Ordering::SeqCst);
     if let Some(w) = watchdog {
         let _ = w.join();
     }
     let outcome = outcome?;
-    let elapsed = started.elapsed().as_nanos() as u64;
     let after = discover::source_snapshot(root, skip);
     let mut invalid: Option<String> = None;
     if timed_out.load(Ordering::SeqCst) {
@@ -271,7 +269,9 @@ fn one_run(opts: &Options, args: &[OsString], env: &[(String, String)], scenario
     }
     Ok(RunResult {
         record: json!({
-            "run_id": outcome.session_id, "phase": scenario["phase"], "iteration": scenario["iteration"], "wall_time_ns": elapsed,
+            // The build's wall time, as the run measured it: the sample the distribution is made of
+            // (QuickRust's analysis of the run, which a benchmark forces right away, is not part of it).
+            "run_id": outcome.session_id, "phase": scenario["phase"], "iteration": scenario["iteration"], "wall_time_ns": summary.as_ref().map(|s| s["metrics"]["wall_time_ns"].clone()),
             "exit_code": outcome.exit.code, "signal": outcome.exit.signal, "valid": invalid.is_none(), "invalid_reason": invalid,
         }),
         summary,
