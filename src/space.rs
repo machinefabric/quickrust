@@ -361,7 +361,14 @@ pub fn scan(cache: &Path, now: u64) -> Scan {
     };
     // Workspaces' build directories, with their records and locks.
     let builds = cache.join("builds");
-    for p in entries(&builds) {
+    let in_builds = entries(&builds);
+    // The directories a running process holds (`builddir::hold`), by name.
+    let held: std::collections::HashSet<String> = in_builds
+        .iter()
+        .filter(|p| !p.is_dir())
+        .filter_map(|p| crate::builddir::hold_of(&util::lossy(p.file_name().unwrap_or_default())).filter(|(_, pid)| crate::proc::pid_alive(*pid)).map(|(dir, _)| dir.to_string()))
+        .collect();
+    for p in in_builds {
         let name = util::lossy(p.file_name().unwrap_or_default());
         if p.is_dir() {
             let companions = vec![p.with_file_name(format!("{}.json", name)), p.with_file_name(format!("{}.lock", name))];
@@ -370,7 +377,13 @@ pub fn scan(cache: &Path, now: u64) -> Scan {
                 Some((root, _, used)) => (used, Some(format!("its workspace {} is gone", root.display()))),
                 None => (mtime(&p), Some("it has no record of its workspace".to_string())),
             };
+            // Held is in use, now: whatever its record says of when it was last built in.
+            let last_used = if held.contains(&name) { now } else { last_used };
             add(Kind::Build, p, companions, last_used, orphan);
+        } else if let Some((_, pid)) = crate::builddir::hold_of(&name) {
+            if !crate::proc::pid_alive(pid) {
+                add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some(format!("the process that held the build directory ({}) is gone", pid)));
+            }
         } else if let Some(stem) = name.strip_suffix(".json").or_else(|| name.strip_suffix(".lock")) {
             if !builds.join(stem).exists() {
                 add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the build directory it belonged to is gone".into()));
@@ -866,6 +879,43 @@ mod tests {
         assert!(fresh.exists() && done.skipped_in_use == 1);
         assert!(done.after < done.before);
         assert!(usage(&c).is_some() && recent(&c, 5).len() == 2);
+    }
+
+    /// A process id that is no process: one that ran and was waited for.
+    fn ended_process() -> u32 {
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        pid
+    }
+
+    #[test]
+    fn a_held_build_directory_stays_while_its_holder_runs_and_no_longer() {
+        let c = cache();
+        let (a, b) = (workspace(&c, "a"), workspace(&c, "b"));
+        let held = build_dir(&c, "a-1", &a, 9 * 3600, 400_000);
+        let idle = build_dir(&c, "b-1", &b, 5 * 3600, 400_000);
+        // Held by this process, and by one that has ended: the first is what counts.
+        crate::builddir::hold(&held, std::process::id()).unwrap();
+        let gone = ended_process();
+        crate::builddir::hold(&held, gone).unwrap();
+        let (mine, theirs) = (held.with_file_name(format!("a-1.hold-{}", std::process::id())), held.with_file_name(format!("a-1.hold-{}", gone)));
+        assert!(mine.is_file() && theirs.is_file());
+        age(&theirs, 3600);
+        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let done = collect(&c, None, &tight, None, false, None).unwrap();
+        // The older of the two stays, held; the other goes; and so does the record of a holder
+        // that is gone.
+        assert!(held.exists() && !idle.exists(), "{:?}", done.removed);
+        assert!(mine.is_file() && !theirs.exists());
+        assert_eq!(done.skipped_in_use, 1);
+
+        // The holder ends (here: its record is of a process that has): the directory is collected.
+        fs::remove_file(&mine).unwrap();
+        crate::builddir::hold(&held, gone).unwrap();
+        age(&theirs, 3600);
+        collect(&c, None, &tight, None, false, None).unwrap();
+        assert!(!held.exists() && !theirs.exists(), "a hold outlived its holder");
     }
 
     #[test]
