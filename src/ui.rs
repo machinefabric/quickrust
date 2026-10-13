@@ -106,19 +106,24 @@ pub fn tests_done(t: &crate::relay::Totals, exit: ExitInfo, ns: u64) {
     let r = Renderer::new();
     let dot = r.paint("2", " · ");
     let counts: Vec<String> = [(t.failed, "failed"), (t.passed, "passed"), (t.ignored, "ignored"), (t.measured, "measured"), (t.filtered, "filtered out")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
+    // The first count leads, in the colour of the outcome: `3 passed · 1 ignored · 0.12s`.
+    let lead = |code: &str, parts: &[String]| match parts.split_first() {
+        Some((first, rest)) => std::iter::once(r.paint(code, first)).chain(rest.iter().cloned()).collect::<Vec<_>>().join(&dot),
+        None => String::new(),
+    };
     let line = if exit.signal.is_some() {
-        format!("{} after {}", r.paint("1;33", "■ Interrupted"), human_dur(ns))
+        format!("{} after {}", r.paint("1;33", "Interrupted"), human_dur(ns))
     } else if t.programs == 0 {
         // Programs that are not libtest's (a custom harness): their own output says it all.
         if exit.success() {
             return;
         }
-        format!("{} after {}", r.paint("1;31", "✗ Tests failed"), human_dur(ns))
+        format!("{} after {}", r.paint("1;31", "Tests failed"), human_dur(ns))
     } else if exit.success() {
-        format!("{} {}{}{}", r.paint("1;32", "✓"), counts.join(&dot), dot, human_dur(ns))
+        format!("{}{}{}", lead("1;32", &counts), dot, human_dur(ns))
     } else {
-        let what = if t.failed > 0 { counts.join(&dot) } else { [vec!["a test program failed".to_string()], counts].concat().join(&dot) };
-        format!("{} {}{}{}", r.paint("1;31", "✗"), what, dot, human_dur(ns))
+        let what = if t.failed > 0 { counts } else { [vec!["A test program failed".to_string()], counts].concat() };
+        format!("{}{}{}", lead("1;31", &what), dot, human_dur(ns))
     };
     let mut err = std::io::stderr();
     let _ = writeln!(err, "{}", line);
@@ -288,17 +293,17 @@ impl Phase {
         self.started.elapsed().as_nanos() as u64
     }
 
-    /// The result line: `✓ text · 1.24s` (or `✗` when `ok` is false).
+    /// The result line: `text · 1.24s`; a failure is an error, `error: text · 1.24s`.
     pub fn finish(mut self, ok: bool, text: &str) {
         self.clear();
-        let mark = if ok { self.paint("1;32", "✓") } else { self.paint("1;31", "✗") };
-        let _ = writeln!(std::io::stderr(), "{} {}{}{}", mark, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
+        let head = if ok { String::new() } else { format!("{} ", self.paint("1;31", "error:")) };
+        let _ = writeln!(std::io::stderr(), "{}{}{}{}", head, text, self.paint("2", " · "), human_dur(self.elapsed_ns()));
     }
 
-    /// The result line of something done at once: `✓ text`, no time.
+    /// The result line of something done at once: `text`, no time.
     pub fn done(mut self, text: &str) {
         self.clear();
-        let _ = writeln!(std::io::stderr(), "{} {}", self.paint("1;32", "✓"), text);
+        let _ = writeln!(std::io::stderr(), "{}", text);
     }
 
     /// Takes the status line off the screen (output of something else follows).
@@ -501,7 +506,7 @@ pub fn notice_driver_unavailable(why: &str) {
 pub fn up_to_date(units: u64, warnings_line: Option<&str>) {
     let r = Renderer::new();
     let mut err = std::io::stderr().lock();
-    let _ = writeln!(err, "{}{}{} fresh", r.paint("1;32", "✓ Up to date"), r.paint("2", " · "), units);
+    let _ = writeln!(err, "{}{}{} fresh", r.paint("1;32", "Up to date"), r.paint("2", " · "), units);
     if let Some(w) = warnings_line {
         let _ = writeln!(err, "{}", w);
     }
@@ -849,7 +854,7 @@ impl Renderer {
                 return;
             }
             if l.in_features {
-                let item = t.strip_prefix("+ ").map(|f| format!("+{}", f)).or_else(|| t.strip_prefix("- ").map(|f| format!("−{}", f)));
+                let item = t.strip_prefix("+ ").map(|f| format!("+{}", f)).or_else(|| t.strip_prefix("- ").map(|f| format!("-{}", f)));
                 if let Some(item) = item.filter(|i| i.len() > 1 && !i.contains(' ')) {
                     l.features.push(item);
                     return;
@@ -861,11 +866,12 @@ impl Renderer {
         }
         self.flush_features(err);
         if let Some(done) = self.activity.observe(&classified) {
-            let mark = self.paint("1;36", "↓");
-            self.print_above(err, &format!("{} Downloaded {}", mark, done));
+            let text = format!("{} {}", self.paint("1;36", "Downloaded"), done);
+            self.print_above(err, &text);
             return;
         }
-        let paint_mark = |s: &Self, code: &str, m: &str| s.paint(code, m);
+        // What happened to a dependency, in a column of its own: `updated    serde …`.
+        let paint_word = |s: &Self, code: &str, w: &str| s.paint(code, &format!("{:<10}", w));
         let out: Option<String> = match classified {
             Line::Progress { verb: v @ ("Building" | "Downloading" | "Fetch"), .. } => {
                 let _ = v;
@@ -885,11 +891,11 @@ impl Renderer {
                 let (what, table) = rest.split_once(" to ").unwrap_or((rest, ""));
                 let (name, req) = what.split_once(' ').unwrap_or((what, ""));
                 let req = req.strip_prefix('v').filter(|r| r.bytes().next().is_some_and(|c| c.is_ascii_digit())).unwrap_or(req);
-                Some(format!("{} {:<24} {} → {}", paint_mark(self, "1;32", "+"), name, req, table))
+                Some(format!("{} {:<24} {} to {}", paint_word(self, "1;32", "added"), name, req, table))
             }
             Line::Status { verb: "Removing", rest } if rest.contains(" from ") => {
                 let (name, table) = rest.split_once(" from ").unwrap_or((rest, ""));
-                Some(format!("{} {} ← {}", paint_mark(self, "1;31", "−"), name, table))
+                Some(format!("{} {:<24} from {}", paint_word(self, "1;31", "removed"), name, table))
             }
             // The lockfile: listed for `update`, one line at the end of a manifest edit.
             Line::Status { verb: v @ ("Updating" | "Downgrading" | "Adding" | "Removing"), rest } => {
@@ -899,11 +905,11 @@ impl Renderer {
                     _ => package(rest).map(|(n, ver)| (n.to_string(), ver.to_string())),
                 };
                 let Some((name, what)) = shown else { return self.print_above(err, line) };
-                let (mark, code) = match v {
-                    "Updating" => ("↑", "1;32"),
-                    "Downgrading" => ("↓", "1;33"),
-                    "Adding" => ("+", "1;32"),
-                    _ => ("−", "1;31"),
+                let (word, mark, code) = match v {
+                    "Updating" => ("updated", "", "1;32"),
+                    "Downgrading" => ("downgraded", "", "1;33"),
+                    "Adding" => ("added", "+", "1;32"),
+                    _ => ("removed", "-", "1;31"),
                 };
                 if let Some(l) = self.lines.as_mut() {
                     match v {
@@ -917,7 +923,7 @@ impl Renderer {
                         return;
                     }
                 }
-                Some(format!("{} {:<24} {}", paint_mark(self, code, mark), name, what))
+                Some(format!("{} {:<24} {}", paint_word(self, code, word), name, what))
             }
             Line::Status { verb: "Unchanged", rest } => Some(self.paint("2", &format!("  = {}", rest))),
             Line::Status { verb: "Creating" | "Removed" | "Packaged" | "Uploaded" | "Published" | "Vendored", rest } => {
@@ -935,7 +941,7 @@ impl Renderer {
                     Some((n, more)) if n.parse::<u64>().is_ok() => format!("{} files{}{}", n, self.paint("2", " · "), more),
                     _ => rest,
                 };
-                Some(format!("{} {} {}", paint_mark(self, "1;32", "✓"), verb, rest))
+                Some(format!("{} {}", self.paint("1;32", verb), rest))
             }
             Line::Status { verb: v @ ("Packaging" | "Verifying" | "Uploading" | "Waiting" | "Vendoring" | "Archiving" | "Compiling" | "Checking" | "Documenting" | "Finished" | "Fresh" | "Blocking" | "Downloaded" | "Generated"), rest } => {
                 if let Some(l) = self.lines.as_mut() {
@@ -962,8 +968,8 @@ impl Renderer {
         }
         let classified = crate::cargo_lines::classify(&plain);
         if let Some(done) = self.activity.observe(&classified) {
-            let mark = self.paint("1;36", "↓");
-            self.print_above(err, &format!("{} Downloaded {}", mark, done));
+            let text = format!("{} {}", self.paint("1;36", "Downloaded"), done);
+            self.print_above(err, &text);
             return;
         }
         match classified {
@@ -1006,22 +1012,23 @@ impl Renderer {
             let _ = writeln!(err, "{}", self.paint("2", &format!("    locked {}", l.locked.join(" "))));
         }
         let s = if exit.signal.is_some() {
-            format!("{} after {}", self.paint("1;33", "■ Interrupted"), human_dur(wall_ns))
+            format!("{} after {}", self.paint("1;33", "Interrupted"), human_dur(wall_ns))
         } else if !exit.success() {
-            format!("{} after {}", self.paint("1;31", &format!("✗ cargo {} failed", l.command)), human_dur(wall_ns))
+            format!("{} after {}", self.paint("1;31", &format!("cargo {} failed", l.command)), human_dur(wall_ns))
         } else if l.result || matches!(l.command.as_str(), "tree" | "metadata") {
             // The command's result says it (`Removed …`), or is what it printed.
             return;
         } else {
             let changes: Vec<String> = [(l.updated, "updated"), (l.downgraded, "downgraded"), (l.added, "added"), (l.removed, "removed")].iter().filter(|(n, _)| *n > 0).map(|(n, w)| format!("{} {}", n, w)).collect();
-            let what = match l.command.as_str() {
+            let head = match l.command.as_str() {
                 "update" | "generate-lockfile" if changes.is_empty() => "Lockfile up to date".to_string(),
-                "update" | "generate-lockfile" => format!("Lockfile updated{}{}", dot, changes.join(&dot)),
+                "update" | "generate-lockfile" => "Lockfile updated".to_string(),
                 "add" | "remove" | "rm" => "Manifest updated".to_string(),
                 "fetch" => "Fetched".to_string(),
                 other => format!("cargo {}", other),
             };
-            format!("{} {}{}{}", self.paint("1;32", "✓"), what, dot, human_dur(wall_ns))
+            let parts: Vec<String> = std::iter::once(self.paint("1;32", &head)).chain(changes.into_iter().filter(|_| matches!(l.command.as_str(), "update" | "generate-lockfile"))).chain(std::iter::once(human_dur(wall_ns))).collect();
+            parts.join(&dot)
         };
         let _ = writeln!(err, "{}", s);
         let _ = err.flush();
@@ -1036,7 +1043,7 @@ impl Renderer {
         if exit.success() && self.step {
             // Part of a command that reports the result.
         } else if exit.success() {
-            let mut s = format!("{} {}", self.paint("1;32", &format!("✓ {}", self.done.word())), human_dur(wall_ns));
+            let mut s = format!("{} {}", self.paint("1;32", self.done.word()), human_dur(wall_ns));
             for (n, what) in [(self.compiled, "compiled"), (self.fresh, "fresh"), (cache_hits, "restored from QuickRust's cache")] {
                 if n > 0 {
                     s.push_str(&format!("{}{} {}", dot, n, what));
@@ -1047,9 +1054,9 @@ impl Renderer {
                 let _ = writeln!(err, "  {} {}", self.paint("2", "docs"), g);
             }
         } else if exit.signal.is_some() {
-            let _ = writeln!(err, "{} after {}", self.paint("1;33", "■ Interrupted"), human_dur(wall_ns));
+            let _ = writeln!(err, "{} after {}", self.paint("1;33", "Interrupted"), human_dur(wall_ns));
         } else {
-            let mut s = format!("{} after {}", self.paint("1;31", "✗ Build failed"), human_dur(wall_ns));
+            let mut s = format!("{} after {}", self.paint("1;31", "Build failed"), human_dur(wall_ns));
             if self.errors > 0 {
                 s.push_str(&format!("{}{} error{} in {}", dot, self.errors, if self.errors == 1 { "" } else { "s" }, self.error_crates.join(", ")));
             }
@@ -1075,10 +1082,8 @@ impl Renderer {
             let shown: Vec<String> = lints.iter().take(3).map(|(k, n)| format!("{} ×{}", k, n)).collect();
             let more = if lints.len() > 3 { format!(", +{} more", lints.len() - 3) } else { String::new() };
             return Some(format!(
-                "{} {} warning{} in {}: {}{}{}`qrust warnings` to show them",
-                self.paint("1;33", "⚠"),
-                self.warning_total,
-                if self.warning_total == 1 { "" } else { "s" },
+                "{} in {}: {}{}{}`qrust warnings` to show them",
+                self.paint("1;33", &format!("{} warning{}", self.warning_total, if self.warning_total == 1 { "" } else { "s" })),
                 self.warning_crates.join(", "),
                 shown.join(", "),
                 more,
@@ -1216,29 +1221,29 @@ mod tests {
         let out = lines("update", &["    Updating crates.io index", "     Locking 3 packages to latest Rust 1.99.0 compatible versions", "    Updating serde v1.0.200 -> v1.0.229", "      Adding itoa v1.0.18", "    Removing autocfg v1.3.0"], 0);
         assert_eq!(
             out,
-            "↑ serde                    1.0.200 → 1.0.229\n+ itoa                     1.0.18\n− autocfg                  1.3.0\n✓ Lockfile updated · 1 updated · 1 added · 1 removed · 920ms\n"
+            "updated    serde                    1.0.200 → 1.0.229\nadded      itoa                     1.0.18\nremoved    autocfg                  1.3.0\nLockfile updated · 1 updated · 1 added · 1 removed · 920ms\n"
         );
-        assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "✓ Lockfile up to date · 920ms\n");
+        assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "Lockfile up to date · 920ms\n");
     }
 
     #[test]
     fn manifest_edits_and_their_features_read_as_one() {
         let out = lines("add", &["    Updating crates.io index", "      Adding serde v1.0.229 to dependencies", "             Features:", "             + derive", "             + std", "             - alloc", "    Updating crates.io index", "     Locking 7 packages to latest compatible versions"], 0);
-        assert_eq!(out, "+ serde                    1.0.229 → dependencies\n    features +derive +std −alloc\n✓ Manifest updated · 920ms\n");
+        assert_eq!(out, "added      serde                    1.0.229 to dependencies\n    features +derive +std -alloc\nManifest updated · 920ms\n");
         // What the edit locked is one line, at the end.
         let out = lines("add", &["      Adding greet =1.0.0 to dev-dependencies", "     Locking 2 packages to latest compatible versions", "      Adding greet v1.0.0", "      Adding itoa v1.0.18"], 0);
-        assert_eq!(out, "+ greet                    =1.0.0 → dev-dependencies\n    locked +greet 1.0.0 +itoa 1.0.18\n✓ Manifest updated · 920ms\n");
-        assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "− serde ← dependencies\n✓ Manifest updated · 920ms\n");
+        assert_eq!(out, "added      greet                    =1.0.0 to dev-dependencies\n    locked +greet 1.0.0 +itoa 1.0.18\nManifest updated · 920ms\n");
+        assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "removed    serde                    from dependencies\nManifest updated · 920ms\n");
     }
 
     #[test]
     fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
-        assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "✓ Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
-        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "✓ Removed 125 files · 75.8 MiB\n");
-        assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "✓ Packaged 4 files · 943 B (694 B compressed)\n");
+        assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "Created binary (application) `demo` package\nnote: see more `Cargo.toml` keys\n");
+        assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "Removed 125 files · 75.8 MiB\n");
+        assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "Packaged 4 files · 943 B (694 B compressed)\n");
         assert_eq!(cargo_sizes("1.5KiB, 3B (x) 10MiBs 2.0Gi"), "1.5 KiB, 3 B (x) 10MiBs 2.0Gi");
         let failed = lines("update", &["    Updating crates.io index", "error: failed to select a version for the requirement `serde = \"^9\"`", "location searched: crates.io index"], 101);
-        assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\n✗ cargo update failed after 920ms\n");
+        assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\ncargo update failed after 920ms\n");
     }
 
     #[test]
@@ -1254,9 +1259,9 @@ mod tests {
         ren.on_stderr(&mut sink, "  Downloaded 25 crates (4.4MiB) in 0.32s (largest was `encoding_rs` at 1.3MiB)");
         ren.on_stderr(&mut sink, "    Building [>         ] 0/54: memchr");
         assert_eq!(ren.activity.status(), None);
-        assert_eq!(String::from_utf8(sink).unwrap(), "↓ Downloaded 25 crates · 4.4 MiB · 0.32s\n");
+        assert_eq!(String::from_utf8(sink).unwrap(), "Downloaded 25 crates · 4.4 MiB · 0.32s\n");
         // Nor by a command that does not build.
-        assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "✓ Lockfile up to date · 920ms\n");
+        assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "Lockfile up to date · 920ms\n");
     }
 
     #[test]
@@ -1274,7 +1279,7 @@ mod tests {
         ren.on_stderr(&mut sink, "    Building [==>      ] 2/16: syn, quote");
         assert_eq!(ren.activity.progress, Some((2, 16)));
         let text = String::from_utf8(sink).unwrap();
-        assert_eq!(text, "↓ Downloaded 4 crates · 645.0 KiB · 0.16s\n");
+        assert_eq!(text, "Downloaded 4 crates · 645.0 KiB · 0.16s\n");
     }
 
     #[test]
@@ -1300,8 +1305,8 @@ mod tests {
         assert!(!text.contains("unused variable"), "warnings are not dumped: {}", text);
         assert!(text.contains("failed to run custom build command"), "unrecognised lines pass through: {}", text);
         assert!(!text.contains("could not compile"), "Cargo's tallies are replaced by the summary: {}", text);
-        assert!(text.contains("✗ Build failed after 1.20s · 1 error in app (bin) · first at src/main.rs:3:5"), "{}", text);
-        assert!(text.contains("⚠ 1 warning in app (bin): unused_variables ×1"), "{}", text);
+        assert!(text.contains("Build failed after 1.20s · 1 error in app (bin) · first at src/main.rs:3:5"), "{}", text);
+        assert!(text.contains("1 warning in app (bin): unused_variables ×1"), "{}", text);
     }
 
     #[test]
@@ -1312,9 +1317,9 @@ mod tests {
         ren.on_stdout(&mut sink, &json!({ "reason": "compiler-artifact", "fresh": true, "target": { "name": "dep", "kind": ["lib"] } }).to_string());
         ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 3);
         let text = String::from_utf8(sink).unwrap();
-        assert!(text.contains("✓ Built 4.21s · 1 compiled · 1 fresh · 3 restored from QuickRust's cache"), "{}", text);
+        assert!(text.contains("Built 4.21s · 1 compiled · 1 fresh · 3 restored from QuickRust's cache"), "{}", text);
         // What the command did: `cargo check` and Clippy build nothing to run.
-        for (command, says) in [("check", "✓ Checked "), ("clippy", "✓ Checked "), ("doc", "✓ Documented "), ("test", "✓ Built "), ("run", "✓ Built ")] {
+        for (command, says) in [("check", "Checked "), ("clippy", "Checked "), ("doc", "Documented "), ("test", "Built "), ("run", "Built ")] {
             let mut ren = Renderer { done: Done::of(command), ..r() };
             let mut sink: Vec<u8> = Vec::new();
             ren.summary(&mut sink, ExitInfo { code: Some(0), signal: None }, 4_210_000_000, 0);

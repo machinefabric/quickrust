@@ -539,15 +539,21 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         args = crate::ui::with_arg(args, crate::ui::message_format_arg());
     }
     // Cargo's progress (units done of all, crates left to download) for QuickRust's status line; and
-    // its colours for the lines QuickRust shows as they are, though it writes into a pipe.
-    let mut progress_env: Vec<(String, String)> = if render { vec![("CARGO_TERM_PROGRESS_WHEN".into(), "always".into()), ("CARGO_TERM_PROGRESS_WIDTH".into(), "1000".into())] } else { vec![] };
-    if rendering == Rendering::Lines && crate::ui::color() {
-        progress_env.push(("CARGO_TERM_COLOR".into(), "always".into()));
+    // its colours for the lines QuickRust shows as they are, though it writes into a pipe. Given
+    // as arguments, not environment: they are for this Cargo alone, not for what it runs (build
+    // scripts, nested Cargo, the second Cargo of a `BuildFirst` command and its program), which
+    // write to the terminal or pipes of their own.
+    if render {
+        let mut term = vec!["--config".to_string(), "term.progress.when=\"always\"".to_string(), "--config".to_string(), "term.progress.width=1000".to_string()];
+        if rendering == Rendering::Lines && crate::ui::color() {
+            term.extend(["--config".to_string(), "term.color=\"always\"".to_string()]);
+        }
+        args = with_overlays(&args, &inv, &term);
     }
     let command = |args: &[OsString]| -> Command {
         let mut cmd = engine.command(args, &inv);
         cmd.current_dir(&cwd);
-        for (k, v) in plan.env_set.iter().chain(spec.env.iter()).chain(progress_env.iter()) {
+        for (k, v) in plan.env_set.iter().chain(spec.env.iter()) {
             cmd.env(k, v);
         }
         for k in &plan.env_remove {
