@@ -595,8 +595,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let (tx, rx) = std::sync::mpsc::channel::<Vec<Value>>();
     let mut live: Option<crate::ui::Live> = None;
     let (mut exit, mut duration_ns) = match &known_fresh {
-        Some((units, warnings_line)) => {
-            crate::ui::up_to_date(*units, warnings_line.as_deref());
+        Some(known) => {
+            crate::ui::up_to_date(known.units, known.warnings_line.as_deref());
+            // The run holds the output of the build it is up to date with, which its warnings line
+            // counts. The stamp's copy is replaced, never rewritten, so a link keeps this one as it is.
+            if let Some(dir) = &plan.events_dir {
+                let _ = std::fs::hard_link(&known.output, dir.join(crate::ui::OUTPUT_FILE));
+            }
             (ExitInfo { code: Some(0), signal: None }, 0)
         }
         None => {
@@ -629,16 +634,16 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         if foreign > 0 {
             crate::ui::notice_foreign_out_dir(foreign);
         }
+        let mut text = String::new();
+        for l in &fin.log {
+            text.push_str(&l.to_string());
+            text.push('\n');
+        }
         if let Some(dir) = &plan.events_dir {
-            let mut text = String::new();
-            for l in &fin.log {
-                text.push_str(&l.to_string());
-                text.push('\n');
-            }
             let _ = util::write_atomic_fast(&dir.join(crate::ui::OUTPUT_FILE), text.as_bytes());
         }
         if let (Some(key), true) = (&prebuilt_key, exit.success()) {
-            let built = crate::prebuilt::Built { messages: &fin.messages, cwd: &cwd, ws_root: ws_root.as_deref(), cargo: &engine.cargo(), units: fin.units, warnings_line: fin.warnings_line.as_deref() };
+            let built = crate::prebuilt::Built { messages: &fin.messages, cwd: &cwd, ws_root: ws_root.as_deref(), cargo: &engine.cargo(), units: fin.units, warnings_line: fin.warnings_line.as_deref(), output: text.as_bytes() };
             crate::prebuilt::record(&store.dir, key, &built);
         }
         messages = Some(fin.messages);

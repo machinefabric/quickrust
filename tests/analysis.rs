@@ -487,6 +487,9 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     assert_eq!(b["state"], "complete", "{}", b);
     assert_eq!((b["samples_valid"].as_u64(), b["samples_discarded"].as_u64()), (Some(2), Some(0)));
     assert_eq!(b["summary"]["samples"]["wall_time_ns"].as_array().unwrap().len(), 2, "raw samples are retained");
+    // Each measured run shows the wall time the summary was made of, not another measure.
+    let measured: Vec<&Value> = b["runs"].as_array().unwrap().iter().filter(|r| r["phase"] == "measured").map(|r| &r["wall_time_ns"]).collect();
+    assert_eq!(measured, b["summary"]["samples"]["wall_time_ns"].as_array().unwrap().iter().collect::<Vec<_>>(), "{}", b["runs"]);
     assert_eq!(b["summary"]["metrics"]["units_compiled"], 0, "nothing compiles in a no-change run");
     assert_eq!(b["summary"]["scenario"], json!({ "name": "no-change", "cache_state": "warm" }));
     let phases: Vec<&str> = b["runs"].as_array().unwrap().iter().map(|r| r["phase"].as_str().unwrap()).collect();
@@ -1594,6 +1597,9 @@ fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let screen = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(out.status.success() && screen.contains("OK   Up to date") && screen.contains("WARN 1 warning in p"), "{}", screen);
     assert!(screen.contains(r#"terminal=true args=["again"] sum=3 term=[]"#), "{}", screen);
+    // The warning that line counts is there to read, from the run that said it.
+    let shown = stdout(&ok(sb.qrust(&p).arg("warnings")));
+    assert!(shown.contains("unused variable: `unused`"), "{}", shown);
     // An edit is built again.
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    y + x\n}\n\n#[test]\nfn adds() {\n    assert_eq!(add(2, 2), 4);\n}\n");
     let out = run(&mut sb.cargo_in_terminal(&p, "run").unwrap());
@@ -1754,6 +1760,23 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     assert!(!e.status.success() && stderr(&e).contains("one section"), "{}", stderr(&e));
     let e = run(sb.qrust(&p).args(["analyze", "cache", "--sort", "x"]));
     assert!(!e.status.success() && stderr(&e).contains("no list of records"), "{}", stderr(&e));
+}
+
+#[test]
+#[cfg(unix)]
+fn a_command_that_prints_ends_quietly_when_its_reader_goes() {
+    use std::os::unix::process::ExitStatusExt;
+    let sb = Sandbox::new("pipe");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    for args in [&["runs"][..], &["help"], &["analyze"]] {
+        let mut child = sb.qrust(&p).args(args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        // The reader is gone before the command writes (`qrust runs | head -0`).
+        drop(child.stdout.take());
+        let out = child.wait_with_output().unwrap();
+        assert!(!stderr(&out).contains("panicked") && !stderr(&out).contains("Broken pipe"), "{:?}: {}", args, stderr(&out));
+        assert!(out.status.success() || out.status.signal() == Some(libc::SIGPIPE), "{:?}: {:?}", args, out.status);
+    }
 }
 
 #[test]

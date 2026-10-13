@@ -305,7 +305,7 @@ fn install_one(r: &Request, name: &str, req: &Option<String>, inv: &Invocation, 
                 fs::copy(&published, &lock).map_err(|e| format!("cannot restore {}'s published lockfile: {}", source.name, e))?;
                 build.push("--locked".into());
             } else if r.locked {
-                phase.line(&format!("note: {} {} was published without a lockfile; --locked has nothing to hold it to", source.name, source.version));
+                phase.note(&format!("{} {} was published without a lockfile; --locked has nothing to hold it to", source.name, source.version));
             }
         }
         None if r.locked => build.push("--locked".into()),
