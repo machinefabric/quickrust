@@ -13,6 +13,7 @@ use crate::util;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Marks the lines setup adds to shell startup files.
 const MARK: &str = "# Added by `qrust setup`: QuickRust's bin first on PATH";
@@ -324,73 +325,72 @@ fn without_setup_lines(text: &str, source_line: &str) -> Option<String> {
     found.then(|| lines.iter().zip(&keep).filter(|(_, k)| **k).map(|(l, _)| format!("{}\n", l)).collect())
 }
 
-/// The release QuickRust's binaries are published for, on this machine: Linux gets the static (musl)
-/// build, which runs on any distribution.
-pub fn release_target() -> Option<&'static str> {
-    Some(match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => "x86_64-unknown-linux-musl",
-        ("linux", "aarch64") => "aarch64-unknown-linux-musl",
-        ("macos", "x86_64") => "x86_64-apple-darwin",
-        ("macos", "aarch64") => "aarch64-apple-darwin",
-        ("windows", "x86_64") => "x86_64-pc-windows-msvc",
-        _ => return None,
-    })
-}
-
 /// A self-update's outcome: the version before and the one now (equal when QuickRust was current).
 pub struct Updated {
     pub from: String,
     pub to: String,
 }
 
-/// `qrust self update`: the latest release from `server` (`self.update-url`: where the release's
-/// `version.txt`, `qrust-<target>.tar.gz` and its `.sha256` are), verified, checked to run and to
-/// be the version it says, and installed into QuickRust's `bin` in place of the running one.
-pub fn self_update(server: &str) -> Result<Updated, String> {
+/// `qrust self update`: the latest release of this QuickRust's channel, from the release registry
+/// it was published in (or `mirror`, a copy of that registry: `self.update-url`).
+///
+/// The registry's manifest is trusted only through its signature (`crate::release`), the archive
+/// only as the file the manifest describes, and the binary in it only once it runs and says it is
+/// the version it was published as. Then it replaces the running one in QuickRust's `bin`.
+pub fn self_update(mirror: &str) -> Result<Updated, String> {
+    let identity = crate::release::identity().ok_or(
+        "this QuickRust was built from source, so it has no release line to update from: build the newer source, or install a release",
+    )?;
+    let registry = if mirror.is_empty() { identity.registry.as_str() } else { mirror };
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "the clock is before 1970, so no certificate's validity can be checked".to_string())?.as_secs();
+    self_update_from(registry, &identity.channel, &identity.trust, now)
+}
+
+/// [`self_update`] with everything a build bakes in passed explicitly.
+pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::Trust, now: u64) -> Result<Updated, String> {
     let bin = engine::bin_dir();
     let installed = util::exe_candidates(&bin, "qrust").remove(0);
     if !installed.is_file() {
         return Err(format!("QuickRust is not set up ({} does not exist): `qrust setup` installs it, then `qrust self update` keeps it current", installed.display()));
     }
-    let target = release_target().ok_or("QuickRust publishes no release for this platform; build it from source")?;
-    let server = server.trim_end_matches('/');
+    let platform = crate::release::platform().ok_or("QuickRust publishes no release for this platform; build it from source")?;
     let client = crate::net::Client::new();
-    let latest = match client.get_bytes(&format!("{}/version.txt", server), &[]) {
-        Ok(text) => String::from_utf8_lossy(&text).trim().to_string(),
-        Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("no QuickRust release is published at {} yet", server)),
-        Err(e) => return Err(e.to_string()),
-    };
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let newer = match (semver::Version::parse(&latest), semver::Version::parse(&current)) {
+    let Some(release) = crate::release::fetch_latest(&client, registry, trust, channel, platform, now)? else {
+        return Err(format!("no QuickRust release is published on the {} channel at {} yet", channel, registry));
+    };
+    let newer = match (semver::Version::parse(&release.version), semver::Version::parse(&current)) {
         (Ok(l), Ok(c)) => l > c,
-        (Err(e), _) => return Err(format!("{}/version.txt is not a version ({:?}: {})", server, latest, e)),
+        (Err(e), _) => return Err(format!("the release manifest's latest version {:?} is not a version: {}", release.version, e)),
         (_, Err(e)) => return Err(format!("this QuickRust's version {:?} is not a version: {}", current, e)),
     };
     if !newer {
         return Ok(Updated { from: current.clone(), to: current });
     }
-    let name = format!("qrust-{}", target);
-    let sum = String::from_utf8_lossy(&client.get_bytes(&format!("{}/{}.tar.gz.sha256", server, name), &[]).map_err(|e| e.to_string())?).split_whitespace().next().unwrap_or("").to_string();
     let work = util::cache_dir().join("tmp").join(format!("self-update-{}", std::process::id()));
     let _ = fs::remove_dir_all(&work);
     let out = (|| {
-        let archive = work.join(format!("{}.tar.gz", name));
-        client.download(&format!("{}/{}.tar.gz", server, name), &archive, &sum, &mut |_, _| {}).map_err(|e| e.to_string())?;
+        let archive = work.join(&release.name);
+        client.download(&release.url, &archive, &release.sha256, &mut |_, _| {}).map_err(|e| e.to_string())?;
+        let size = fs::metadata(&archive).map_err(|e| format!("cannot read {}: {}", archive.display(), e))?.len();
+        if size != release.size {
+            return Err(format!("{} is {} bytes; the release manifest says {}", release.url, size, release.size));
+        }
         let unpacked = work.join("qrust");
-        crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, &name, &unpacked, 1 << 30).map_err(|e| e.to_string())?;
+        crate::archive::unpack_file(&archive, crate::archive::Compression::Gz, release.root(), &unpacked, 1 << 30).map_err(|e| e.to_string())?;
         let new = util::exe_candidates(&unpacked, "qrust").remove(0);
         // It must run, and be the release it was published as.
         let says = std::process::Command::new(&new).arg("--version").output().map_err(|e| format!("the downloaded QuickRust does not run: {}", e))?;
         let says = String::from_utf8_lossy(&says.stdout).trim().to_string();
-        if says != format!("qrust {}", latest) {
-            return Err(format!("the downloaded QuickRust says {:?}, not qrust {}", says, latest));
+        if says != format!("qrust {}", release.version) {
+            return Err(format!("the downloaded QuickRust says {:?}, not qrust {}", says, release.version));
         }
         let qrust = install_from(&bin, &new)?;
         link_proxies(&bin, &qrust)?;
         let mut record = util::read_json(&record_path()).unwrap_or_else(|| json!({ "format": 1 }));
-        record["version"] = json!(latest);
+        record["version"] = json!(release.version);
         util::write_json(&record_path(), &record).map_err(|e| e.to_string())?;
-        Ok(Updated { from: current.clone(), to: latest.clone() })
+        Ok(Updated { from: current.clone(), to: release.version.clone() })
     })();
     let _ = fs::remove_dir_all(&work);
     out

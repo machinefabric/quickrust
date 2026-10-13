@@ -42,6 +42,9 @@ liblzma = { version = "0.4", features = ["static"] }
 flate2 = "1"
 tar = { version = "0.4", default-features = false }
 semver = "1"
+# Release manifests are signed: raw ed25519 over their exact bytes, by a release key that two of
+# the build's root keys certify (`src/release.rs`). Verification only.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

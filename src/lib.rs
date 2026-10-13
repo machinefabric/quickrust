@@ -24,6 +24,7 @@ pub mod net;
 pub mod prebuilt;
 pub mod proc;
 pub mod recommend;
+pub mod release;
 #[cfg(unix)]
 pub mod relay;
 pub mod remedy;
