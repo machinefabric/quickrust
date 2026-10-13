@@ -8,6 +8,14 @@
 //! disposable: QuickRust's cache may delete it when it has not been used for a while, and the next
 //! build recreates it.
 //!
+//! A workspace built in more than one configuration that must not share output — the same
+//! sources against another registry, with another feature set, for another release channel — is
+//! given a build directory per configuration by naming each a variant (`build.variant`,
+//! `QRUST_BUILD_VARIANT`): `builds/<name>-<id>.<variant>/`. Each is a build directory like any
+//! other: Cargo's, locked while in use, counted in QuickRust's cache and collected with it. Without
+//! variants the configurations take turns in one directory, and each overwrites the binaries of
+//! the last.
+//!
 //! A target directory the user chose is used as it is and never managed: `--target-dir`,
 //! `--config build.target-dir=…`, or `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` in the
 //! environment (unless set by QuickRust for another command, which a nested command for another
@@ -40,11 +48,36 @@ pub fn builds_dir() -> PathBuf {
     util::cache_dir().join("builds")
 }
 
-/// The managed build directory of the workspace rooted at `root`.
-pub fn managed_dir(root: &Path) -> PathBuf {
+/// The longest name a build variant may have.
+const VARIANT_MAX: usize = 32;
+
+/// The build variant `cfg` names (`build.variant`), `None` when it names none. A variant is part
+/// of a directory's name, so it is a plain word: letters, digits, `-` and `_`.
+pub fn variant(cfg: &crate::config::Config) -> Result<Option<String>, String> {
+    variant_named(cfg.str("build.variant"))
+}
+
+fn variant_named(name: &str) -> Result<Option<String>, String> {
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.len() > VARIANT_MAX || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(format!("invalid build variant {:?} (`build.variant`): a variant is at most {} letters, digits, `-` or `_`", name, VARIANT_MAX));
+    }
+    Ok(Some(name.to_string()))
+}
+
+/// The managed build directory of the workspace rooted at `root`: its one directory, or that of
+/// the build variant `variant`.
+pub fn managed_dir(root: &Path, variant: Option<&str>) -> PathBuf {
     let name: String = root.file_name().map(util::lossy).unwrap_or_default().chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).take(24).collect();
     let name = if name.is_empty() { "workspace".to_string() } else { name };
-    builds_dir().join(format!("{}-{}", name, crate::store::workspace_id(root)))
+    let id = crate::store::workspace_id(root);
+    builds_dir().join(match variant {
+        // `.` is in neither a workspace's name here nor a variant's: what follows it is the variant.
+        Some(v) => format!("{}-{}.{}", name, id, v),
+        None => format!("{}-{}", name, id),
+    })
 }
 
 /// The directory Cargo starts from for `inv` run in `cwd`: `-C`, then `--manifest-path`'s.
@@ -96,14 +129,14 @@ fn memo_path(start: &Path) -> PathBuf {
     util::memo_dir("roots").join(format!("{}.json", util::digest_parts(parts)))
 }
 
-/// The target directory for `inv`: one the user chose, or the workspace's managed one; `None`
-/// outside any workspace (nothing is built there).
-pub fn choose(inv: &Invocation, cwd: &Path, root: Option<&Path>) -> Option<Target> {
-    choose_in(inv, cwd, root, &|k| std::env::var_os(k).filter(|v| !v.is_empty()))
+/// The target directory for `inv`: one the user chose, or the workspace's managed one (that of
+/// `variant`, when one is named); `None` outside any workspace (nothing is built there).
+pub fn choose(inv: &Invocation, cwd: &Path, root: Option<&Path>, variant: Option<&str>) -> Option<Target> {
+    choose_in(inv, cwd, root, variant, &|k| std::env::var_os(k).filter(|v| !v.is_empty()))
 }
 
 /// `choose` with the environment given.
-fn choose_in(inv: &Invocation, cwd: &Path, root: Option<&Path>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<Target> {
+fn choose_in(inv: &Invocation, cwd: &Path, root: Option<&Path>, variant: Option<&str>, env: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Option<Target> {
     if let Some(t) = &inv.target_dir {
         return Some(Target { dir: cwd.join(t), managed: false });
     }
@@ -118,7 +151,7 @@ fn choose_in(inv: &Invocation, cwd: &Path, root: Option<&Path>, env: &dyn Fn(&st
             }
         }
     }
-    root.map(|r| Target { dir: managed_dir(r), managed: true })
+    root.map(|r| Target { dir: managed_dir(r, variant), managed: true })
 }
 
 /// What tells Cargo and the tools under it where to build.
@@ -186,31 +219,65 @@ mod tests {
         let cwd = Path::new("/w/app");
         let root = Path::new("/w/app");
         let none = |_: &str| None;
-        let choose = |i: &Invocation, cwd: &Path, root: Option<&Path>| choose_in(i, cwd, root, &none);
+        let choose = |i: &Invocation, cwd: &Path, root: Option<&Path>| choose_in(i, cwd, root, None, &none);
         let managed = choose(&inv(&["build"]), cwd, Some(root)).unwrap();
         assert!(managed.managed && managed.dir.starts_with(builds_dir()));
         assert!(managed.dir.file_name().unwrap().to_string_lossy().starts_with("app-"));
         assert_eq!(choose(&inv(&["build", "--target-dir", "out"]), cwd, Some(root)), Some(Target { dir: cwd.join("out"), managed: false }));
         assert_eq!(choose(&inv(&["--config", "build.target-dir=\"/x/t\"", "build"]), cwd, Some(root)), Some(Target { dir: PathBuf::from("/x/t"), managed: false }));
         assert_eq!(choose(&inv(&["new", "x"]), cwd, None), None, "outside a workspace there is nothing to build");
-        assert_ne!(managed_dir(Path::new("/a/app")), managed_dir(Path::new("/b/app")), "same name, different workspaces");
+        assert_ne!(managed_dir(Path::new("/a/app"), None), managed_dir(Path::new("/b/app"), None), "same name, different workspaces");
         assert!(environment(&Target { dir: cwd.join("out"), managed: false }).is_empty());
         let env = environment(&managed);
         assert_eq!(env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["CARGO_TARGET_DIR", "CARGO_BUILD_BUILD_DIR", ENV_MANAGED]);
         // The user's variable is theirs; QuickRust's own, set for an enclosing command (perhaps of
         // another workspace), is replaced.
         let theirs = |k: &str| (k == "CARGO_TARGET_DIR").then(|| std::ffi::OsString::from("/mine"));
-        assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), &theirs), Some(Target { dir: PathBuf::from("/mine"), managed: false }));
-        let outer = managed_dir(Path::new("/w/other"));
+        assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), None, &theirs), Some(Target { dir: PathBuf::from("/mine"), managed: false }));
+        let outer = managed_dir(Path::new("/w/other"), None);
         let inherited = |k: &str| matches!(k, "CARGO_TARGET_DIR" | ENV_MANAGED).then(|| outer.clone().into_os_string());
-        assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), &inherited), Some(managed.clone()));
+        assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), None, &inherited), Some(managed.clone()));
+    }
+
+    #[test]
+    fn a_variant_is_a_build_directory_of_its_own_beside_the_workspaces() {
+        let cwd = Path::new("/w/app");
+        let none = |_: &str| None;
+        let plain = choose_in(&inv(&["build"]), cwd, Some(cwd), None, &none).unwrap();
+        let staging = choose_in(&inv(&["build"]), cwd, Some(cwd), Some("staging-nightly"), &none).unwrap();
+        let prod = choose_in(&inv(&["build"]), cwd, Some(cwd), Some("prod-nightly"), &none).unwrap();
+        assert!(staging.managed && prod.managed);
+        assert_ne!(staging.dir, plain.dir, "a variant does not build into the workspace's own directory");
+        assert_ne!(staging.dir, prod.dir, "nor into another variant's");
+        // Beside it, under the workspace's own name: the cache finds, sizes and collects it as one.
+        assert_eq!(staging.dir.parent(), plain.dir.parent());
+        let (plain_name, staging_name) = (plain.dir.file_name().unwrap().to_string_lossy().into_owned(), staging.dir.file_name().unwrap().to_string_lossy().into_owned());
+        assert_eq!(staging_name, format!("{}.staging-nightly", plain_name));
+        // The same variant of the same workspace is the same directory, every time.
+        assert_eq!(managed_dir(cwd, Some("staging-nightly")), staging.dir);
+        // A directory the user chose is theirs, whatever variant is named.
+        assert_eq!(choose_in(&inv(&["build", "--target-dir", "out"]), cwd, Some(cwd), Some("staging-nightly"), &none), Some(Target { dir: cwd.join("out"), managed: false }));
+        // A command nested in a variant's build (for the same workspace) builds where it does.
+        let inherited = |k: &str| matches!(k, "CARGO_TARGET_DIR" | ENV_MANAGED).then(|| staging.dir.clone().into_os_string());
+        assert_eq!(choose_in(&inv(&["build"]), cwd, Some(cwd), Some("staging-nightly"), &inherited), Some(staging.clone()));
+    }
+
+    #[test]
+    fn a_variant_is_a_plain_word() {
+        assert_eq!(variant_named(""), Ok(None));
+        assert_eq!(variant_named("st-n_cu9"), Ok(Some("st-n_cu9".to_string())));
+        assert_eq!(variant_named(&"v".repeat(VARIANT_MAX)), Ok(Some("v".repeat(VARIANT_MAX))));
+        for bad in ["a.b", "a/b", "..", "a b", "a\\b", "é", &"v".repeat(VARIANT_MAX + 1)] {
+            let e = variant_named(bad).unwrap_err();
+            assert!(e.starts_with(&format!("invalid build variant {:?}", bad)), "{}", e);
+        }
     }
 
     #[test]
     fn names_are_safe_and_bounded() {
-        let d = managed_dir(Path::new("/w/my project (copy) with a very long name indeed"));
+        let d = managed_dir(Path::new("/w/my project (copy) with a very long name indeed"), None);
         let name = d.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("my_project__copy__with_a-"), "{}", name);
-        assert_eq!(managed_dir(Path::new("/")).file_name().unwrap().to_string_lossy().split('-').next(), Some("workspace"));
+        assert_eq!(managed_dir(Path::new("/"), None).file_name().unwrap().to_string_lossy().split('-').next(), Some("workspace"));
     }
 }

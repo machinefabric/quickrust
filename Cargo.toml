@@ -1,6 +1,6 @@
 [package]
 name = "quickrust"
-version = "1.147.1402"
+version = "1.148.1453"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
