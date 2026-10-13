@@ -64,6 +64,27 @@ CARGO_TARGET_DIR=out cargo build
 
 A directory you choose is used as it is: QuickRust never cleans it up or counts it towards its cache. `qrust path` prints it when you chose it through `CARGO_TARGET_DIR` (or `CARGO_BUILD_TARGET_DIR`) in the environment, and its own directory otherwise. `build.target-dir` in a `.cargo/config.toml` file is the one exception: QuickRust overrides it, so put the setting on the command line or in the environment instead.
 
+## Build one workspace in several configurations
+
+Some workspaces are built in more than one configuration that must not share output: against a staging and a production service whose address is compiled in, for two release channels, with and without a GPU feature. In one build directory they take turns: each build recompiles what the configuration changes and overwrites the binaries of the last, so a program you started from one configuration can be replaced under it by the next build.
+
+Name each configuration a variant, and it gets a build directory of its own:
+
+```bash
+QRUST_BUILD_VARIANT=staging cargo build --release
+QRUST_BUILD_VARIANT=prod    cargo build --release
+
+QRUST_BUILD_VARIANT=staging qrust path bin app --release
+```
+
+```text
+/home/me/.qrust/cache/builds/app-fca2211b77f340ae.staging/release/app
+```
+
+Every command run with the variant builds there and finds its outputs there: `cargo run`, `cargo test`, `qrust path`, tools that ask `cargo metadata`. A variant's name is at most 32 letters, digits, `-` or `_`. The variant can also be set as `build.variant` in a configuration file, for a checkout that is always one configuration.
+
+A variant's directory is a build directory like any other: it is counted in QuickRust's cache, kept within `cache.max-size` and `cache.min-free`, and removed when it has not been used for a while. What the configurations have in common is not compiled twice: dependencies come from the artifact cache whichever variant builds them first.
+
 ## Clean a workspace's build
 
 ```bash

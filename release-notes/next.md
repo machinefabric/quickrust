@@ -9,6 +9,10 @@ Rust builds, and it is now available to everyone.
   build cache shared by all your projects, and the build output, within bounds you set.
 - `qrust setup` makes it your `cargo`. Projects, manifests, lock files and scripts stay as they
   are.
+- A workspace built in several configurations that must not share output (another service
+  address compiled in, another release channel, a GPU feature) names each a build variant,
+  `QRUST_BUILD_VARIANT` or `build.variant`, and each gets a build directory of its own:
+  no configuration overwrites another's binaries, and what they have in common is compiled once.
 
 ## Installing
 

@@ -144,7 +144,8 @@ pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine,
     let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).cloned().collect();
     let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)?;
     let root = crate::builddir::workspace_root(&engine, &crate::builddir::start_dir(inv, cwd))?;
-    let target = crate::builddir::choose(inv, cwd, root.as_deref());
+    let variant = crate::builddir::variant(cfg)?;
+    let target = crate::builddir::choose(inv, cwd, root.as_deref(), variant.as_deref());
     if let Some(t) = &target {
         engine.env.extend(crate::builddir::environment(t));
     }

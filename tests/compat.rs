@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::fs;
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// Artifact names with Cargo's own hashes: equal sets mean Cargo selected and built the same units.
@@ -190,6 +190,57 @@ fn builds_go_to_quickrusts_cache_and_never_into_the_project() {
     // `cargo clean` empties it, as it would `target/`.
     ok(sb.cargo(&ws).arg("clean"));
     assert!(!target.exists());
+}
+
+/// One workspace built in two configurations — here a value baked in at build time, as a registry
+/// or a channel is — keeps both builds when each names its variant: neither overwrites the other's
+/// binary, and each is found by asking under its variant.
+#[test]
+fn build_variants_keep_each_configurations_output() {
+    let sb = Sandbox::new("variants");
+    let p = sb.package("p", "p");
+    sb.file("p/build.rs", "fn main() {\n    println!(\"cargo:rerun-if-env-changed=FLAVOR\");\n    println!(\"cargo:rustc-env=BAKED_FLAVOR={}\", std::env::var(\"FLAVOR\").unwrap_or_default());\n}\n");
+    sb.file("p/src/main.rs", "fn main() {\n    println!(\"{}\", env!(\"BAKED_FLAVOR\"));\n}\n");
+    let plain = sb.target_dir(&p);
+    let in_variant = |variant: &str, args: &[&str]| {
+        let mut c = sb.qrust(&p);
+        c.args(args).env("QRUST_BUILD_VARIANT", variant);
+        c
+    };
+    let dir_of = |variant: &str| PathBuf::from(stdout(&ok(&mut in_variant(variant, &["path"]))).trim());
+    let (staging, prod) = (dir_of("staging"), dir_of("prod"));
+    assert_eq!(staging.file_name().unwrap().to_string_lossy(), format!("{}.staging", plain.file_name().unwrap().to_string_lossy()));
+    assert!(staging != prod && staging.parent() == plain.parent(), "{} / {}", staging.display(), prod.display());
+
+    for flavor in ["staging", "prod"] {
+        ok(sb.cargo(&p).arg("build").env("QRUST_BUILD_VARIANT", flavor).env("FLAVOR", flavor));
+    }
+    // Both are there at once, each the configuration it was built in.
+    let says = |binary: &Path| stdout(&ok(&mut Command::new(binary)));
+    assert_eq!(says(&staging.join("debug/p")), "staging\n");
+    assert_eq!(says(&prod.join("debug/p")), "prod\n");
+    assert_eq!(stdout(&ok(&mut in_variant("prod", &["path", "bin", "p"]))).trim(), prod.join("debug/p").display().to_string());
+    assert!(!plain.exists() && !p.join("target").exists(), "nothing was built outside the two variants");
+
+    // Each is a build directory QuickRust's cache knows as this workspace's, and collects (once it
+    // is not what was used a moment ago).
+    for dir in [&staging, &prod] {
+        let record = dir.with_file_name(format!("{}.json", dir.file_name().unwrap().to_string_lossy()));
+        let mut v: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        assert_eq!(v["workspace_root"].as_str().map(Path::new), Some(fs::canonicalize(&p).unwrap().as_path()), "{}", v);
+        v["last_used_ns"] = serde_json::json!(v["last_used_ns"].as_u64().unwrap() - 3 * 3_600_000_000_000);
+        fs::write(&record, v.to_string()).unwrap();
+    }
+    let removed: Value = serde_json::from_slice(&ok(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"])).stdout).unwrap();
+    let removed: Vec<&str> = removed["removed"].as_array().unwrap().iter().filter(|r| r["kind"] == "build directories").filter_map(|r| r["path"].as_str()).collect();
+    for dir in [&staging, &prod] {
+        assert!(removed.contains(&dir.to_str().unwrap()) && !dir.exists(), "{} of {:?}", dir.display(), removed);
+    }
+
+    // A variant is a word, since it names a directory.
+    let bad = run(&mut in_variant("../elsewhere", &["path"]));
+    assert_eq!(bad.status.code(), Some(2), "{}", stderr(&bad));
+    assert!(stderr(&bad).contains("invalid build variant \"../elsewhere\""), "{}", stderr(&bad));
 }
 
 #[test]
