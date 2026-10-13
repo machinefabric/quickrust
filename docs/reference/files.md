@@ -32,7 +32,7 @@ Everything under `~/.qrust/cache/` can be rebuilt or downloaded again. QuickRust
 |---|---|
 | `builds/<name>-<id>/` | each workspace's target directory (`qrust path`): Cargo's build output. `<name>` is the workspace directory's name (at most 24 characters; other than letters, digits, `-` and `_` replaced by `_`) |
 | `builds/<name>-<id>.<variant>/` | the target directory of a [build variant](configuration.md#keys) of that workspace (`build.variant`), with a record and a lock of its own like any build directory |
-| `builds/<name>-<id>.hold-<pid>` | a hold on that build directory by the running process `<pid>` (`qrust path --hold-for`); removed by a collection once the process is gone |
+| `builds/<name>-<id>.hold-<pid>` | a hold on that build directory by the running process `<pid>` (`qrust path --hold-for`); once the process is gone it holds nothing, and the next hold or the next collection removes it |
 | `builds/<name>-<id>.json`, `builds/<name>-<id>.lock` | which workspace a build directory belongs to and when it was last used; the lock a command holds while it uses the directory |
 | `builds/<name>-<id>/qrust-bench/` | benchmark and experiment build directories, each with a `.qrust-owned` marker and its own artifact cache (`.qrust-artifacts/`) |
 | `artifacts/` | the artifact cache |
