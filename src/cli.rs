@@ -519,13 +519,28 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
         (false, p) => p.unwrap_or_else(|| "dev".into()),
     };
     let target = a.opt("--target")?;
+    let holder = match a.opt("--hold-for")? {
+        Some(pid) => {
+            let pid: u32 = pid.parse().map_err(|_| format!("--hold-for takes a process id, not `{}`", pid))?;
+            if !crate::proc::pid_alive(pid) {
+                return Err(format!("--hold-for {}: no such process is running", pid));
+            }
+            Some(pid)
+        }
+        None => None,
+    };
     let what = a.positional();
     let name = a.positional();
     a.finish()?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     let engine = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?;
-    let dir = engine.target.ok_or("not inside a Cargo workspace: there is no target directory here")?.dir;
+    let chosen = engine.target.ok_or("not inside a Cargo workspace: there is no target directory here")?;
+    // A directory the user chose is never collected: there is nothing to hold.
+    if let (Some(pid), true) = (holder, chosen.managed) {
+        crate::builddir::hold(&chosen.dir, pid)?;
+    }
+    let dir = chosen.dir;
     match (what.as_deref(), name) {
         (None, None) => println!("{}", dir.display()),
         (Some("bin"), Some(name)) => {

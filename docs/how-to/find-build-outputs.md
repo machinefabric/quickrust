@@ -85,6 +85,18 @@ Every command run with the variant builds there and finds its outputs there: `ca
 
 A variant's directory is a build directory like any other: it is counted in QuickRust's cache, kept within `cache.max-size` and `cache.min-free`, and removed when it has not been used for a while. What the configurations have in common is not compiled twice: dependencies come from the artifact cache whichever variant builds them first.
 
+## Use a build's outputs for longer than the build
+
+A build directory is part of QuickRust's cache, and the cache keeps itself within its bounds: when it is over its size, or the disk is short of free space, it removes build directories that have not been used for a while, least recently used first. A directory a command is building in is never removed, nor one used in the last 15 minutes. That is enough for `cargo run` and `cargo test`, and for a script that copies a binary out right after building it.
+
+It is not enough for a program that builds once and keeps using what it built: a test harness that starts the binaries an hour into its run, a packager that reads them at the end. Such a program holds the directory for as long as it runs, by asking for the path with its own process id:
+
+```bash
+bin=$(qrust path bin app --release --hold-for $$)
+```
+
+While that process runs, QuickRust's cache treats the directory as in use. The hold needs no release: it ends when the process does, however it ends. Asking again is harmless. With a build variant in effect, the variant's directory is the one held.
+
 ## Clean a workspace's build
 
 ```bash

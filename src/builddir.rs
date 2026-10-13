@@ -16,6 +16,11 @@
 //! variants the configurations take turns in one directory, and each overwrites the binaries of
 //! the last.
 //!
+//! A program that uses what a build left there — a test harness starting the binaries it built
+//! an hour ago, a packager reading them — holds the directory while it runs
+//! (`qrust path --hold-for <pid>`): QuickRust's cache treats a held directory as in use, and
+//! the hold ends with the process, whether it says so or not.
+//!
 //! A target directory the user chose is used as it is and never managed: `--target-dir`,
 //! `--config build.target-dir=…`, or `CARGO_TARGET_DIR` / `CARGO_BUILD_TARGET_DIR` in the
 //! environment (unless set by QuickRust for another command, which a nested command for another
@@ -193,6 +198,28 @@ pub fn meta(dir: &Path) -> Option<(PathBuf, u64, u64)> {
     Some((PathBuf::from(v["workspace_root"].as_str()?), v["created_ns"].as_u64()?, v["last_used_ns"].as_u64()?))
 }
 
+const HOLD: &str = ".hold-";
+
+/// Records that the process `pid` holds the managed directory `dir`: one empty file per holder
+/// beside it, `<dir>.hold-<pid>`, so holders never write the same file.
+pub fn hold(dir: &Path, pid: u32) -> Result<(), String> {
+    let builds = dir.parent().ok_or_else(|| format!("{} is not a build directory", dir.display()))?;
+    let mut name = dir.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(format!("{}{}", HOLD, pid));
+    let file = dir.with_file_name(name);
+    util::create_private_dir(builds).and_then(|_| fs::write(&file, b"")).map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))
+}
+
+/// What a file name beside the build directories says, if it is a hold's: the directory's name
+/// and the holder.
+pub fn hold_of(file_name: &str) -> Option<(&str, u32)> {
+    let (dir, pid) = file_name.rsplit_once(HOLD)?;
+    if dir.is_empty() || pid.is_empty() || !pid.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((dir, pid.parse().ok()?))
+}
+
 /// Held while a command uses a managed directory: QuickRust's cache never removes one in use.
 pub struct InUse {
     _lock: Option<util::SharedLock>,
@@ -260,6 +287,17 @@ mod tests {
         // A command nested in a variant's build (for the same workspace) builds where it does.
         let inherited = |k: &str| matches!(k, "CARGO_TARGET_DIR" | ENV_MANAGED).then(|| staging.dir.clone().into_os_string());
         assert_eq!(choose_in(&inv(&["build"]), cwd, Some(cwd), Some("staging-nightly"), &inherited), Some(staging.clone()));
+    }
+
+    #[test]
+    fn a_hold_names_its_directory_and_its_holder() {
+        assert_eq!(hold_of("app-fca2211b77f340ae.hold-4242"), Some(("app-fca2211b77f340ae", 4242)));
+        // A variant's directory is held under its whole name, whatever the variant is called.
+        assert_eq!(hold_of("app-fca2211b77f340ae.staging.hold-7"), Some(("app-fca2211b77f340ae.staging", 7)));
+        assert_eq!(hold_of("app-fca2211b77f340ae.hold-1.hold-9"), Some(("app-fca2211b77f340ae.hold-1", 9)));
+        for other in ["app-fca2211b77f340ae.json", "app-fca2211b77f340ae.lock", "app-fca2211b77f340ae.hold-", "app-fca2211b77f340ae.hold-x1", ".hold-12", "app.hold-99999999999999999999"] {
+            assert_eq!(hold_of(other), None, "{}", other);
+        }
     }
 
     #[test]

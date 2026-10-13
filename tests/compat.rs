@@ -237,6 +237,31 @@ fn build_variants_keep_each_configurations_output() {
         assert!(removed.contains(&dir.to_str().unwrap()) && !dir.exists(), "{} of {:?}", dir.display(), removed);
     }
 
+    // A program that uses a build's outputs holds the directory while it runs: nothing collects
+    // it, however long ago it was built in and however little room there is.
+    ok(sb.cargo(&p).arg("build").env("QRUST_BUILD_VARIANT", "staging").env("FLAVOR", "staging"));
+    let mut holder = Command::new("sleep").arg("600").spawn().unwrap();
+    let held = stdout(&ok(in_variant("staging", &["path", "bin", "p"]).args(["--hold-for", &holder.id().to_string()])));
+    assert_eq!(held.trim(), staging.join("debug/p").display().to_string());
+    let backdate = |dir: &Path| {
+        let record = dir.with_file_name(format!("{}.json", dir.file_name().unwrap().to_string_lossy()));
+        let mut v: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+        v["last_used_ns"] = serde_json::json!(v["last_used_ns"].as_u64().unwrap() - 3 * 3_600_000_000_000);
+        fs::write(&record, v.to_string()).unwrap();
+    };
+    backdate(&staging);
+    ok(sb.qrust(&p).args(["gc", "--to", "1"]));
+    assert_eq!(says(&staging.join("debug/p")), "staging\n", "a held build directory was collected");
+    // The hold ends with its holder, without anyone saying so.
+    holder.kill().unwrap();
+    holder.wait().unwrap();
+    backdate(&staging);
+    ok(sb.qrust(&p).args(["gc", "--to", "1"]));
+    assert!(!staging.exists(), "a hold outlived its holder");
+    let nobody = run(in_variant("staging", &["path"]).args(["--hold-for", &holder.id().to_string()]));
+    assert_eq!(nobody.status.code(), Some(2), "{}", stderr(&nobody));
+    assert!(stderr(&nobody).contains("no such process is running"), "{}", stderr(&nobody));
+
     // A variant is a word, since it names a directory.
     let bad = run(&mut in_variant("../elsewhere", &["path"]));
     assert_eq!(bad.status.code(), Some(2), "{}", stderr(&bad));
