@@ -102,8 +102,9 @@ mod tests {
             "not_cached": { "incremental": nc } }, "cache_size": 100 + misses, "version": "0.10.0" })
     }
 
+    // TEST0033: Hit rate keeps its request count
     #[test]
-    fn hit_rate_keeps_its_request_count() {
+    fn test0033_hit_rate_keeps_its_request_count() {
         // FR-100 acceptance: 100 cacheable requests with 80 hits is reported as 80/100.
         let d = delta(&snap(10, 5, 1, 20), &snap(90, 25, 4, 130));
         assert_eq!(d["hits"], 80);
@@ -116,8 +117,9 @@ mod tests {
         assert_eq!(d["write_bytes"], 20);
     }
 
+    // TEST0034: Recognises sccache
     #[test]
-    fn recognises_sccache() {
+    fn test0034_recognises_sccache() {
         assert!(is_sccache("/usr/local/bin/sccache"));
         assert!(is_sccache("sccache.exe"));
         assert!(!is_sccache("/opt/bin/my-wrapper"));

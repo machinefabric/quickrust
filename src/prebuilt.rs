@@ -234,8 +234,9 @@ pub fn record(store_dir: &Path, key: &str, built: &Built) {
 mod tests {
     use super::*;
 
+    // TEST0068: A stamp holds until any file it names changes appears or goes
     #[test]
-    fn a_stamp_holds_until_any_file_it_names_changes_appears_or_goes() {
+    fn test0068_a_stamp_holds_until_any_file_it_names_changes_appears_or_goes() {
         let base = std::env::temp_dir().join(format!("qrust-prebuilt-{}", util::new_id()));
         let (ws, store) = (base.join("ws"), base.join("store"));
         fs::create_dir_all(ws.join("src")).unwrap();

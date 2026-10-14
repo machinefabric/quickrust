@@ -286,16 +286,18 @@ fn run_against(exe: &Path, rustc: &Path) -> Command {
 mod tests {
     use super::*;
 
+    // TEST0050: Two toolchains of one release get drivers of their own
     #[test]
-    fn two_toolchains_of_one_release_get_drivers_of_their_own() {
+    fn test0050_two_toolchains_of_one_release_get_drivers_of_their_own() {
         let vv = "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\n".to_string();
         let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
         assert_ne!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/dev"));
         assert_eq!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
     }
 
+    // TEST0051: The release names the interface the driver adapts to
     #[test]
-    fn the_release_names_the_interface_the_driver_adapts_to() {
+    fn test0051_the_release_names_the_interface_the_driver_adapts_to() {
         let vv = |release: &str| format!("rustc {release} (abc 2026-09-28)\nbinary: rustc\nrelease: {release}\n");
         assert_eq!(release_minor(&vv("1.99.0")), Some(99));
         assert_eq!(release_minor(&vv("1.98.1")), Some(98));

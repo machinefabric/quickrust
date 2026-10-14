@@ -22,8 +22,9 @@ fn reasons(report: &Value) -> Vec<(String, String, String)> {
     v
 }
 
+// TEST0188: Report follows the versioned contract
 #[test]
-fn report_follows_the_versioned_contract() {
+fn test0188_report_follows_the_versioned_contract() {
     let sb = Sandbox::new("contract");
     let ws = sb.workspace("ws");
     let sidecar = sb.dir.join("out/{session}.json");
@@ -75,8 +76,9 @@ fn report_follows_the_versioned_contract() {
     assert_eq!(serde_json::from_slice::<Value>(&a.stdout).unwrap()["run"]["id"], r["run"]["id"]);
 }
 
+// TEST0189: Rebuild causes are classified from evidence
 #[test]
-fn rebuild_causes_are_classified_from_evidence() {
+fn test0189_rebuild_causes_are_classified_from_evidence() {
     // AC-006 across the classifications that can be provoked on a stable toolchain.
     let sb = Sandbox::new("rebuilds");
     let ws = sb.workspace("ws");
@@ -124,8 +126,9 @@ fn rebuild_causes_are_classified_from_evidence() {
     assert!(causes.contains("feature-set") && causes.contains("profile"), "{}", causes);
 }
 
+// TEST0190: Toolchain change is reported as compiler drift
 #[test]
-fn toolchain_change_is_reported_as_compiler_drift() {
+fn test0190_toolchain_change_is_reported_as_compiler_drift() {
     // FR-040 acceptance.
     let sb = Sandbox::new("drift");
     let p = sb.package("p", "p");
@@ -144,8 +147,9 @@ fn toolchain_change_is_reported_as_compiler_drift() {
     assert!(diff_at < table_at, "environment differences must precede the deltas:\n{}", text);
 }
 
+// TEST0191: Build script without rerun directives is flagged after it reruns
 #[test]
-fn build_script_without_rerun_directives_is_flagged_after_it_reruns() {
+fn test0191_build_script_without_rerun_directives_is_flagged_after_it_reruns() {
     // FR-060 acceptance.
     let sb = Sandbox::new("rerun");
     let ws = sb.workspace("ws");
@@ -172,8 +176,9 @@ fn build_script_without_rerun_directives_is_flagged_after_it_reruns() {
     assert_eq!(tree(&ws), before);
 }
 
+// TEST0192: Secrets never reach reports or state
 #[test]
-fn secrets_never_reach_reports_or_state() {
+fn test0192_secrets_never_reach_reports_or_state() {
     // AC-019 / DATA-008 / SEC-016.
     let sb = Sandbox::new("secrets");
     let p = sb.package("p", "p");
@@ -199,8 +204,9 @@ fn secrets_never_reach_reports_or_state() {
     assert!(r["environment"]["variables"]["vars"].get("CARGO_REGISTRIES_INTERNAL_TOKEN").is_none(), "variables outside the allowlist are not persisted at all");
 }
 
+// TEST0193: Budgets gate ci without touching cargo output
 #[test]
-fn budgets_gate_ci_without_touching_cargo_output() {
+fn test0193_budgets_gate_ci_without_touching_cargo_output() {
     // AC-016, FR-130.
     let sb = Sandbox::new("budgets");
     let p = sb.package("p", "p");
@@ -248,8 +254,9 @@ fn budgets_gate_ci_without_touching_cargo_output() {
     assert_eq!(run(sb.cargo(&p).arg("build")).status.code(), Some(101));
 }
 
+// TEST0194: Inventory and its stale plan are read only and conservative
 #[test]
-fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
+fn test0194_inventory_and_its_stale_plan_are_read_only_and_conservative() {
     // AC-011, AC-012.
     let sb = Sandbox::new("gc");
     let ws = sb.workspace("ws");
@@ -286,8 +293,9 @@ fn inventory_and_its_stale_plan_are_read_only_and_conservative() {
     assert_eq!(tree(&sb.target_dir(&ws)), before);
 }
 
+// TEST0195: What qrust starts in the background is qrust whatever name it runs by
 #[test]
-fn what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_by() {
+fn test0195_what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_by() {
     // On Windows QuickRust's `cargo` is a hard link, and the running binary's path names it
     // `cargo.exe`; a hard link here makes the same so. It is made beside the binary (a link must
     // be on its filesystem); writing a copy instead could leave it busy for a parallel test's
@@ -314,8 +322,9 @@ fn what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_by() {
     assert_eq!(commands.len(), 1, "only the build was a Cargo command: {:?}", commands);
 }
 
+// TEST0196: Quickrusts cache removes what is gone then the least recently used and builds come back
 #[test]
-fn quickrusts_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
+fn test0196_quickrusts_cache_removes_what_is_gone_then_the_least_recently_used_and_builds_come_back() {
     let sb = Sandbox::new("collect");
     let (a, b, c) = (sb.package("a", "a"), sb.package("b", "b"), sb.package("c", "c"));
     for p in [&a, &b, &c] {
@@ -363,8 +372,9 @@ fn quickrusts_cache_removes_what_is_gone_then_the_least_recently_used_and_builds
     assert!(status.lines().any(|l| l.trim_start().starts_with("collected") && (l.contains("just now,") || l.contains(" ago,"))), "{}", status);
 }
 
+// TEST0197: Crates download into quickrusts cargo home and cargo collects them when space is short
 #[test]
-fn crates_download_into_quickrusts_cargo_home_and_cargo_collects_them_when_space_is_short() {
+fn test0197_crates_download_into_quickrusts_cargo_home_and_cargo_collects_them_when_space_is_short() {
     let sb = Sandbox::new("registry-gc");
     let reg = common::registry::Registry::start();
     reg.publish(&common::registry::Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello from the registry\"\n}\n"));
@@ -409,8 +419,9 @@ fn crates_download_into_quickrusts_cargo_home_and_cargo_collects_them_when_space
     assert_eq!(downloads(), 2);
 }
 
+// TEST0198: Every command speaks quickrusts language in a terminal
 #[test]
-fn every_command_speaks_quickrusts_language_in_a_terminal() {
+fn test0198_every_command_speaks_quickrusts_language_in_a_terminal() {
     use common::registry::{Crate, Registry};
     let sb = Sandbox::new("screens");
     let reg = Registry::start();
@@ -441,8 +452,9 @@ fn every_command_speaks_quickrusts_language_in_a_terminal() {
     assert!(shown.starts_with("OK   Removed ") && shown.lines().count() == 1, "{}", shown);
 }
 
+// TEST0199: The stale plan is blocked while a build is running
 #[test]
-fn the_stale_plan_is_blocked_while_a_build_is_running() {
+fn test0199_the_stale_plan_is_blocked_while_a_build_is_running() {
     // QA-028 / FR-110 acceptance: an active build owns its files.
     let sb = Sandbox::new("gcrace");
     let p = sb.package("p", "p");
@@ -467,8 +479,9 @@ fn the_stale_plan_is_blocked_while_a_build_is_running() {
     assert!(after["build_directories"][0]["gc_plan"]["reclaimable_now_bytes"].as_u64().unwrap() >= 100_000);
 }
 
+// TEST0200: Benchmark scenarios measure in an owned directory and restore edits
 #[test]
-fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
+fn test0200_benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     // FR-020, QA-029 (dirty working tree).
     let sb = Sandbox::new("bench");
     let ws = sb.workspace("ws");
@@ -524,8 +537,9 @@ fn benchmark_scenarios_measure_in_an_owned_directory_and_restore_edits() {
     assert_eq!(wall["delta"], 0);
 }
 
+// TEST0201: Clean scenario and failed builds
 #[test]
-fn clean_scenario_and_failed_builds() {
+fn test0201_clean_scenario_and_failed_builds() {
     let sb = Sandbox::new("benchclean");
     let p = sb.package("p", "p");
     let b = json_out(sb.qrust(&p).args(["benchmark", "--scenario", "clean", "--reps", "2", "--warmups", "0", "--format", "json"]));
@@ -543,8 +557,9 @@ fn clean_scenario_and_failed_builds() {
     assert!(failed["runs"][0]["invalid_reason"].as_str().unwrap().contains("status 101"));
 }
 
+// TEST0202: Experiment rejects a candidate that fails verification
 #[test]
-fn experiment_rejects_a_candidate_that_fails_verification() {
+fn test0202_experiment_rejects_a_candidate_that_fails_verification() {
     // FR-080 acceptance: a faster candidate that fails a project test is invalid.
     let sb = Sandbox::new("experiment");
     let p = sb.package("p", "p");
@@ -572,8 +587,9 @@ fn experiment_rejects_a_candidate_that_fails_verification() {
     assert_eq!(run(sb.qrust(&p).args(["experiment", "--", "build"])).status.code(), Some(2));
 }
 
+// TEST0203: Worktrees report identical units built twice
 #[test]
-fn worktrees_report_identical_units_built_twice() {
+fn test0203_worktrees_report_identical_units_built_twice() {
     // AC-013 / FR-120 acceptance.
     let sb = Sandbox::new("worktrees");
     // A dependency outside the repository, shared by absolute path: the same unit in both checkouts.
@@ -617,8 +633,9 @@ fn sccache_available() -> bool {
     std::process::Command::new("sccache").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
+// TEST0204: Sccache policy statistics conflict and safe remediation
 #[test]
-fn sccache_policy_statistics_conflict_and_safe_remediation() {
+fn test0204_sccache_policy_statistics_conflict_and_safe_remediation() {
     // QA-013, AC-009, AC-010, FR-090.2, FR-170 with a real, isolated sccache server.
     if !sccache_available() {
         eprintln!("skipping: sccache not installed");
@@ -709,8 +726,9 @@ fn sccache_policy_statistics_conflict_and_safe_remediation() {
     assert_eq!(fs::read_to_string(ws.join(".qrust/config.toml")).unwrap(), "[cache]\nprovider = \"sccache\"\n");
 }
 
+// TEST0205: Text and html reports render every section
 #[test]
-fn text_and_html_reports_render_every_section() {
+fn test0205_text_and_html_reports_render_every_section() {
     let sb = Sandbox::new("render");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
@@ -731,8 +749,9 @@ fn text_and_html_reports_render_every_section() {
     assert_eq!(run(sb.qrust(&ws).args(["analyze", "--bogus-flag"])).status.code(), Some(2));
 }
 
+// TEST0206: Analysis without any run explains what to do
 #[test]
-fn analysis_without_any_run_explains_what_to_do() {
+fn test0206_analysis_without_any_run_explains_what_to_do() {
     let sb = Sandbox::new("norun");
     let p = sb.package("p", "p");
     let out = run(sb.qrust(&p).arg("analyze"));
@@ -741,8 +760,9 @@ fn analysis_without_any_run_explains_what_to_do() {
     assert!(stdout(&ok(sb.qrust(&p).arg("runs"))).contains("No recorded runs"));
 }
 
+// TEST0207: Policy explain shows each setting with its origin
 #[test]
-fn policy_explain_shows_each_setting_with_its_origin() {
+fn test0207_policy_explain_shows_each_setting_with_its_origin() {
     // CFG-001, CFG-002.
     let sb = Sandbox::new("policy");
     let p = sb.package("p", "p");
@@ -768,8 +788,9 @@ fn policy_explain_shows_each_setting_with_its_origin() {
     assert!(stderr(&bad).contains("QRUST_CACHE_PROVIDR"));
 }
 
+// TEST0208: Doctor setup and uninstall
 #[test]
-fn doctor_setup_and_uninstall() {
+fn test0208_doctor_setup_and_uninstall() {
     // MIG-001, MIG-002.
     let sb = Sandbox::new("install");
     let p = sb.package("p", "p");
@@ -847,8 +868,9 @@ fn doctor_setup_and_uninstall() {
     assert_eq!(path, format!("{}:/usr/bin:/bin", qrust_home.join("bin").display()), "{}", pasted);
 }
 
+// TEST0209: Retention bounds recorded state
 #[test]
-fn retention_bounds_recorded_state() {
+fn test0209_retention_bounds_recorded_state() {
     // NFR-SPACE-001 / R-014.
     let sb = Sandbox::new("retention");
     let p = sb.package("p", "p");
@@ -866,8 +888,9 @@ fn retention_bounds_recorded_state() {
     assert_eq!(reasons(&sb.report(&p, "latest"))[0].2, "dependency");
 }
 
+// TEST0210: Stale session filesystem facts are marked unavailable
 #[test]
-fn stale_session_filesystem_facts_are_marked_unavailable() {
+fn test0210_stale_session_filesystem_facts_are_marked_unavailable() {
     // A run analysed after later builds must not present today's directory as its own footprint.
     let sb = Sandbox::new("lazy");
     let p = sb.package("p", "p");
@@ -883,8 +906,9 @@ fn stale_session_filesystem_facts_are_marked_unavailable() {
     assert_eq!(reasons(&latest), vec![("p".into(), "bin".into(), "dependency".into()), ("p".into(), "lib".into(), "source".into())]);
 }
 
+// TEST0211: Fast mode keeps stable rejecting unstable features
 #[test]
-fn fast_mode_keeps_stable_rejecting_unstable_features() {
+fn test0211_fast_mode_keeps_stable_rejecting_unstable_features() {
     // Fast mode unlocks `-Z` flags on a stable compiler with RUSTC_BOOTSTRAP, which on its own
     // would also accept `#![feature]`: code that upstream Cargo rejects must stay rejected.
     let sb = Sandbox::new("features");
@@ -905,8 +929,9 @@ fn fast_mode_keeps_stable_rejecting_unstable_features() {
     }
 }
 
+// TEST0212: Fast mode applies its settings unless the user made them
 #[test]
-fn fast_mode_applies_its_settings_unless_the_user_made_them() {
+fn test0212_fast_mode_applies_its_settings_unless_the_user_made_them() {
     let sb = Sandbox::new("fast");
     let p = sb.package("p", "p");
     let debuginfo = |r: &Value| -> Vec<String> { r["units"].as_array().unwrap().iter().filter(|u| u["freshness"] == "compiled").map(|u| u["codegen"]["debuginfo"].as_str().unwrap_or("0").to_string()).collect() };
@@ -1008,8 +1033,9 @@ fn cache_results(sb: &Sandbox) -> Vec<(String, String)> {
     out
 }
 
+// TEST0213: An output rewritten in place after it was stored is never restored
 #[test]
-fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
+fn test0213_an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
     let sb = Sandbox::new("rewritten");
     let dep = sb.dir.join("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0");
     sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
@@ -1037,8 +1063,9 @@ fn an_output_rewritten_in_place_after_it_was_stored_is_never_restored() {
     assert!(cache_results(&sb).contains(&("greet".to_string(), "hit".to_string())), "{:#?}", cache_details(&sb));
 }
 
+// TEST0214: Compiler probes run by build scripts are never cached
 #[test]
-fn compiler_probes_run_by_build_scripts_are_never_cached() {
+fn test0214_compiler_probes_run_by_build_scripts_are_never_cached() {
     let sb = Sandbox::new("probes");
     // Like autocfg: a build script compiles small programs with the same rustc (through the
     // wrapper Cargo hands it) to learn what the compiler supports. Probes must run every time and
@@ -1085,8 +1112,9 @@ fn main() {
     }
 }
 
+// TEST0215: Early cutoff rebuilds what an edit can reach and links the edit
 #[test]
-fn early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
+fn test0215_early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
     let sb = Sandbox::new("cutoff");
     sb.file("w/Cargo.toml", "[workspace]\nmembers = [\"base\", \"mid\", \"app\"]\nresolver = \"2\"\n");
     sb.file("w/base/Cargo.toml", "[package]\nname = \"base\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
@@ -1175,8 +1203,9 @@ fn links(sb: &Sandbox) -> Vec<(String, String)> {
     out
 }
 
+// TEST0216: A crate that reexports another is compiled again after any edit of it
 #[test]
-fn a_crate_that_reexports_another_is_compiled_again_after_any_edit_of_it() {
+fn test0216_a_crate_that_reexports_another_is_compiled_again_after_any_edit_of_it() {
     // `mid` re-exports `base`'s names: its metadata records where they are in `base`'s source, by
     // byte offset, which an edit inside a body moves without changing `base`'s interface.
     let sb = Sandbox::new("cutoff-reexport");
@@ -1200,8 +1229,9 @@ fn a_crate_that_reexports_another_is_compiled_again_after_any_edit_of_it() {
     assert!(cache_results(&sb).iter().any(|(n, r)| n == "mid" && r != "hit"), "{:#?}", cache_details(&sb));
 }
 
+// TEST0217: Cargo check caches binaries too
 #[test]
-fn cargo_check_caches_binaries_too() {
+fn test0217_cargo_check_caches_binaries_too() {
     // A binary `cargo check` checks writes no linked output: it is keyed as a unit that links nothing.
     let sb = Sandbox::new("check-bins");
     let p = sb.package("p", "p");
@@ -1212,8 +1242,9 @@ fn cargo_check_caches_binaries_too() {
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "hit"), "{:#?}", cache_details(&sb));
 }
 
+// TEST0218: A compiler driver that cannot be loaded never fails the build
 #[test]
-fn a_compiler_driver_that_cannot_be_loaded_never_fails_the_build() {
+fn test0218_a_compiler_driver_that_cannot_be_loaded_never_fails_the_build() {
     // As when the toolchain it was built in is gone: the loader fails with 127.
     let sb = Sandbox::new("driver-unloadable");
     let p = sb.package("p", "p");
@@ -1225,8 +1256,9 @@ fn a_compiler_driver_that_cannot_be_loaded_never_fails_the_build() {
     assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]).env("QRUST_EARLY_CUTOFF", "auto"))), "3\n");
 }
 
+// TEST0219: Cargo clippy runs clippy when the compiler driver is built
 #[test]
-fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
+fn test0219_cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
     let sb = Sandbox::new("driver-clippy");
     let p = sb.package("p", "p");
     if !run(sb.upstream(&p).args(["clippy", "--version"])).status.success() {
@@ -1239,8 +1271,9 @@ fn cargo_clippy_runs_clippy_when_the_compiler_driver_is_built() {
     assert!(stderr(&out).contains("writing `&Vec` instead of `&[_]`"), "{}", stderr(&out));
 }
 
+// TEST0220: A compiler driver that crashes never fails the build
 #[test]
-fn a_compiler_driver_that_crashes_never_fails_the_build() {
+fn test0220_a_compiler_driver_that_crashes_never_fails_the_build() {
     let sb = Sandbox::new("driver-crash");
     let p = sb.package("p", "p");
     let driver = build_driver(&sb, &p);
@@ -1271,8 +1304,9 @@ fn a_compiler_driver_that_crashes_never_fails_the_build() {
     assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "3\n");
 }
 
+// TEST0221: Setup prepares the compiler driver so the first build uses it
 #[test]
-fn setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
+fn test0221_setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     // The driver is part of an artifact-cache entry's key: what a first build stored without it,
     // every later build (with it) would miss.
     let sb = Sandbox::new("driver-setup");
@@ -1290,8 +1324,9 @@ fn setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
 }
 
+// TEST0222: The compiler driver is built in the background once and then used
 #[test]
-fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
+fn test0222_the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     let sb = Sandbox::new("driver-background");
     let p = sb.package("p", "p");
     let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
@@ -1317,8 +1352,9 @@ fn the_compiler_driver_is_built_in_the_background_once_and_then_used() {
     assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
 }
 
+// TEST0223: Artifact cache restores dependencies across cleans and checkouts
 #[test]
-fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
+fn test0223_artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     let sb = Sandbox::new("artifacts");
     // A dependency whose sources sit in the (sandbox) Cargo home's registry: immutable, cacheable.
     // Its warning must reach the user on every build, cached or not.
@@ -1395,8 +1431,9 @@ fn artifact_cache_restores_dependencies_across_cleans_and_checkouts() {
     assert!(cache_results(&sb).iter().all(|(_, r)| r == "off"), "{:?}", cache_results(&sb));
 }
 
+// TEST0224: A build in a terminal is rendered and its output kept
 #[test]
-fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
+fn test0224_a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     let sb = Sandbox::new("render");
     let p = sb.package("p", "p");
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 {\n    let unused = 1;\n    x + y\n}\n");
@@ -1449,8 +1486,9 @@ fn a_build_in_a_terminal_is_rendered_and_its_output_kept() {
     assert!(restored >= 1 && compiled + restored == 2, "each unit once: {}", summary);
 }
 
+// TEST0225: Run and test in a terminal build first then hand the program the terminal
 #[test]
-fn run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
+fn test0225_run_and_test_in_a_terminal_build_first_then_hand_the_program_the_terminal() {
     let sb = Sandbox::new("render-run");
     let p = sb.package("p", "p");
     // The programs report the Cargo settings they inherit: QuickRust's settings for the Cargo whose
@@ -1522,8 +1560,9 @@ fn crate_noop() -> &'static str {
     "__qrust-noop-runner"
 }
 
+// TEST0226: Quick workspace binaries are not stored but libraries always are
 #[test]
-fn quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
+fn test0226_quick_workspace_binaries_are_not_stored_but_libraries_always_are() {
     // Copying a freshly linked binary on every edit costs about what restoring it saves; a library
     // is cheap to store and sits on the path a clean rebuild waits for.
     let sb = Sandbox::new("store-rule");
@@ -1558,8 +1597,9 @@ fn linked_by(binary: &std::path::Path) -> &'static str {
     }
 }
 
+// TEST0227: Fast mode links with wild unless a linker is chosen
 #[test]
-fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
+fn test0227_fast_mode_links_with_wild_unless_a_linker_is_chosen() {
     if !cfg!(all(target_os = "linux", target_env = "gnu")) || std::process::Command::new("wild").arg("--version").output().is_err() {
         eprintln!("skipped: wild is not installed (cargo install wild-linker)");
         return;
@@ -1581,8 +1621,9 @@ fn fast_mode_links_with_wild_unless_a_linker_is_chosen() {
 }
 
 
+// TEST0228: Compatible versions of one crate from two sources are found in a real resolution
 #[test]
-fn compatible_versions_of_one_crate_from_two_sources_are_found_in_a_real_resolution() {
+fn test0228_compatible_versions_of_one_crate_from_two_sources_are_found_in_a_real_resolution() {
     // Cargo resolves one SemVer-compatible version per source, so two compatible versions side
     // by side come from different sources: here two path crates named `dup`, one reached as a
     // dev-dependency, the other through a platform-specific dependency of `mid`.
@@ -1616,8 +1657,9 @@ fn compatible_versions_of_one_crate_from_two_sources_are_found_in_a_real_resolut
     assert!(rec["verification"].as_str().unwrap().contains("[patch]"), "{}", rec);
 }
 
+// TEST0229: Analyze filters sorts and limits a sections records
 #[test]
-fn analyze_filters_sorts_and_limits_a_sections_records() {
+fn test0229_analyze_filters_sorts_and_limits_a_sections_records() {
     let sb = Sandbox::new("filters");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
@@ -1658,9 +1700,10 @@ fn analyze_filters_sorts_and_limits_a_sections_records() {
     assert!(!e.status.success() && stderr(&e).contains("no list of records"), "{}", stderr(&e));
 }
 
+// TEST0230: A command that prints ends quietly when its reader goes
 #[test]
 #[cfg(unix)]
-fn a_command_that_prints_ends_quietly_when_its_reader_goes() {
+fn test0230_a_command_that_prints_ends_quietly_when_its_reader_goes() {
     use std::os::unix::process::ExitStatusExt;
     let sb = Sandbox::new("pipe");
     let p = sb.package("p", "p");
@@ -1675,8 +1718,9 @@ fn a_command_that_prints_ends_quietly_when_its_reader_goes() {
     }
 }
 
+// TEST0231: Qrust says up to date only when cargo would build nothing
 #[test]
-fn qrust_says_up_to_date_only_when_cargo_would_build_nothing() {
+fn test0231_qrust_says_up_to_date_only_when_cargo_would_build_nothing() {
     // The gate for QuickRust judging freshness itself: after every kind of change, a build QuickRust calls
     // up to date must be one Cargo, asked directly, finds entirely fresh.
     let sb = Sandbox::new("oracle");

@@ -354,8 +354,9 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
 mod tests {
     use super::*;
 
+    // TEST0001: Edits stay inside bodies and change one literal
     #[test]
-    fn edits_stay_inside_bodies_and_change_one_literal() {
+    fn test0001_edits_stay_inside_bodies_and_change_one_literal() {
         let dir = std::env::temp_dir().join(format!("qrust-bench-cutoff-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let src = "const LIMIT: u32 = 10;\n\nfn f(x: u32) -> String {\n        let a = [0u8; 16];\n        let n = x + 42;\n        match n { 7 => {} _ => {} }\n        // \"not this\"\n        log(n);\n        format!(\"value is\", n)\n}\n\n#[cfg(test)]\nmod tests {\n        let t = \"in tests\";\n}\n";
@@ -369,8 +370,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0002: The same seed chooses the same edits
     #[test]
-    fn the_same_seed_chooses_the_same_edits() {
+    fn test0002_the_same_seed_chooses_the_same_edits() {
         let mut a: Vec<u32> = (0..50).collect();
         let mut b = a.clone();
         Rng(7).shuffle(&mut a);

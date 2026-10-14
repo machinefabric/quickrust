@@ -862,8 +862,9 @@ fn read_inputs(dep_info: &Path, cwd: &Path, out_dir_env: Option<&str>, target_di
 mod tests {
     use super::*;
 
+    // TEST0182: The input is the one argument that is no option and no value
     #[test]
-    fn the_input_is_the_one_argument_that_is_no_option_and_no_value() {
+    fn test0182_the_input_is_the_one_argument_that_is_no_option_and_no_value() {
         let args = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
         let cargo = args("--crate-name app --edition=2021 src/main.rs --error-format=json --crate-type bin --emit=dep-info,link -C debuginfo=2 --cfg feature=\"x\" --check-cfg cfg(test) -C metadata=1a --out-dir target/debug/deps -L dependency=target/debug/deps --extern mid=target/debug/deps/libmid.rlib");
         assert_eq!(input_index(&cargo), Some(3));
@@ -872,13 +873,15 @@ mod tests {
         assert_eq!(input_index(&args("--crate-name app -")), None);
     }
 
+    // TEST0183: Depinfo paths with spaces
     #[test]
-    fn depinfo_paths_with_spaces() {
+    fn test0183_depinfo_paths_with_spaces() {
         assert_eq!(split_depinfo_paths("src/lib.rs src/my\\ file.rs  build.rs"), vec!["src/lib.rs", "src/my file.rs", "build.rs"]);
     }
 
+    // TEST0184: Settings round trip and reject what this version does not know
     #[test]
-    fn settings_round_trip_and_reject_what_this_version_does_not_know() {
+    fn test0184_settings_round_trip_and_reject_what_this_version_does_not_know() {
         let dir = std::env::temp_dir().join(format!("qrust-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a QuickRust session");
@@ -890,8 +893,9 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0185: The fast linker is for linked outputs without a linker of the users
     #[test]
-    fn the_fast_linker_is_for_linked_outputs_without_a_linker_of_the_users() {
+    fn test0185_the_fast_linker_is_for_linked_outputs_without_a_linker_of_the_users() {
         let a = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
         assert!(links_output(&a(&["--crate-type", "bin"])) && links_output(&a(&["--crate-type=proc-macro"])) && links_output(&a(&["--test"])));
         assert!(!links_output(&a(&["--crate-type", "lib"])) && !links_output(&a(&["--crate-type", "rlib"])));
@@ -899,8 +903,9 @@ mod tests {
         assert!(!chooses_linker(&a(&["-C", "opt-level=0", "-C", "link-arg=-Wl,--as-needed"])));
     }
 
+    // TEST0186: Only cargo units get the parallel frontend
     #[test]
-    fn only_cargo_units_get_the_parallel_frontend() {
+    fn test0186_only_cargo_units_get_the_parallel_frontend() {
         let unit: Vec<String> = ["--crate-name", "foo", "-C", "metadata=abc", "src/lib.rs"].iter().map(|s| s.to_string()).collect();
         let probe: Vec<String> = ["--crate-name", "probe", "probe.rs"].iter().map(|s| s.to_string()).collect();
         let info: Vec<String> = ["--crate-name", "___", "-C", "metadata=x", "--print=cfg"].iter().map(|s| s.to_string()).collect();
@@ -908,8 +913,9 @@ mod tests {
         assert!(!is_cargo_unit(&probe) && !is_cargo_unit(&info));
     }
 
+    // TEST0187: Finds flag values
     #[test]
-    fn finds_flag_values() {
+    fn test0187_finds_flag_values() {
         let a: Vec<String> = ["--crate-name", "foo", "-C", "extra-filename=-abc", "-Cmetadata=1", "--out-dir=/x"].iter().map(|s| s.to_string()).collect();
         assert_eq!(arg_value(&a, "--crate-name"), Some("foo"));
         assert_eq!(arg_value(&a, "--out-dir"), Some("/x"));

@@ -411,9 +411,10 @@ pub fn status() -> (Option<Value>, bool) {
 mod tests {
     use super::*;
 
+    // TEST0113: The environment script puts the directory first once
     #[test]
     #[cfg(not(windows))]
-    fn the_environment_script_puts_the_directory_first_once() {
+    fn test0113_the_environment_script_puts_the_directory_first_once() {
         let (sh, fish) = env_scripts(Path::new("/opt/h/bin"));
         let run = |path: &str| -> String {
             let out = std::process::Command::new("/bin/sh").arg("-c").arg(format!("{}\nprintf %s \"$PATH\"", sh)).env("PATH", path).output().unwrap();
@@ -425,8 +426,9 @@ mod tests {
         assert!(fish.contains("set -gx PATH \"/opt/h/bin\" $PATH"));
     }
 
+    // TEST0114: Uninstalling restores a startup file exactly
     #[test]
-    fn uninstalling_restores_a_startup_file_exactly() {
+    fn test0114_uninstalling_restores_a_startup_file_exactly() {
         let line = ". \"$HOME/.qrust/env\"";
         for original in ["export A=1\n", "", "export A=1\n\nexport B=2\n"] {
             let sep = if original.is_empty() || original.ends_with('\n') { "" } else { "\n" };

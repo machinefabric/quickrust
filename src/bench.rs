@@ -550,8 +550,9 @@ mod tests {
         d
     }
 
+    // TEST0023: Mutation restores exact bytes on drop
     #[test]
-    fn mutation_restores_exact_bytes_on_drop() {
+    fn test0023_mutation_restores_exact_bytes_on_drop() {
         let dir = tmp("mut");
         let file = dir.join("lib.rs");
         // No trailing newline: restoring must not "tidy" the file.
@@ -572,8 +573,9 @@ mod tests {
         WsStore { id: "t".into(), dir: dir.to_path_buf(), root: None }
     }
 
+    // TEST0024: Recovery restores after a kill but refuses when the file diverged
     #[test]
-    fn recovery_restores_after_a_kill_but_refuses_when_the_file_diverged() {
+    fn test0024_recovery_restores_after_a_kill_but_refuses_when_the_file_diverged() {
         let dir = tmp("recover");
         let file = dir.join("lib.rs");
         fs::write(&file, "fn a() {}\n").unwrap();
@@ -594,8 +596,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0025: Only owned directories are cleared
     #[test]
-    fn only_owned_directories_are_cleared() {
+    fn test0025_only_owned_directories_are_cleared() {
         let dir = tmp("own");
         let foreign = dir.join("foreign");
         fs::create_dir_all(&foreign).unwrap();
@@ -610,8 +613,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0026: Edit target is confined to the workspace
     #[test]
-    fn edit_target_is_confined_to_the_workspace() {
+    fn test0026_edit_target_is_confined_to_the_workspace() {
         let dir = tmp("confine");
         let ws = dir.join("ws");
         fs::create_dir_all(ws.join("src")).unwrap();

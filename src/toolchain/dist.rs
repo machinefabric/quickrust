@@ -267,8 +267,9 @@ mod tests {
         ("miri-preview", HOST, false),
     ];
 
+    // TEST0126: The real stable manifest reads
     #[test]
-    fn the_real_stable_manifest_reads() {
+    fn test0126_the_real_stable_manifest_reads() {
         // A trimmed copy of the published manifest for 1.99.0 (2026-10-01).
         let m = Manifest::parse(include_bytes!("../../tests/fixtures/channel-rust-1.99.0-trimmed.toml").to_vec()).unwrap();
         assert_eq!((m.version(), m.date()), ("1.99.0", "2026-10-01"));
@@ -279,8 +280,9 @@ mod tests {
         assert_eq!(plan[5].root(), "rust-src-1.99.0");
     }
 
+    // TEST0127: Profiles take what exists for the host and requests must be there
     #[test]
-    fn profiles_take_what_exists_for_the_host_and_requests_must_be_there() {
+    fn test0127_profiles_take_what_exists_for_the_host_and_requests_must_be_there() {
         let m = m(RELEASE);
         assert_eq!(names(&m.plan(HOST, Profile::Minimal, &[], &[]).unwrap()), ["rustc", "cargo", "rust-std"]);
         // rustfmt is in the profile but this build lacks it: only an explicit request fails on that.
@@ -293,8 +295,9 @@ mod tests {
         assert!(matches!(self::m(&no_rustc).plan(HOST, Profile::Complete, &[], &[]), Err(Missing::Unavailable { .. })));
     }
 
+    // TEST0128: Urls follow the configured server
     #[test]
-    fn urls_follow_the_configured_server() {
+    fn test0128_urls_follow_the_configured_server() {
         assert_eq!(manifest_url("https://mirror.example/rust/", "nightly", Some("2026-10-11")), "https://mirror.example/rust/dist/2026-10-11/channel-rust-nightly.toml");
         assert_eq!(on_server("https://static.rust-lang.org/dist/2026-10-01/x.tar.xz", "http://127.0.0.1:9/"), "http://127.0.0.1:9/dist/2026-10-01/x.tar.xz");
         assert_eq!(on_server("https://static.rust-lang.org/dist/x", UPSTREAM), "https://static.rust-lang.org/dist/x");

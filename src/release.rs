@@ -446,21 +446,24 @@ mod tests {
         manifest("release", "0.150.0", "linux-x86_64", "qrust-0.150.0-linux-x86_64.tar.gz", "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-linux-x86_64.tar.gz", SHA, 4096)
     }
 
+    // TEST0082: The baked release line is read back as it was given
     #[test]
-    fn the_baked_release_line_is_read_back_as_it_was_given() {
+    fn test0082_the_baked_release_line_is_read_back_as_it_was_given() {
         let line = parse_baked("https://release.example nightly staging RWAAAA,RWBBBB,RWCCCC");
         assert_eq!(line, Identity { registry: "https://release.example".into(), channel: "nightly".into(), trust: Trust { roots: vec!["RWAAAA".into(), "RWBBBB".into(), "RWCCCC".into()], environment: "staging".into() } });
     }
 
+    // TEST0083: A manifest signed by a certified release key is trusted
     #[test]
-    fn a_manifest_signed_by_a_certified_release_key_is_trusted() {
+    fn test0083_a_manifest_signed_by_a_certified_release_key_is_trusted() {
         let line = Line::new();
         let manifest = a_manifest();
         assert_eq!(verify_manifest(&manifest, &line.sign(&manifest), &trust_of(&line, "prod"), NOW), Ok(()));
     }
 
+    // TEST0084: One changed byte of the manifest is refused
     #[test]
-    fn one_changed_byte_of_the_manifest_is_refused() {
+    fn test0084_one_changed_byte_of_the_manifest_is_refused() {
         let line = Line::new();
         let manifest = a_manifest();
         let envelope = line.sign(&manifest);
@@ -470,8 +473,9 @@ mod tests {
         assert!(matches!(verify_manifest(&other, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::ManifestSignatureInvalid(_))));
     }
 
+    // TEST0085: A certificate needs two distinct roots of this build
     #[test]
-    fn a_certificate_needs_two_distinct_roots_of_this_build() {
+    fn test0085_a_certificate_needs_two_distinct_roots_of_this_build() {
         let line = Line::new();
         let manifest = a_manifest();
         let certificate = Line::certificate(&line.release, "prod", ISSUED_AT, NOT_AFTER);
@@ -488,8 +492,9 @@ mod tests {
         assert_eq!(signed_by(&[]), too_few(0));
     }
 
+    // TEST0086: A certificate the roots did not sign as it stands is refused
     #[test]
-    fn a_certificate_the_roots_did_not_sign_as_it_stands_is_refused() {
+    fn test0086_a_certificate_the_roots_did_not_sign_as_it_stands_is_refused() {
         // The release key swapped for another after signing: the roots' signatures are over the
         // certificate's exact bytes, so they no longer hold.
         let line = Line::new();
@@ -503,8 +508,9 @@ mod tests {
         assert_eq!(refused, Err(ChainError::TooFewRootSignatures { key_id: attacker.id(), have: 0 }));
     }
 
+    // TEST0087: A certificate is for one environment and one span of time
     #[test]
-    fn a_certificate_is_for_one_environment_and_one_span_of_time() {
+    fn test0087_a_certificate_is_for_one_environment_and_one_span_of_time() {
         let line = Line::new();
         let manifest = a_manifest();
         let envelope = line.sign(&manifest);
@@ -516,8 +522,9 @@ mod tests {
         assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), ISSUED_AT - 1), Err(ChainError::NotYetValid { key_id: id, issued_at: ISSUED_AT, now: ISSUED_AT - 1 }));
     }
 
+    // TEST0088: The manifest must be signed by a key a certificate names
     #[test]
-    fn the_manifest_must_be_signed_by_a_key_a_certificate_names() {
+    fn test0088_the_manifest_must_be_signed_by_a_key_a_certificate_names() {
         let line = Line::new();
         let manifest = a_manifest();
         let certificate = Line::certificate(&line.release, "prod", ISSUED_AT, NOT_AFTER);
@@ -526,8 +533,9 @@ mod tests {
         assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::NoCertificateForSigner { key_id: stranger.id() }));
     }
 
+    // TEST0089: A certificate names the key it carries
     #[test]
-    fn a_certificate_names_the_key_it_carries() {
+    fn test0089_a_certificate_names_the_key_it_carries() {
         // The roots signed this certificate as it stands, so only what it says of itself is
         // wrong: it carries the release key and claims another key's id. A verifier that looked
         // keys up by the stated id would take the release key for that other key.
@@ -539,8 +547,9 @@ mod tests {
         assert_eq!(verify_manifest(&manifest, &envelope, &trust_of(&line, "prod"), NOW), Err(ChainError::KeyIdMismatch { stated: other.id(), actual: line.release.id() }));
     }
 
+    // TEST0090: Every certificate in the file must hold not only the one that signed
     #[test]
-    fn every_certificate_in_the_file_must_hold_not_only_the_one_that_signed() {
+    fn test0090_every_certificate_in_the_file_must_hold_not_only_the_one_that_signed() {
         let line = Line::new();
         let manifest = a_manifest();
         let good = Line::certificate(&line.release, "prod", ISSUED_AT, NOT_AFTER);
@@ -551,8 +560,9 @@ mod tests {
         assert_eq!(verify_manifest(&manifest, envelope.to_string().as_bytes(), &trust_of(&line, "prod"), NOW), Err(ChainError::TooFewRootSignatures { key_id: other.id(), have: 0 }));
     }
 
+    // TEST0091: A signature file of another kind is refused before anything in it is used
     #[test]
-    fn a_signature_file_of_another_kind_is_refused_before_anything_in_it_is_used() {
+    fn test0091_a_signature_file_of_another_kind_is_refused_before_anything_in_it_is_used() {
         let line = Line::new();
         let manifest = a_manifest();
         let mut envelope: serde_json::Value = serde_json::from_slice(&line.sign(&manifest)).unwrap();
@@ -564,8 +574,9 @@ mod tests {
         assert_eq!(verify_manifest(&manifest, none.to_string().as_bytes(), &trust_of(&line, "prod"), NOW), Err(ChainError::NoCertificates));
     }
 
+    // TEST0092: Base64 is read strictly
     #[test]
-    fn base64_is_read_strictly() {
+    fn test0092_base64_is_read_strictly() {
         assert_eq!(base64_decode("TWFu"), Some(b"Man".to_vec()));
         assert_eq!(base64_decode("TWE="), Some(b"Ma".to_vec()));
         assert_eq!(base64_decode("TQ=="), Some(b"M".to_vec()));
@@ -579,8 +590,9 @@ mod tests {
         }
     }
 
+    // TEST0093: The latest release is the channels own for this platform
     #[test]
-    fn the_latest_release_is_the_channels_own_for_this_platform() {
+    fn test0093_the_latest_release_is_the_channels_own_for_this_platform() {
         let manifest = a_manifest();
         let release = latest(&manifest, "release", "linux-x86_64").unwrap().unwrap();
         assert_eq!(release, Release { version: "0.150.0".into(), name: "qrust-0.150.0-linux-x86_64.tar.gz".into(), archive: Archive::TarGz, url: "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-linux-x86_64.tar.gz".into(), sha256: SHA.into(), size: 4096 });
@@ -591,8 +603,9 @@ mod tests {
         assert_eq!(missing, "QuickRust 0.150.0 is not published for darwin-arm64 (it is for linux-x86_64)");
     }
 
+    // TEST0094: A windows release is its zip and no other platforms is
     #[test]
-    fn a_windows_release_is_its_zip_and_no_other_platforms_is() {
+    fn test0094_a_windows_release_is_its_zip_and_no_other_platforms_is() {
         let url = "https://r.example/quickrust/release/0.150.0/qrust-0.150.0-windows-x86_64.zip";
         let zipped = manifest("release", "0.150.0", "windows-x86_64", "qrust-0.150.0-windows-x86_64.zip", url, SHA, 4096);
         let release = latest(&zipped, "release", "windows-x86_64").unwrap().unwrap();
@@ -604,8 +617,9 @@ mod tests {
         assert_eq!(latest(&zip_for_linux, "release", "linux-x86_64").unwrap_err(), "QuickRust 0.150.0 for linux-x86_64 is published without a .tar.gz archive");
     }
 
+    // TEST0095: A manifest that is not quickrusts or not whole is an error
     #[test]
-    fn a_manifest_that_is_not_quickrusts_or_not_whole_is_an_error() {
+    fn test0095_a_manifest_that_is_not_quickrusts_or_not_whole_is_an_error() {
         let edit = |change: &dyn Fn(&mut serde_json::Value)| {
             let mut value: serde_json::Value = serde_json::from_slice(&a_manifest()).unwrap();
             change(&mut value);
@@ -622,8 +636,9 @@ mod tests {
         assert!(latest(b"not json", "release", "linux-x86_64").unwrap_err().starts_with("the release manifest cannot be read"));
     }
 
+    // TEST0096: A manifest is fetched with its signature and trusted only together
     #[test]
-    fn a_manifest_is_fetched_with_its_signature_and_trusted_only_together() {
+    fn test0096_a_manifest_is_fetched_with_its_signature_and_trusted_only_together() {
         use crate::net::testserver::{Route, Server};
         let line = Line::new();
         let manifest = a_manifest();

@@ -658,8 +658,9 @@ pub fn vpath<'a>(v: &'a Value, path: &str) -> Option<&'a Value> {
 #[cfg(test)]
 mod tests {
 
+    // TEST0159: Timestamps read back and read as people say them
     #[test]
-    fn timestamps_read_back_and_read_as_people_say_them() {
+    fn test0159_timestamps_read_back_and_read_as_people_say_them() {
         for ns in [0u64, 1_791_798_758_123_000_000, 951_782_400_000_000_000, 4_102_444_799_999_000_000] {
             assert_eq!(parse_iso8601(&iso8601(ns)), Some(ns), "{}", iso8601(ns));
         }
@@ -677,8 +678,9 @@ mod tests {
         assert_eq!(human_ago(now + s, now), "just now", "a clock that moved back");
     }
 
+    // TEST0160: Verbatim windows paths are written as people write them
     #[test]
-    fn verbatim_windows_paths_are_written_as_people_write_them() {
+    fn test0160_verbatim_windows_paths_are_written_as_people_write_them() {
         let p = |s: &str| without_verbatim_prefix(PathBuf::from(s));
         assert_eq!(p(r"\\?\D:\a\_temp\qrust-home\bin\qrust.exe"), PathBuf::from(r"D:\a\_temp\qrust-home\bin\qrust.exe"));
         assert_eq!(p(r"\\?\UNC\server\share\x"), PathBuf::from(r"\\server\share\x"));
@@ -690,8 +692,9 @@ mod tests {
     }
     use super::*;
 
+    // TEST0161: An exclusive lock waits for its holder
     #[test]
-    fn an_exclusive_lock_waits_for_its_holder() {
+    fn test0161_an_exclusive_lock_waits_for_its_holder() {
         let dir = std::env::temp_dir().join(format!("qrust-lock-{}", new_id()));
         let path = dir.join("x.lock");
         let held = ExclusiveLock::acquire(&path).unwrap();
@@ -713,15 +716,17 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0162: Iso epoch and known date
     #[test]
-    fn iso_epoch_and_known_date() {
+    fn test0162_iso_epoch_and_known_date() {
         assert_eq!(iso8601(0), "1970-01-01T00:00:00.000Z");
         // 2026-10-05T10:15:30.123Z
         assert_eq!(iso8601(1_791_195_330_123_000_000), "2026-10-05T10:15:30.123Z");
     }
 
+    // TEST0163: Ids are sortable and unique
     #[test]
-    fn ids_are_sortable_and_unique() {
+    fn test0163_ids_are_sortable_and_unique() {
         let a = new_id();
         let b = new_id();
         assert_eq!(a.len(), 26);
@@ -729,8 +734,9 @@ mod tests {
         assert_eq!(&a[..6], &b[..6]);
     }
 
+    // TEST0164: Redacts tokens and login
     #[test]
-    fn redacts_tokens_and_login() {
+    fn test0164_redacts_tokens_and_login() {
         let r = redact_args(&["publish".into(), "--token".into(), "abc123".into()]);
         assert_eq!(r, vec!["publish", "--token", "<redacted>"]);
         let r = redact_args(&["login".into(), "s3cr3t".into()]);
@@ -743,8 +749,9 @@ mod tests {
         assert_eq!(r, vec!["build", "--features", "a,b"]);
     }
 
+    // TEST0165: Tokenizer respects path boundaries
     #[test]
-    fn tokenizer_respects_path_boundaries() {
+    fn test0165_tokenizer_respects_path_boundaries() {
         assert_eq!(replace_path_prefix("/a/repo/src", "/a/repo", "$W"), "$W/src");
         assert_eq!(replace_path_prefix("/a/repo", "/a/repo", "$W"), "$W");
         assert_eq!(replace_path_prefix("/a/repo-feature/src", "/a/repo", "$W"), "/a/repo-feature/src");
@@ -752,8 +759,9 @@ mod tests {
         assert_eq!(replace_path_prefix("-L /a/repo/t -L /a/repo2/t", "/a/repo", "$W"), "-L $W/t -L /a/repo2/t");
     }
 
+    // TEST0166: Parses units
     #[test]
-    fn parses_units() {
+    fn test0166_parses_units() {
         assert_eq!(parse_duration_ns("2s"), Some(2_000_000_000));
         assert_eq!(parse_duration_ns("500ms"), Some(500_000_000));
         assert_eq!(parse_bytes("1GiB"), Some(1 << 30));

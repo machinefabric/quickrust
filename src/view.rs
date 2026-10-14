@@ -205,8 +205,9 @@ mod tests {
         v["units"].as_array().unwrap().iter().map(|u| u["package"].as_str().unwrap()).collect()
     }
 
+    // TEST0167: Filters all match and list fields match by membership
     #[test]
-    fn filters_all_match_and_list_fields_match_by_membership() {
+    fn test0167_filters_all_match_and_list_fields_match_by_membership() {
         let mut r = report();
         let kept = View::parse(vec!["kind=lib".into(), "source=registry".into(), "features=full".into()], None, None).unwrap().apply(&mut r, "timing").unwrap();
         assert_eq!(packages(&r), ["syn"]);
@@ -214,8 +215,9 @@ mod tests {
         assert_eq!(r["critical_path"].as_array().unwrap().len(), 1, "the critical path is context, never cut");
     }
 
+    // TEST0168: Numbers sort largest first text from a and records without the field last
     #[test]
-    fn numbers_sort_largest_first_text_from_a_and_records_without_the_field_last() {
+    fn test0168_numbers_sort_largest_first_text_from_a_and_records_without_the_field_last() {
         let mut r = report();
         let kept = View::parse(vec![], Some("duration_ns".into()), Some(2)).unwrap().apply(&mut r, "timing").unwrap();
         assert_eq!(packages(&r), ["app", "syn"]);
@@ -228,15 +230,17 @@ mod tests {
         assert_eq!(packages(&r), ["app", "quote", "serde", "syn"]);
     }
 
+    // TEST0169: Storage candidates of every directory are records
     #[test]
-    fn storage_candidates_of_every_directory_are_records() {
+    fn test0169_storage_candidates_of_every_directory_are_records() {
         let mut r = report();
         View::parse(vec!["category=incremental".into()], None, None).unwrap().apply(&mut r, "storage").unwrap();
         assert_eq!(r["artifacts"][0]["gc_plan"]["candidates"], json!([{ "group": "b", "category": "incremental", "allocated_bytes": 9 }]));
     }
 
+    // TEST0170: Unknown fields and sections without records are errors
     #[test]
-    fn unknown_fields_and_sections_without_records_are_errors() {
+    fn test0170_unknown_fields_and_sections_without_records_are_errors() {
         let e = View::parse(vec!["profile=release".into()], None, None).unwrap().apply(&mut report(), "timing").unwrap_err();
         assert!(e.contains("no field `profile`") && e.contains("package"), "{}", e);
         assert!(View::parse(vec![], None, Some(3)).unwrap().apply(&mut report(), "cache").unwrap_err().contains("no list of records"));

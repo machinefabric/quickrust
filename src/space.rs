@@ -819,8 +819,9 @@ mod tests {
         root
     }
 
+    // TEST0115: Resolves bounds
     #[test]
-    fn resolves_bounds() {
+    fn test0115_resolves_bounds() {
         const GIB: u64 = 1 << 30;
         assert_eq!(resolve_space("auto", 1000 * GIB, (10.0, 10, 100)), 100 * GIB);
         assert_eq!(resolve_space("auto", 50 * GIB, (10.0, 10, 100)), 10 * GIB, "at least the floor");
@@ -829,9 +830,10 @@ mod tests {
         assert_eq!(resolve_space("12345", 200 * GIB, (10.0, 10, 100)), 12345);
     }
 
+    // TEST0116: A file linked twice counts once and is freed with its last link
     #[cfg(unix)]
     #[test]
-    fn a_file_linked_twice_counts_once_and_is_freed_with_its_last_link() {
+    fn test0116_a_file_linked_twice_counts_once_and_is_freed_with_its_last_link() {
         let c = cache();
         let ws = workspace(&c, "w");
         let entry = c.join("artifacts/e/k1/libx.rlib");
@@ -850,8 +852,9 @@ mod tests {
         assert!(links.release(&unit(Kind::Build)) >= blocks);
     }
 
+    // TEST0117: Orphans go first then the least recently used until within bounds
     #[test]
-    fn orphans_go_first_then_the_least_recently_used_until_within_bounds() {
+    fn test0117_orphans_go_first_then_the_least_recently_used_until_within_bounds() {
         let c = cache();
         let (a, b) = (workspace(&c, "a"), workspace(&c, "b"));
         let old = build_dir(&c, "a-1", &a, 5 * 3600, 400_000);
@@ -889,8 +892,9 @@ mod tests {
         pid
     }
 
+    // TEST0118: A held build directory stays while its holder runs and no longer
     #[test]
-    fn a_held_build_directory_stays_while_its_holder_runs_and_no_longer() {
+    fn test0118_a_held_build_directory_stays_while_its_holder_runs_and_no_longer() {
         let c = cache();
         let (a, b) = (workspace(&c, "a"), workspace(&c, "b"));
         let held = build_dir(&c, "a-1", &a, 9 * 3600, 400_000);
@@ -918,8 +922,9 @@ mod tests {
         assert!(!held.exists() && !theirs.exists(), "a hold outlived its holder");
     }
 
+    // TEST0119: A build directory being started is not a leftover
     #[test]
-    fn a_build_directory_being_started_is_not_a_leftover() {
+    fn test0119_a_build_directory_being_started_is_not_a_leftover() {
         // A command records its build directory before Cargo creates it.
         let c = cache();
         let a = workspace(&c, "a");
@@ -934,9 +939,10 @@ mod tests {
         assert!(!d.with_file_name("a-1.json").exists());
     }
 
+    // TEST0120: A directory in use is never removed
     #[cfg(unix)]
     #[test]
-    fn a_directory_in_use_is_never_removed() {
+    fn test0120_a_directory_in_use_is_never_removed() {
         let c = cache();
         let a = workspace(&c, "a");
         let held = build_dir(&c, "a-1", &a, 5 * 3600, 1000);
@@ -949,9 +955,10 @@ mod tests {
         assert!(held.exists() && building.exists());
     }
 
+    // TEST0121: Program sources count and go least recently used unless an install holds them
     #[cfg(unix)]
     #[test]
-    fn program_sources_count_and_go_least_recently_used_unless_an_install_holds_them() {
+    fn test0121_program_sources_count_and_go_least_recently_used_unless_an_install_holds_them() {
         use crate::install::{copy_lock, COMPLETE};
         let c = cache();
         let a = workspace(&c, "a");
@@ -982,8 +989,9 @@ mod tests {
         assert!(held.exists() && done.skipped_in_use == 1, "{:?}", done);
     }
 
+    // TEST0122: A fresh cache is counted without a scan and then checked by its growth
     #[test]
-    fn a_fresh_cache_is_counted_without_a_scan_and_then_checked_by_its_growth() {
+    fn test0122_a_fresh_cache_is_counted_without_a_scan_and_then_checked_by_its_growth() {
         let home = std::env::temp_dir().join(format!("qrust-space-home-{}", util::new_id()));
         fs::create_dir_all(&home).unwrap();
         let cache = home.join("cache");
@@ -997,8 +1005,9 @@ mod tests {
         assert!(!due(&cache, &p, &fs, util::now_wall_ns()), "not due right after its first count");
     }
 
+    // TEST0123: A collection is due below the free space above the size or a day after the count
     #[test]
-    fn a_collection_is_due_below_the_free_space_above_the_size_or_a_day_after_the_count() {
+    fn test0123_a_collection_is_due_below_the_free_space_above_the_size_or_a_day_after_the_count() {
         let c = cache();
         let p = Policy { max_bytes: 1000, min_free: 100 };
         let now = util::now_wall_ns();
@@ -1015,8 +1024,9 @@ mod tests {
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS));
     }
 
+    // TEST0124: A running collection is known by its lock
     #[test]
-    fn a_running_collection_is_known_by_its_lock() {
+    fn test0124_a_running_collection_is_known_by_its_lock() {
         let c = cache();
         assert!(!collecting_in(&c) && !c.join("gc.lock").exists(), "asking makes no lock");
         let held = util::ExclusiveLock::acquire(&c.join("gc.lock")).unwrap();
@@ -1031,9 +1041,10 @@ mod tests {
         }
     }
 
+    // TEST0125: What a unit in use holds is kept with it
     #[cfg(unix)]
     #[test]
-    fn what_a_unit_in_use_holds_is_kept_with_it() {
+    fn test0125_what_a_unit_in_use_holds_is_kept_with_it() {
         let c = cache();
         let ws = workspace(&c, "w");
         let entry = c.join("artifacts/e/k1/libx.rlib");

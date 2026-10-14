@@ -350,8 +350,9 @@ mod tests {
         (d, out)
     }
 
+    // TEST0011: A zip unpacks its top level directory and keeps what is executable
     #[test]
-    fn a_zip_unpacks_its_top_level_directory_and_keeps_what_is_executable() {
+    fn test0011_a_zip_unpacks_its_top_level_directory_and_keeps_what_is_executable() {
         let (d, out) = unzip(&[("quickrust/", b"", 0o755), ("quickrust/qrust.exe", b"MZ program", 0o755), ("quickrust/docs/README.md", b"read me", 0o644)], 1 << 20);
         assert_eq!(out.unwrap(), Unpacked { files: 2, bytes: 17 });
         assert_eq!(fs::read(d.join("qrust.exe")).unwrap(), b"MZ program");
@@ -364,8 +365,9 @@ mod tests {
         }
     }
 
+    // TEST0012: A zip lands nothing outside its directory and nothing beyond the bound
     #[test]
-    fn a_zip_lands_nothing_outside_its_directory_and_nothing_beyond_the_bound() {
+    fn test0012_a_zip_lands_nothing_outside_its_directory_and_nothing_beyond_the_bound() {
         let refused: [(&Zipped, &str); 5] = [
             (&[("other/qrust", b"x", 0o755)], "is not inside quickrust/"),
             (&[("quickrust/../evil", b"x", 0o644)], "is not a plain relative path"),
@@ -385,8 +387,9 @@ mod tests {
         assert!(unpack_zip_file(Path::new("/nonexistent/archive.zip"), "quickrust", &dest(), 15).is_err());
     }
 
+    // TEST0013: Unpacks the top level directory with modes times and inner links
     #[test]
-    fn unpacks_the_top_level_directory_with_modes_times_and_inner_links() {
+    fn test0013_unpacks_the_top_level_directory_with_modes_times_and_inner_links() {
         let items = [
             Item::Dir("pkg-1.0/"),
             Item::File("pkg-1.0/bin/tool", b"#!/bin/sh\n", 0o775),
@@ -410,8 +413,9 @@ mod tests {
         }
     }
 
+    // TEST0014: Nothing lands outside the destination
     #[test]
-    fn nothing_lands_outside_the_destination() {
+    fn test0014_nothing_lands_outside_the_destination() {
         fails(&[Item::File("pkg-1.0/../evil", b"x", 0o644)], "not a plain relative path");
         fails(&[Item::File("/etc/evil", b"x", 0o644)], "is not inside pkg-1.0/");
         fails(&[Item::File("other-2.0/file", b"x", 0o644)], "is not inside pkg-1.0/");
@@ -424,8 +428,9 @@ mod tests {
         fails(&[Item::Symlink("pkg-1.0/dir", "."), Item::File("pkg-1.0/dir/x", b"x", 0o644)], "dir is a symbolic link");
     }
 
+    // TEST0015: Names twice and content beyond the bound are errors
     #[test]
-    fn names_twice_and_content_beyond_the_bound_are_errors() {
+    fn test0015_names_twice_and_content_beyond_the_bound_are_errors() {
         fails(&[Item::File("pkg-1.0/a", b"x", 0o644), Item::File("pkg-1.0/a", b"y", 0o644)], "exists");
         let big = vec![7u8; 600 << 10];
         fails(&[Item::File("pkg-1.0/a", &big, 0o644), Item::File("pkg-1.0/b", &big, 0o644)], "more than");

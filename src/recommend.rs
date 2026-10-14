@@ -428,13 +428,15 @@ mod tests {
         json!({ "policy": { "workload": "local-dev", "incremental": {} }, "build_scripts": [], "duplication": {}, "codegen": {}, "cache": {}, "metrics": {}, "critical_path": [], "critical_path_model": {}, "rebuilds": {}, "artifacts": null })
     }
 
+    // TEST0069: Nothing is recommended without evidence
     #[test]
-    fn nothing_is_recommended_without_evidence() {
+    fn test0069_nothing_is_recommended_without_evidence() {
         assert!(generate(&base(), &Index::empty()).is_empty());
     }
 
+    // TEST0070: Unmeasured gains carry no number
     #[test]
-    fn unmeasured_gains_carry_no_number() {
+    fn test0070_unmeasured_gains_carry_no_number() {
         // FR-150 acceptance: no measured evidence ⇒ no "expected improvement" figure.
         let mut r = base();
         r["codegen"] = json!({ "settings": [{ "settings": { "class": "development", "debuginfo": "2" }, "dependency_units": 40, "time_ns": 9_000_000_000u64 }] });
@@ -449,8 +451,9 @@ mod tests {
         }
     }
 
+    // TEST0071: Exclusive cache strategies are one choice
     #[test]
-    fn exclusive_cache_strategies_are_one_choice() {
+    fn test0071_exclusive_cache_strategies_are_one_choice() {
         // FR-150 acceptance: mutually exclusive strategies appear as an experiment choice.
         let mut r = base();
         r["policy"]["incremental"] = json!({ "sccache_conflict": true, "observed": { "units_incremental": 4 } });
@@ -465,8 +468,9 @@ mod tests {
         assert_eq!(generate(&r, &Index::empty())[0]["alternatives"][0]["id"], "disable-incremental");
     }
 
+    // TEST0072: Measured recommendations rank above unknown ones
     #[test]
-    fn measured_recommendations_rank_above_unknown_ones() {
+    fn test0072_measured_recommendations_rank_above_unknown_ones() {
         let mut r = base();
         r["codegen"] = json!({ "settings": [{ "settings": { "class": "development", "debuginfo": "2" }, "dependency_units": 40, "time_ns": 1 }] });
         r["build_scripts"] = json!([{ "state": "over-invalidating-candidate", "package": "gen", "duration_ns": 4_000_000_000u64, "history": { "runs": 3, "total_ns": 12_000_000_000u64 } }]);
@@ -477,8 +481,9 @@ mod tests {
         assert!(recs[0]["score"].as_f64().unwrap() > recs[1]["score"].as_f64().unwrap());
     }
 
+    // TEST0073: Feature advice requires known dependents
     #[test]
-    fn feature_advice_requires_known_dependents() {
+    fn test0073_feature_advice_requires_known_dependents() {
         let variant = |features: Value, dependents: Value| json!({ "features": features, "dependents": dependents, "dur_ns": 1_000_000_000u64 });
         let mut r = base();
         r["duplication"] = json!({ "variants": [{ "package": "a", "version": "1.0.0", "causes": ["feature-set"], "variants": [variant(json!([]), json!(["x"])), variant(json!(["std"]), json!([]))] }] });
@@ -494,8 +499,9 @@ mod tests {
         generate(r, index).iter().map(|x| x["rule"].as_str().unwrap().to_string()).collect()
     }
 
+    // TEST0074: Compatible versions from separate sources are reported
     #[test]
-    fn compatible_versions_from_separate_sources_are_reported() {
+    fn test0074_compatible_versions_from_separate_sources_are_reported() {
         let version = |v: &str, via: Value, ns: Option<u64>| json!({ "version": v, "required_by": via, "observed_compile_ns": ns });
         let mut r = base();
         r["duplication"] = json!({ "versions": [{ "name": "rand", "state": "separate-sources", "versions": [version("0.8.4", json!(["app", "old"]), Some(1_000_000_000)), version("0.8.5", json!(["app"]), Some(3_000_000_000))] }] });
@@ -513,8 +519,9 @@ mod tests {
         assert!(rules(&r, &Index::empty()).is_empty());
     }
 
+    // TEST0075: A cache is flagged below a thirty percent hit rate over twenty requests
     #[test]
-    fn a_cache_is_flagged_below_a_thirty_percent_hit_rate_over_twenty_requests() {
+    fn test0075_a_cache_is_flagged_below_a_thirty_percent_hit_rate_over_twenty_requests() {
         let mut r = base();
         r["cache"] = json!({ "hits": 5, "misses": 15, "non_cacheable": 2, "requests": 22, "lookup_time_ns": 1_000_000, "write_time_ns": 2_000_000 });
         let recs = generate(&r, &Index::empty());
@@ -528,8 +535,9 @@ mod tests {
         assert!(rules(&r, &Index::empty()).is_empty());
     }
 
+    // TEST0076: A unit over two seconds and thirty percent of the critical path is a bottleneck
     #[test]
-    fn a_unit_over_two_seconds_and_thirty_percent_of_the_critical_path_is_a_bottleneck() {
+    fn test0076_a_unit_over_two_seconds_and_thirty_percent_of_the_critical_path_is_a_bottleneck() {
         let unit = |id: &str, ns: u64, kind: &str| json!({ "unit_id": id, "package": id, "duration_ns": ns, "kind": kind });
         let mut r = base();
         r["metrics"] = json!({ "critical_path_ns": 4_000_000_000u64 });
@@ -548,8 +556,9 @@ mod tests {
         assert!(rules(&r, &Index::empty()).is_empty());
     }
 
+    // TEST0077: Recurring invalidation needs six rebuilds two seconds and this run
     #[test]
-    fn recurring_invalidation_needs_six_rebuilds_two_seconds_and_this_run() {
+    fn test0077_recurring_invalidation_needs_six_rebuilds_two_seconds_and_this_run() {
         let rebuilt = |n: usize, cost_ns: u64| {
             let mut index = Index::empty();
             let graph = crate::analyze::Graph { units: Vec::new(), deps: Vec::new(), unresolved_externs: 0 };
@@ -575,8 +584,9 @@ mod tests {
         assert!(rules(&r, &rebuilt(5, 500_000_000)).is_empty());
     }
 
+    // TEST0078: Stale artifacts are reported from 256 mib
     #[test]
-    fn stale_artifacts_are_reported_from_256_mib() {
+    fn test0078_stale_artifacts_are_reported_from_256_mib() {
         let mut r = base();
         r["artifacts"] = json!([{ "root": "/w/target", "allocated_bytes": 1u64 << 30, "gc_plan": { "candidate_bytes": 256u64 << 20, "candidate_groups": 3, "stale_days": 30 } }]);
         let recs = generate(&r, &Index::empty());
@@ -587,8 +597,9 @@ mod tests {
         assert!(rules(&r, &Index::empty()).is_empty());
     }
 
+    // TEST0079: Linking units over a quarter of compile time suggest a linker experiment
     #[test]
-    fn linking_units_over_a_quarter_of_compile_time_suggest_a_linker_experiment() {
+    fn test0079_linking_units_over_a_quarter_of_compile_time_suggest_a_linker_experiment() {
         let mut r = base();
         r["metrics"] = json!({ "sum_unit_time_ns": 10_000_000_000u64 });
         r["codegen"] = json!({ "linking": { "linking_unit_time_ns": 2_500_000_000u64, "units": [{ "linker": "platform default" }] } });

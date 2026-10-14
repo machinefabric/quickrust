@@ -660,8 +660,9 @@ mod tests {
         parse_install(&args.iter().map(|a| a.to_string()).collect::<Vec<_>>())
     }
 
+    // TEST0054: Reads cargo installs arguments
     #[test]
-    fn reads_cargo_installs_arguments() {
+    fn test0054_reads_cargo_installs_arguments() {
         let r = p(&["ripgrep@14.1", "--features", "pcre2,simd", "-F", "x", "--locked", "-j", "4", "--root=/opt/x"]).unwrap();
         assert_eq!(r.crates, vec![("ripgrep".to_string(), Some("14.1".to_string()))]);
         assert_eq!(r.features, ["pcre2", "simd", "x"]);
@@ -678,8 +679,9 @@ mod tests {
         }
     }
 
+    // TEST0055: A bare version is exactly that one
     #[test]
-    fn a_bare_version_is_exactly_that_one() {
+    fn test0055_a_bare_version_is_exactly_that_one() {
         assert_eq!(requirement(&None), "*");
         assert_eq!(requirement(&Some("1.2.3".into())), "=1.2.3");
         assert_eq!(requirement(&Some("1.2".into())), "1.2");

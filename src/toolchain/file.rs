@@ -137,8 +137,9 @@ mod tests {
         d
     }
 
+    // TEST0129: The nearest file governs and both kinds are read
     #[test]
-    fn the_nearest_file_governs_and_both_kinds_are_read() {
+    fn test0129_the_nearest_file_governs_and_both_kinds_are_read() {
         let d = tmp();
         fs::write(d.join("rust-toolchain.toml"), "[toolchain]\nchannel = \"1.98\"\ncomponents = [\"rust-src\"]\ntargets = [\"wasm32-unknown-unknown\"]\nprofile = \"minimal\"\n").unwrap();
         let f = find(&d.join("a/b")).unwrap().unwrap();
@@ -154,8 +155,9 @@ mod tests {
         assert!(find(&d.join("a/b")).unwrap_err().contains("both"));
     }
 
+    // TEST0130: Rejects what the format does not have
     #[test]
-    fn rejects_what_the_format_does_not_have() {
+    fn test0130_rejects_what_the_format_does_not_have() {
         let p = Path::new("/x/rust-toolchain.toml");
         for (text, why) in [
             ("[toolchain]\nchannel = \"stable\"\ncomponent = [\"x\"]\n", "unexpected key `component`"),

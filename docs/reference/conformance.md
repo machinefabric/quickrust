@@ -8,35 +8,35 @@ behaviour is asserted.
 | Item | Status | Where |
 |---|---|---|
 | `cargo` compatibility shim; `qrust` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
-| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is QuickRust is refused | `src/engine.rs` · `recursion_is_refused…`, `an_unreachable_dist_server…` |
-| Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: QuickRust installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `toolchain_programs_run_through_quickrusts_proxies`, `builds_and_their_build_scripts_get_quickrusts_toolchain…`, `environment_reaches_build_scripts_unchanged` |
-| argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `stdin_and_exit_codes…` |
+| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is QuickRust is refused | `src/engine.rs` · `test0268_recursion_is_refused…`, `test0269_an_unreachable_dist_server…` |
+| Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: QuickRust installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `test0238_toolchain_programs_run_through_quickrusts_proxies`, `test0237_builds_and_their_build_scripts_get_quickrusts_toolchain…`, `test0271_environment_reaches_build_scripts_unchanged` |
+| argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `test0253_stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |
-| Cargo config / environment non-interference | done | `environment_reaches_build_scripts_unchanged`, `no_rebuild_when_alternating…` |
-| Nested invocations + opt-out | done, through `PATH` and `$CARGO`; see deviation 1 | `qa019`, `builds_and_their_build_scripts_get_quickrusts_toolchain…` |
-| Workspace, toolchain, environment fingerprints (FR-010) | done | `src/discover.rs` · `qa002`, `report_follows…` |
+| Cargo config / environment non-interference | done | `test0271_environment_reaches_build_scripts_unchanged`, `test0233_no_rebuild_when_alternating…` |
+| Nested invocations + opt-out | done, through `PATH` and `$CARGO`; see deviation 1 | `qa019`, `test0237_builds_and_their_build_scripts_get_quickrusts_toolchain…` |
+| Workspace, toolchain, environment fingerprints (FR-010) | done | `src/discover.rs` · `qa002`, `test0188_report_follows…` |
 | Cargo JSON-event collector | done, when the user requests JSON on a pipe | `qa018` |
-| rustc wrapper collector; existing wrapper composition | done | `src/wrapper.rs` · `qa010_qa011_qa012`, `wrapper_configured_in_cargo_config…` |
+| rustc wrapper collector; existing wrapper composition | done | `src/wrapper.rs` · `qa010_qa011_qa012`, `test0250_wrapper_configured_in_cargo_config…` |
 | Observed build-unit DAG; critical path (FR-030) | done | `src/analyze.rs` unit tests |
-| Rebuild / invalidation classifier (FR-040) | done | `src/waste.rs` unit tests · `rebuild_causes…`, `toolchain_change…` |
+| Rebuild / invalidation classifier (FR-040) | done | `src/waste.rs` unit tests · `test0189_rebuild_causes…`, `test0190_toolchain_change…` |
 | Version duplication; feature/profile/target variants (FR-050) | done | `src/waste.rs` unit tests |
-| Build-script analysis (FR-060); proc-macro identification (FR-070) | done | `qa007_qa008_qa009`, `build_script_without_rerun…` |
+| Build-script analysis (FR-060); proc-macro identification (FR-070) | done | `qa007_qa008_qa009`, `test0191_build_script_without_rerun…` |
 | Linker / codegen visibility (FR-080) | done | `qrust analyze codegen` |
-| Incremental policy evaluator (FR-090) | done | `sccache_policy…` |
-| sccache integration and reporting (FR-100) | done | `src/cache.rs` · `sccache_policy…`, `qa026` |
-| Artifact inventory, reclaimability, GC (FR-110): `qrust gc` keeps the cache within its bounds, `--dry-run` previews | done | `src/inventory.rs`, `src/space.rs` · `inventory_and_its_stale_plan_are_read_only…`, `the_stale_plan_is_blocked_while_a_build_is_running`, `quickrusts_cache_removes_what_is_gone_then_the_least_recently_used…` |
+| Incremental policy evaluator (FR-090) | done | `test0204_sccache_policy…` |
+| sccache integration and reporting (FR-100) | done | `src/cache.rs` · `test0204_sccache_policy…`, `qa026` |
+| Artifact inventory, reclaimability, GC (FR-110): `qrust gc` keeps the cache within its bounds, `--dry-run` previews | done | `src/inventory.rs`, `src/space.rs` · `test0194_inventory_and_its_stale_plan_are_read_only…`, `test0199_the_stale_plan_is_blocked_while_a_build_is_running`, `test0196_quickrusts_cache_removes_what_is_gone_then_the_least_recently_used…` |
 | Exact upstream `cargo clean` | done | `qa016` |
-| Worktree identification (FR-120) | done | `worktrees_report…` |
+| Worktree identification (FR-120) | done | `test0203_worktrees_report…` |
 | Scenario runner (FR-020); comparison (FR-160); experiments | done | `src/bench.rs`, `src/compare.rs` · `benchmark_*`, `experiment_*` |
 | Recommendation engine (FR-150) | done | `src/recommend.rs` unit tests |
 | Safe remediation preview (FR-170) | done; `safe` class can also be applied and rolled back | `src/remedy.rs` |
 | JSON sidecar schema | done | [report-schema.md](report-schema.md) |
-| CI regression budgets (FR-130) | done | `budgets_gate_ci…` |
-| Secret / path redaction | done | `secrets_never_reach…`, `qa021` |
+| CI regression budgets (FR-130) | done | `test0193_budgets_gate_ci…` |
+| Secret / path redaction | done | `test0192_secrets_never_reach…`, `qa021` |
 | Cross-platform process abstraction | done; on Windows a smoke run (setup, build, run, test) | `src/proc.rs` |
 | Compatibility corpus QA-001…030 | done except QA-024 (Windows) | tests/compat.rs |
-| Performance-overhead test | done | `dispatch_overhead_stays_within_budget` |
-| Migration / uninstall documentation; `doctor`; escape hatch | done | [How to adopt QuickRust gradually](../how-to/adopt-gradually.md), [How to install QuickRust](../how-to/install.md) · `doctor_setup_and_uninstall` |
+| Performance-overhead test | done | `test0273_dispatch_overhead_stays_within_budget` |
+| Migration / uninstall documentation; `doctor`; escape hatch | done | [How to adopt QuickRust gradually](../how-to/adopt-gradually.md), [How to install QuickRust](../how-to/install.md) · `test0208_doctor_setup_and_uninstall` |
 
 ## Not in this release (P1 and later in the specification)
 
@@ -143,7 +143,7 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     The driver is the toolchain's own rustc (`librustc_driver`, its LLVM, its release) run
     through QuickRust's callbacks, built once per toolchain against its `rustc-dev`
     component. With no callbacks active its outputs are rustc's byte for byte (test
-    `quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
+    `test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`). In fast mode three
     things differ from upstream's builds, none of them in program behaviour:
     a library's crate hash (SVH) is computed from what its dependents can observe, so
     libraries' metadata and rlibs differ from rustc's (the hash is an identifier; nothing
@@ -164,8 +164,8 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     target directory the user chose (`--target-dir`, `--config build.target-dir`,
     `CARGO_TARGET_DIR`/`CARGO_BUILD_TARGET_DIR`) is used as it is; `build.target-dir` in a
     Cargo configuration file is overridden. Scripts that hard-code `./target/…` must ask
-    `qrust path` instead. Tests: `builds_go_to_quickrusts_cache_and_never_into_the_project`,
-    `a_target_directory_the_user_chose_is_used…`, `a_build_script_building_another_workspace…`.
+    `qrust path` instead. Tests: `test0239_builds_go_to_quickrusts_cache_and_never_into_the_project`,
+    `test0241_a_target_directory_the_user_chose_is_used…`, `test0242_a_build_script_building_another_workspace…`.
 
 ## Open decisions of the specification, as resolved here
 

@@ -18,8 +18,9 @@ fn artifacts(target: &Path) -> Vec<String> {
     tree(target).into_iter().filter(|f| f.contains("/deps/") && (f.ends_with(".rlib") || f.ends_with(".rmeta") || !f.rsplit('/').next().unwrap().contains('.'))).collect()
 }
 
+// TEST0232: Qa001 plain build matches upstream
 #[test]
-fn qa001_plain_build_matches_upstream() {
+fn test0232_qa001_plain_build_matches_upstream() {
     let sb = Sandbox::new("plain");
     let wrapped = sb.package("wrapped/p", "p");
     let native = sb.package("native/p", "p");
@@ -35,8 +36,9 @@ fn qa001_plain_build_matches_upstream() {
     assert_eq!(stdout(&ok(sb.cargo(&wrapped).args(["run", "-q"]))), "3\n");
 }
 
+// TEST0233: No rebuild when alternating with upstream
 #[test]
-fn no_rebuild_when_alternating_with_upstream() {
+fn test0233_no_rebuild_when_alternating_with_upstream() {
     // compat mode: the wrapper must be invisible to Cargo's fingerprints, same target directory,
     // zero recompilation.
     let sb = Sandbox::new("alternate");
@@ -50,8 +52,9 @@ fn no_rebuild_when_alternating_with_upstream() {
     assert_eq!(artifacts(&sb.target_dir(&ws)), before);
 }
 
+// TEST0234: Fast mode and upstream keep separate artifacts instead of rebuilding each other
 #[test]
-fn fast_mode_and_upstream_keep_separate_artifacts_instead_of_rebuilding_each_other() {
+fn test0234_fast_mode_and_upstream_keep_separate_artifacts_instead_of_rebuilding_each_other() {
     // Fast mode builds with other profile settings, so Cargo names its artifacts differently. After
     // each side has built once, alternating between them compiles nothing (docs/how-to/adopt-gradually.md).
     let sb = Sandbox::new("alternate-fast");
@@ -67,8 +70,9 @@ fn fast_mode_and_upstream_keep_separate_artifacts_instead_of_rebuilding_each_oth
     assert_eq!(stdout(&ok(sb.cargo(&ws).args(["run", "-q", "-p", "app"]))), stdout(&ok(sb.upstream(&ws).args(["run", "-q", "-p", "app"]))));
 }
 
+// TEST0235: Qa002 virtual workspace members are all discovered
 #[test]
-fn qa002_virtual_workspace_members_are_all_discovered() {
+fn test0235_qa002_virtual_workspace_members_are_all_discovered() {
     let sb = Sandbox::new("virtual");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).args(["build", "--workspace"]));
@@ -95,8 +99,9 @@ fn toolchain_of_last_run(sb: &Sandbox) -> String {
     sb.sessions().last().unwrap()["upstream"]["toolchain"].as_str().unwrap().to_string()
 }
 
+// TEST0236: Qa003 toolchain selection plus then environment then file then default
 #[test]
-fn qa003_toolchain_selection_plus_then_environment_then_file_then_default() {
+fn test0236_qa003_toolchain_selection_plus_then_environment_then_file_then_default() {
     let sb = Sandbox::new("toolchain");
     let p = sb.package("p", "p");
     let stable = sb.toolchain_dir(&p);
@@ -126,8 +131,9 @@ fn qa003_toolchain_selection_plus_then_environment_then_file_then_default() {
     assert!(stderr(&b).contains("is not a toolchain"), "{}", stderr(&b));
 }
 
+// TEST0237: Builds and their build scripts get quickrusts toolchain and cargo home
 #[test]
-fn builds_and_their_build_scripts_get_quickrusts_toolchain_and_cargo_home() {
+fn test0237_builds_and_their_build_scripts_get_quickrusts_toolchain_and_cargo_home() {
     let sb = Sandbox::new("engine-env");
     let p = sb.package("p", "p");
     sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim(), get(\"CARGO\"))).unwrap();\n}\n");
@@ -143,8 +149,9 @@ fn builds_and_their_build_scripts_get_quickrusts_toolchain_and_cargo_home() {
     assert!(!sb.dir.join("theirs").exists());
 }
 
+// TEST0238: Toolchain programs run through quickrusts proxies
 #[test]
-fn toolchain_programs_run_through_quickrusts_proxies() {
+fn test0238_toolchain_programs_run_through_quickrusts_proxies() {
     let sb = Sandbox::new("proxies");
     let p = sb.package("p", "p");
     let stable = sb.toolchain_dir(&p);
@@ -164,8 +171,9 @@ fn toolchain_programs_run_through_quickrusts_proxies() {
     assert_eq!(missing.status.code(), Some(2));
 }
 
+// TEST0239: Builds go to quickrusts cache and never into the project
 #[test]
-fn builds_go_to_quickrusts_cache_and_never_into_the_project() {
+fn test0239_builds_go_to_quickrusts_cache_and_never_into_the_project() {
     let sb = Sandbox::new("builddir");
     let ws = sb.workspace("ws");
     let target = sb.target_dir(&ws);
@@ -196,7 +204,7 @@ fn builds_go_to_quickrusts_cache_and_never_into_the_project() {
 /// or a channel is — keeps both builds when each names its variant: neither overwrites the other's
 /// binary, and each is found by asking under its variant.
 #[test]
-fn build_variants_keep_each_configurations_output() {
+fn test0240_build_variants_keep_each_configurations_output() {
     let sb = Sandbox::new("variants");
     let p = sb.package("p", "p");
     sb.file("p/build.rs", "fn main() {\n    println!(\"cargo:rerun-if-env-changed=FLAVOR\");\n    println!(\"cargo:rustc-env=BAKED_FLAVOR={}\", std::env::var(\"FLAVOR\").unwrap_or_default());\n}\n");
@@ -268,8 +276,9 @@ fn build_variants_keep_each_configurations_output() {
     assert!(stderr(&bad).contains("invalid build variant \"../elsewhere\""), "{}", stderr(&bad));
 }
 
+// TEST0241: A target directory the user chose is used and cargo configuration files are not
 #[test]
-fn a_target_directory_the_user_chose_is_used_and_cargo_configuration_files_are_not() {
+fn test0241_a_target_directory_the_user_chose_is_used_and_cargo_configuration_files_are_not() {
     let sb = Sandbox::new("usertarget");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).args(["build", "--target-dir", "out"]));
@@ -288,8 +297,9 @@ fn a_target_directory_the_user_chose_is_used_and_cargo_configuration_files_are_n
     assert!(!sb.home.join("cache/builds").read_dir().unwrap().any(|e| e.unwrap().path() == mine), "a directory the user chose is never QuickRust's");
 }
 
+// TEST0242: A build script building another workspace builds it in that workspaces directory
 #[test]
-fn a_build_script_building_another_workspace_builds_it_in_that_workspaces_directory() {
+fn test0242_a_build_script_building_another_workspace_builds_it_in_that_workspaces_directory() {
     let sb = Sandbox::new("nestedws");
     let other = sb.package("other", "other");
     let p = sb.package("p", "p");
@@ -301,8 +311,9 @@ fn a_build_script_building_another_workspace_builds_it_in_that_workspaces_direct
     assert!(!p.join("target").exists() && !other.join("target").exists());
 }
 
+// TEST0243: Qrust installs programs into its own bin
 #[test]
-fn qrust_installs_programs_into_its_own_bin() {
+fn test0243_qrust_installs_programs_into_its_own_bin() {
     use common::registry::{Crate, Registry};
     let sb = Sandbox::new("install");
     let reg = Registry::start();
@@ -369,9 +380,10 @@ fn qrust_installs_programs_into_its_own_bin() {
     assert_eq!(run(sb.qrust(&sb.dir).args(["uninstall", "local-tool"])).status.code(), Some(2));
 }
 
+// TEST0244: Toolchain programs load their own libraries whatever the library path says
 #[test]
 #[cfg(target_os = "linux")]
-fn toolchain_programs_load_their_own_libraries_whatever_the_library_path_says() {
+fn test0244_toolchain_programs_load_their_own_libraries_whatever_the_library_path_says() {
     // rustup puts its toolchain's `lib` on LD_LIBRARY_PATH for everything it runs (`cargo test`
     // included): with the same release as QuickRust's, its librustc_driver has the same name, and a
     // rustc loading it takes rustup's toolchain for its sysroot. Here a decoy of that name, which
@@ -402,8 +414,9 @@ fn toolchain_programs_load_their_own_libraries_whatever_the_library_path_says() 
     ok(&mut driver);
 }
 
+// TEST0245: Qa004 manifest path from another directory
 #[test]
-fn qa004_manifest_path_from_another_directory() {
+fn test0245_qa004_manifest_path_from_another_directory() {
     let sb = Sandbox::new("manifest");
     let p = sb.package("deep/p", "p");
     let manifest = p.join("Cargo.toml");
@@ -413,8 +426,9 @@ fn qa004_manifest_path_from_another_directory() {
     assert_eq!(sessions.last().unwrap()["workspace_root"].as_str().unwrap(), p.to_str().unwrap(), "the workspace is found through --manifest-path, not the cwd");
 }
 
+// TEST0246: Qa005 features reach rustc unchanged
 #[test]
-fn qa005_features_reach_rustc_unchanged() {
+fn test0246_qa005_features_reach_rustc_unchanged() {
     // FR-001 acceptance: `cargo build --features a,b` selects the same build as upstream (compat
     // mode builds exactly upstream's; fast mode would differ in profile settings by design).
     let sb = Sandbox::new("features");
@@ -431,8 +445,9 @@ fn qa005_features_reach_rustc_unchanged() {
     ok(sb.cargo(&p).args(["build", "--no-default-features"]));
 }
 
+// TEST0247: Qa006 cross target check
 #[test]
-fn qa006_cross_target_check() {
+fn test0247_qa006_cross_target_check() {
     let sb = Sandbox::new("cross");
     let p = sb.package("p", "p");
     let target = "wasm32-unknown-unknown";
@@ -446,8 +461,9 @@ fn qa006_cross_target_check() {
     assert_eq!(report["run"]["command"]["targets"], serde_json::json!([target]));
 }
 
+// TEST0248: Qa007 qa008 qa009 build scripts links and proc macros
 #[test]
-fn qa007_qa008_qa009_build_scripts_links_and_proc_macros() {
+fn test0248_qa007_qa008_qa009_build_scripts_links_and_proc_macros() {
     let sb = Sandbox::new("scripts");
     let ws = sb.workspace("ws");
     // A native `links` build script that passes metadata to its dependents.
@@ -488,8 +504,9 @@ fn logging_wrapper(sb: &Sandbox, name: &str) -> (std::path::PathBuf, std::path::
     (script, log)
 }
 
+// TEST0249: Qa010 qa011 qa012 existing wrappers are preserved in cargo order
 #[test]
-fn qa010_qa011_qa012_existing_wrappers_are_preserved_in_cargo_order() {
+fn test0249_qa010_qa011_qa012_existing_wrappers_are_preserved_in_cargo_order() {
     let sb = Sandbox::new("wrappers");
     let p = sb.package("p", "p");
     let (outer, outer_log) = logging_wrapper(&sb, "outer-wrapper");
@@ -520,8 +537,9 @@ fn qa010_qa011_qa012_existing_wrappers_are_preserved_in_cargo_order() {
     assert!(fs::read_to_string(&ws_log).unwrap().lines().all(|l| l.ends_with("rustc")));
 }
 
+// TEST0250: Wrapper configured in cargo config is not masked
 #[test]
-fn wrapper_configured_in_cargo_config_is_not_masked() {
+fn test0250_wrapper_configured_in_cargo_config_is_not_masked() {
     // FR-100 acceptance: installing instrumentation must not drop an existing wrapper,
     // including one that only exists in `.cargo/config.toml` (which RUSTC_WRAPPER would override).
     let sb = Sandbox::new("cfgwrapper");
@@ -533,8 +551,9 @@ fn wrapper_configured_in_cargo_config_is_not_masked() {
     assert!(sb.sessions().pop().unwrap()["wrappers"]["inner_source"].as_str().unwrap().starts_with("cargo config"));
 }
 
+// TEST0251: A broken user wrapper fails like upstream
 #[test]
-fn a_broken_user_wrapper_fails_like_upstream() {
+fn test0251_a_broken_user_wrapper_fails_like_upstream() {
     let sb = Sandbox::new("brokenwrapper");
     let p = sb.package("p", "p");
     let a = run(sb.cargo(&p).arg("build").env("RUSTC_WRAPPER", "/nonexistent/wrapper"));
@@ -543,8 +562,9 @@ fn a_broken_user_wrapper_fails_like_upstream() {
     assert_eq!(a.status.code(), b.status.code(), "a wrapper the user configured must not be silently skipped\n{}", stderr(&a));
 }
 
+// TEST0252: Qa014 check test run doc bench behave like upstream
 #[test]
-fn qa014_check_test_run_doc_bench_behave_like_upstream() {
+fn test0252_qa014_check_test_run_doc_bench_behave_like_upstream() {
     let sb = Sandbox::new("commands");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("check"));
@@ -565,8 +585,9 @@ fn qa014_check_test_run_doc_bench_behave_like_upstream() {
     assert_eq!(sb.sessions().pop().unwrap()["state"], "failed");
 }
 
+// TEST0253: Stdin and exit codes pass through cargo run
 #[test]
-fn stdin_and_exit_codes_pass_through_cargo_run() {
+fn test0253_stdin_and_exit_codes_pass_through_cargo_run() {
     let sb = Sandbox::new("stdio");
     let p = sb.package("p", "p");
     sb.file("p/src/main.rs", "use std::io::Read;\nfn main() {\n    let mut s = String::new();\n    std::io::stdin().read_to_string(&mut s).unwrap();\n    print!(\"{}\", s.to_uppercase());\n    eprint!(\"err:{}\", s.len());\n    std::process::exit(7);\n}\n");
@@ -578,8 +599,9 @@ fn stdin_and_exit_codes_pass_through_cargo_run() {
     assert_eq!(out.status.code(), Some(7), "the program's exit status is propagated exactly");
 }
 
+// TEST0254: Qa015 cargo rustc extra arguments
 #[test]
-fn qa015_cargo_rustc_extra_arguments() {
+fn test0254_qa015_cargo_rustc_extra_arguments() {
     let sb = Sandbox::new("rustc");
     let p = sb.package("p", "p");
     let a = ok(sb.cargo(&p).args(["rustc", "--lib", "--", "--print", "crate-name"]));
@@ -588,8 +610,9 @@ fn qa015_cargo_rustc_extra_arguments() {
     assert_eq!(stdout(&a).trim(), "p");
 }
 
+// TEST0255: Qa016 cargo clean keeps exact upstream semantics
 #[test]
-fn qa016_cargo_clean_keeps_exact_upstream_semantics() {
+fn test0255_qa016_cargo_clean_keeps_exact_upstream_semantics() {
     let sb = Sandbox::new("clean");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build"));
@@ -614,8 +637,9 @@ fn qa016_cargo_clean_keeps_exact_upstream_semantics() {
     assert!(reasons.get("unknown").is_none(), "{}", reasons);
 }
 
+// TEST0256: Qa017 metadata stdout is byte identical
 #[test]
-fn qa017_metadata_stdout_is_byte_identical() {
+fn test0256_qa017_metadata_stdout_is_byte_identical() {
     let sb = Sandbox::new("metadata");
     let ws = sb.workspace("ws");
     let a = ok(sb.cargo(&ws).args(["metadata", "--format-version", "1"]));
@@ -624,8 +648,9 @@ fn qa017_metadata_stdout_is_byte_identical() {
     assert!(sb.sessions().is_empty(), "read-only queries are delegated without leaving a session behind");
 }
 
+// TEST0257: Qa018 json message stream is byte identical and observed
 #[test]
-fn qa018_json_message_stream_is_byte_identical_and_observed() {
+fn test0257_qa018_json_message_stream_is_byte_identical_and_observed() {
     // AC-002 / FR-001.2: the machine-readable stream must be exactly Cargo's. In compat mode the
     // build is upstream's own, so the stream is byte-identical; in fast mode it is still exactly
     // what the delegated Cargo prints, describing the settings QuickRust applied.
@@ -662,8 +687,9 @@ fn qa018_json_message_stream_is_byte_identical_and_observed() {
     assert!(stdout(&again).lines().all(|l| serde_json::from_str::<Value>(l).is_ok()));
 }
 
+// TEST0258: Qa019 external subcommands and nested cargo
 #[test]
-fn qa019_external_subcommands_and_nested_cargo() {
+fn test0258_qa019_external_subcommands_and_nested_cargo() {
     let sb = Sandbox::new("external");
     let p = sb.package("p", "p");
     // The subcommand calls `cargo` the way most tools do: by name, through PATH.
@@ -707,8 +733,9 @@ fn qa019_external_subcommands_and_nested_cargo() {
     assert_eq!(sb.sessions().len(), 5, "only the outer invocation is recorded when nested ones are opted out");
 }
 
+// TEST0259: Qa020 aliases are resolved by cargo and classified for observation
 #[test]
-fn qa020_aliases_are_resolved_by_cargo_and_classified_for_observation() {
+fn test0259_qa020_aliases_are_resolved_by_cargo_and_classified_for_observation() {
     let sb = Sandbox::new("alias");
     let p = sb.package("p", "p");
     sb.file("p/.cargo/config.toml", "[alias]\nxb = \"build --features a\"\n");
@@ -719,8 +746,9 @@ fn qa020_aliases_are_resolved_by_cargo_and_classified_for_observation() {
     assert_eq!(sb.report(&p, "latest")["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap()["features"], serde_json::json!(["a"]));
 }
 
+// TEST0260: Qa021 package and login pass through and secrets never reach qrust state
 #[test]
-fn qa021_package_and_login_pass_through_and_secrets_never_reach_qrust_state() {
+fn test0260_qa021_package_and_login_pass_through_and_secrets_never_reach_qrust_state() {
     let sb = Sandbox::new("registry");
     let p = sb.package("p", "p");
     let a = ok(sb.cargo(&p).args(["package", "--allow-dirty", "--no-verify", "--offline"]));
@@ -753,8 +781,9 @@ fn qa021_package_and_login_pass_through_and_secrets_never_reach_qrust_state() {
     assert!(s["command"]["argv_redacted"].to_string().contains("<redacted>"));
 }
 
+// TEST0261: Qa022 signals are forwarded and the exit mirrors the signal
 #[test]
-fn qa022_signals_are_forwarded_and_the_exit_mirrors_the_signal() {
+fn test0261_qa022_signals_are_forwarded_and_the_exit_mirrors_the_signal() {
     let sb = Sandbox::new("signal");
     let p = sb.package("p", "p");
     let marker = sb.dir.join("script-started");
@@ -774,8 +803,9 @@ fn qa022_signals_are_forwarded_and_the_exit_mirrors_the_signal() {
     assert_eq!((s["state"].as_str(), s["result"]["signal"].as_i64()), (Some("cancelled"), Some(2)));
 }
 
+// TEST0262: Qa023 non utf8 arguments are forwarded byte for byte
 #[test]
-fn qa023_non_utf8_arguments_are_forwarded_byte_for_byte() {
+fn test0262_qa023_non_utf8_arguments_are_forwarded_byte_for_byte() {
     use std::os::unix::ffi::OsStrExt;
     let sb = Sandbox::new("bytes");
     let p = sb.package("p", "p");
@@ -787,8 +817,9 @@ fn qa023_non_utf8_arguments_are_forwarded_byte_for_byte() {
     assert!(s["notes"].to_string().contains("non-UTF-8"), "the lossy rendering in the record is called out: {}", s["notes"]);
 }
 
+// TEST0263: Qa025 offline and locked flags pass through
 #[test]
-fn qa025_offline_and_locked_flags_pass_through() {
+fn test0263_qa025_offline_and_locked_flags_pass_through() {
     let sb = Sandbox::new("offline");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).args(["build", "--offline"]));
@@ -802,8 +833,9 @@ fn qa025_offline_and_locked_flags_pass_through() {
     assert_eq!(stderr(&a), stderr(&b));
 }
 
+// TEST0264: Qa026 cache outage fails open or closed by policy
 #[test]
-fn qa026_cache_outage_fails_open_or_closed_by_policy() {
+fn test0264_qa026_cache_outage_fails_open_or_closed_by_policy() {
     let sb = Sandbox::new("outage");
     let p = sb.package("p", "p");
     // sccache "installed" but unable to serve: its statistics/preflight call fails.
@@ -832,8 +864,9 @@ fn qa026_cache_outage_fails_open_or_closed_by_policy() {
     assert!(!sb.target_dir(&p).exists(), "fail-closed stops before any compilation");
 }
 
+// TEST0265: Qa027 unwritable report or state never fails a successful build
 #[test]
-fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
+fn test0265_qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     let sb = Sandbox::new("diskfull");
     let p = sb.package("p", "p");
     let blocker = sb.file("blocker", "a file where a directory is needed");
@@ -859,8 +892,9 @@ fn qa027_unwritable_report_or_state_never_fails_a_successful_build() {
     assert!(std::path::Path::new(&target).join("debug/p").exists());
 }
 
+// TEST0266: Qa030 unknown future flags and commands reach upstream
 #[test]
-fn qa030_unknown_future_flags_and_commands_reach_upstream() {
+fn test0266_qa030_unknown_future_flags_and_commands_reach_upstream() {
     let sb = Sandbox::new("future");
     let p = sb.package("p", "p");
     for args in [&["build", "--frobnicate-from-the-future"][..], &["--future-global-flag", "build"][..], &["command-from-the-future", "--x"][..]] {
@@ -872,8 +906,9 @@ fn qa030_unknown_future_flags_and_commands_reach_upstream() {
     }
 }
 
+// TEST0267: Help version and list are pure passthrough
 #[test]
-fn help_version_and_list_are_pure_passthrough() {
+fn test0267_help_version_and_list_are_pure_passthrough() {
     let sb = Sandbox::new("help");
     for args in [&["--version"][..], &["-V"][..], &["--list"][..], &["help", "build"][..], &["build", "--help"][..], &[][..]] {
         let a = run(sb.cargo(&sb.dir).args(args));
@@ -889,8 +924,9 @@ fn help_version_and_list_are_pure_passthrough() {
     }
 }
 
+// TEST0268: Recursion is refused with a diagnostic
 #[test]
-fn recursion_is_refused_with_a_diagnostic() {
+fn test0268_recursion_is_refused_with_a_diagnostic() {
     let sb = Sandbox::new("recursion");
     let p = sb.package("p", "p");
     // A linked "toolchain" whose cargo is QuickRust: refused when linked if it is the same file.
@@ -911,8 +947,9 @@ fn recursion_is_refused_with_a_diagnostic() {
     assert!(!sb.target_dir(&p).exists());
 }
 
+// TEST0269: An unreachable dist server is a clear error
 #[test]
-fn an_unreachable_dist_server_is_a_clear_error() {
+fn test0269_an_unreachable_dist_server_is_a_clear_error() {
     let sb = Sandbox::new("nocargo");
     let p = sb.package("p", "p");
     // A QuickRust home without the suite's toolchains.
@@ -923,8 +960,9 @@ fn an_unreachable_dist_server_is_a_clear_error() {
     assert!(!sb.target_dir(&p).exists());
 }
 
+// TEST0270: Explicit qrust entry and upstream escape hatch
 #[test]
-fn explicit_qrust_entry_and_upstream_escape_hatch() {
+fn test0270_explicit_qrust_entry_and_upstream_escape_hatch() {
     let sb = Sandbox::new("explicit");
     let p = sb.package("p", "p");
     // Migration stage "explicit wrapper": `qrust build` is Cargo syntax through QuickRust.
@@ -940,8 +978,9 @@ fn explicit_qrust_entry_and_upstream_escape_hatch() {
     assert!(fs::read_to_string(&log).unwrap().lines().all(|l| l.ends_with("rustc")), "the user's wrapper received rustc directly: no QuickRust wrapper in the chain");
 }
 
+// TEST0271: Environment reaches build scripts unchanged
 #[test]
-fn environment_reaches_build_scripts_unchanged() {
+fn test0271_environment_reaches_build_scripts_unchanged() {
     // Compatibility oracle: build-script-visible relevant environment.
     let sb = Sandbox::new("env");
     let script = "fn main() {\n    let mut vars: Vec<String> = std::env::vars().filter(|(k, _)| !k.starts_with(\"QRUST_\") && k != \"RUSTC_WRAPPER\" && k != \"CARGO\" && k != \"OUT_DIR\" && k != \"CARGO_MANIFEST_DIR\" && k != \"CARGO_MANIFEST_PATH\" && k != \"PATH\" && k != \"CARGO_TARGET_DIR\" && k != \"CARGO_BUILD_BUILD_DIR\" && k != \"DYLD_FALLBACK_LIBRARY_PATH\" && k != \"LD_LIBRARY_PATH\" && k != \"PWD\" && k != \"OLDPWD\" && k != \"DUMP\").map(|(k, v)| format!(\"{k}={v}\")).collect();\n    vars.sort();\n    std::fs::write(std::env::var(\"DUMP\").unwrap(), vars.join(\"\\n\")).unwrap();\n}\n";
@@ -965,8 +1004,9 @@ fn environment_reaches_build_scripts_unchanged() {
     assert!(dumps[0].contains("MY_PROXY_SETTING=http://proxy.invalid:1"));
 }
 
+// TEST0272: Invalid qrust configuration names the field and its source
 #[test]
-fn invalid_qrust_configuration_names_the_field_and_its_source() {
+fn test0272_invalid_qrust_configuration_names_the_field_and_its_source() {
     let sb = Sandbox::new("badconfig");
     let p = sb.package("p", "p");
     sb.file("p/.qrust/config.toml", "[cache]\nprovidr = \"sccache\"\n");
@@ -981,8 +1021,9 @@ fn invalid_qrust_configuration_names_the_field_and_its_source() {
     ok(sb.qrust(&p).args(["upstream", "--version"]));
 }
 
+// TEST0273: Dispatch overhead stays within budget
 #[test]
-fn dispatch_overhead_stays_within_budget() {
+fn test0273_dispatch_overhead_stays_within_budget() {
     // NFR-PERF-001: passive compatibility dispatch adds ≤ 50 ms (p95 target; median asserted here
     // with the unoptimized test binary).
     let sb = Sandbox::new("overhead");
@@ -1007,8 +1048,9 @@ fn dispatch_overhead_stays_within_budget() {
     assert!(overhead_ms < 100.0, "no-op overhead {:.1} ms exceeds the 100 ms budget (NFR-PERF-003)", overhead_ms);
 }
 
+// TEST0274: Comp007 cargo has the terminal through the shim
 #[test]
-fn comp007_cargo_has_the_terminal_through_the_shim() {
+fn test0274_comp007_cargo_has_the_terminal_through_the_shim() {
     // COMP-007: Cargo's standard streams are a terminal under QuickRust as under upstream Cargo: it
     // detects colour, and a Ctrl-C typed there reaches every process of the build and ends it
     // with the same status.
@@ -1050,8 +1092,9 @@ fn comp007_cargo_has_the_terminal_through_the_shim() {
     assert!(took < std::time::Duration::from_secs(10), "Ctrl-C ended the run after {:?}", took);
 }
 
+// TEST0275: Comp042 the jobserver reaches rustc through the wrapper and cargo from make
 #[test]
-fn comp042_the_jobserver_reaches_rustc_through_the_wrapper_and_cargo_from_make() {
+fn test0275_comp042_the_jobserver_reaches_rustc_through_the_wrapper_and_cargo_from_make() {
     // COMP-042 / FR-120.4: Cargo's jobserver reaches the compiler through QuickRust's rustc wrapper,
     // and an outer `make -jN` jobserver reaches Cargo through the shim.
     let sb = Sandbox::new("jobserver");
@@ -1118,8 +1161,9 @@ fn main() {
     assert_eq!(seen, outer_auth, "Cargo used its own jobserver instead of make's");
 }
 
+// TEST0276: Quickrusts compiler driver builds byte for byte what rustc builds
 #[test]
-fn quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
+fn test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds() {
     // The driver is the toolchain's own compiler run through QuickRust's callbacks: with nothing
     // changed by them, every output must be rustc's, byte for byte.
     let sb = Sandbox::new("driver");

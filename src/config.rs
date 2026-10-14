@@ -295,8 +295,9 @@ impl Config {
 mod tests {
     use super::*;
 
+    // TEST0046: Defaults are conservative
     #[test]
-    fn defaults_are_conservative() {
+    fn test0046_defaults_are_conservative() {
         let c = Config::defaults();
         assert_eq!(c.str("mode"), "fast");
         assert_eq!(c.str("cache.provider"), "inherit");
@@ -305,8 +306,9 @@ mod tests {
         assert_eq!(c.origin("cache.fail"), "default");
     }
 
+    // TEST0047: Rejects unknown keys and bad values
     #[test]
-    fn rejects_unknown_keys_and_bad_values() {
+    fn test0047_rejects_unknown_keys_and_bad_values() {
         let dir = std::env::temp_dir().join(format!("qrust-cfg-{}", crate::util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         let p = dir.join("config.toml");

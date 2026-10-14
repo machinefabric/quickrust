@@ -86,8 +86,9 @@ mod tests {
         o.args.iter().filter(|a| *a != "--config").cloned().collect()
     }
 
+    // TEST0052: Fast mode adds the settings to build commands only
     #[test]
-    fn fast_mode_adds_the_settings_to_build_commands_only() {
+    fn test0052_fast_mode_adds_the_settings_to_build_commands_only() {
         let o = overlays(&inv(&["build"]), "fast", &[]);
         assert_eq!(keys(&o), vec!["profile.dev.debug=\"line-tables-only\"", "profile.dev.package.\"*\".debug=false"]);
         assert_eq!(o.args[0], "--config");
@@ -97,8 +98,9 @@ mod tests {
         assert!(overlays(&inv(&["test"]), "compat", &[]).args.is_empty());
     }
 
+    // TEST0053: A user setting always wins
     #[test]
-    fn a_user_setting_always_wins() {
+    fn test0053_a_user_setting_always_wins() {
         // The user wants debug info in dev builds: QuickRust touches neither setting.
         let o = overlays(&inv(&["build"]), "fast", &[("dev.debug".into(), "manifest /w/Cargo.toml".into())]);
         assert!(o.args.is_empty());

@@ -844,8 +844,9 @@ pub fn link_record_live(root: &Path, record: &Path) -> bool {
 mod tests {
     use super::*;
 
+    // TEST0016: The objects to relink are exactly those the rlink names
     #[test]
-    fn the_objects_to_relink_are_exactly_those_the_rlink_names() {
+    fn test0016_the_objects_to_relink_are_exactly_those_the_rlink_names() {
         let dir = std::env::temp_dir().join(format!("qrust-rlink-{}", util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         // rustc encodes a path as its length, its bytes and a sentinel byte that is not ASCII.
@@ -871,8 +872,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0017: Every way of asking for the mir inliner is seen
     #[test]
-    fn every_way_of_asking_for_the_mir_inliner_is_seen() {
+    fn test0017_every_way_of_asking_for_the_mir_inliner_is_seen() {
         let inlines = |codegen: &[&str], unstable: &[&str]| {
             let mut m = MirInlining::default();
             codegen.iter().for_each(|v| m.read_codegen(v));
@@ -890,8 +892,9 @@ mod tests {
         assert!(m.inlines(false));
     }
 
+    // TEST0018: Mir inlining is decided as rustc decides it
     #[test]
-    fn mir_inlining_is_decided_as_rustc_decides_it() {
+    fn test0018_mir_inlining_is_decided_as_rustc_decides_it() {
         let m = |opt: &str, mir: Option<&str>, inline: Option<&str>| MirInlining { opt_level: opt.into(), mir_opt_level: mir.map(Into::into), inline_mir: inline.map(Into::into) };
         // Debug builds (`opt-level` 0, the default) and size-optimised ones do not inline MIR.
         assert!(!m("", None, None).inlines(false));
@@ -910,8 +913,9 @@ mod tests {
         assert!(m("0", Some("high"), None).inlines(false));
     }
 
+    // TEST0019: An interface hash counts only when the metadata carries it
     #[test]
-    fn an_interface_hash_counts_only_when_the_metadata_carries_it() {
+    fn test0019_an_interface_hash_counts_only_when_the_metadata_carries_it() {
         let dir = std::env::temp_dir().join(format!("qrust-iface-{}", util::new_id()));
         fs::create_dir_all(&dir).unwrap();
         let svh: u128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
@@ -951,8 +955,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0020: What a unit links follows every rlib below it
     #[test]
-    fn what_a_unit_links_follows_every_rlib_below_it() {
+    fn test0020_what_a_unit_links_follows_every_rlib_below_it() {
         let dir = std::env::temp_dir().join(format!("qrust-link-{}", util::new_id()));
         let (root, deps) = (dir.join("cache"), dir.join("deps"));
         fs::create_dir_all(&deps).unwrap();
@@ -983,8 +988,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0021: Remembered hashes follow the file content
     #[test]
-    fn remembered_hashes_follow_the_file_content() {
+    fn test0021_remembered_hashes_follow_the_file_content() {
         let root = std::env::temp_dir().join(format!("qrust-memo-{}", util::new_id()));
         fs::create_dir_all(&root).unwrap();
         let f = root.join("libdep.rlib");
@@ -1001,8 +1007,9 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    // TEST0022: Rewrite replaces the cached builds paths
     #[test]
-    fn rewrite_replaces_the_cached_builds_paths() {
+    fn test0022_rewrite_replaces_the_cached_builds_paths() {
         let pairs = vec![("/a/target/debug/deps".to_string(), "/b/t/debug/deps".to_string()), (String::new(), "/ignored".to_string())];
         let out = rewrite(b"{\"artifact\":\"/a/target/debug/deps/libx.rmeta\"}\n", &pairs);
         assert_eq!(String::from_utf8(out).unwrap(), "{\"artifact\":\"/b/t/debug/deps/libx.rmeta\"}\n");

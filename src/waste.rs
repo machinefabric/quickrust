@@ -823,15 +823,17 @@ mod tests {
         r2["units"].as_array().unwrap().iter().map(|u| (util::vstr(u, "package"), (util::vstr(u, "reason"), util::vstr(u, "detail")))).collect()
     }
 
+    // TEST0171: First observation is new not a rebuild
     #[test]
-    fn first_observation_is_new_not_a_rebuild() {
+    fn test0171_first_observation_is_new_not_a_rebuild() {
         let r = rebuilds(&graph(&[Ev::new("a", "1")]), &Index::empty(), &[]);
         assert_eq!(r["units"][0]["reason"], "new");
         assert_eq!(r["summary"]["previously_known"], 0);
     }
 
+    // TEST0172: Source edit names the file and dependents blame the dependency
     #[test]
-    fn source_edit_names_the_file_and_dependents_blame_the_dependency() {
+    fn test0172_source_edit_names_the_file_and_dependents_blame_the_dependency() {
         let mut a2 = Ev::new("a", "1");
         a2.files = vec![("src/lib.rs", "bbbb", 9)];
         let mut b = Ev::new("b", "2");
@@ -845,16 +847,18 @@ mod tests {
         assert!(r["b"].1.contains('a'));
     }
 
+    // TEST0173: Toolchain change is reported as compiler
     #[test]
-    fn toolchain_change_is_reported_as_compiler() {
+    fn test0173_toolchain_change_is_reported_as_compiler() {
         // FR-040 acceptance: a toolchain change is reported as toolchain drift.
         let mut a2 = Ev::new("a", "1");
         a2.rustc_mtime = 77;
         assert_eq!(reasons(&[Ev::new("a", "1")], &[a2], false)["a"].0, "compiler");
     }
 
+    // TEST0174: Features profile and flags are told apart
     #[test]
-    fn features_profile_and_flags_are_told_apart() {
+    fn test0174_features_profile_and_flags_are_told_apart() {
         let mut feat = Ev::new("a", "1");
         feat.extra = vec!["--cfg", "feature=\"std\""];
         let r = reasons(&[Ev::new("a", "1")], &[feat], false);
@@ -868,8 +872,9 @@ mod tests {
         assert_eq!(reasons(&[Ev::new("a", "1")], &[flags], false)["a"].0, "rustflags");
     }
 
+    // TEST0175: Identical unit after clean or elsewhere is a cache miss
     #[test]
-    fn identical_unit_after_clean_or_elsewhere_is_a_cache_miss() {
+    fn test0175_identical_unit_after_clean_or_elsewhere_is_a_cache_miss() {
         assert_eq!(reasons(&[Ev::new("a", "1")], &[Ev::new("a", "1")], true)["a"].0, "cache-miss");
         let mut elsewhere = Ev::new("a", "1");
         elsewhere.out = "/other/debug/deps";
@@ -878,8 +883,9 @@ mod tests {
         assert!(r["a"].1.contains("/t/debug/deps"));
     }
 
+    // TEST0176: Timestamp only change is distinguished and no evidence means unknown
     #[test]
-    fn timestamp_only_change_is_distinguished_and_no_evidence_means_unknown() {
+    fn test0176_timestamp_only_change_is_distinguished_and_no_evidence_means_unknown() {
         let mut touched = Ev::new("a", "1");
         touched.files = vec![("src/lib.rs", "aaaa", 999)];
         let r = reasons(&[Ev::new("a", "1")], &[touched], false);
@@ -894,8 +900,9 @@ mod tests {
         assert!(r["units"][0]["evidence"][0].as_str().unwrap().contains("evidence gap"));
     }
 
+    // TEST0177: Feature variants are not version duplicates
     #[test]
-    fn feature_variants_are_not_version_duplicates() {
+    fn test0177_feature_variants_are_not_version_duplicates() {
         // FR-050 acceptance: same package/version, different features ⇒ feature variants.
         let mut with = Ev::new("a", "2");
         with.extra = vec!["--cfg", "feature=\"std\""];
@@ -912,8 +919,9 @@ mod tests {
         assert_eq!(d["summary"]["duplicate_units"], 1);
     }
 
+    // TEST0178: Version duplicates show both reverse paths
     #[test]
-    fn version_duplicates_show_both_reverse_paths() {
+    fn test0178_version_duplicates_show_both_reverse_paths() {
         // FR-050 acceptance: two incompatible versions required by distinct dependencies.
         let meta = Metadata {
             with_deps: true,
@@ -941,8 +949,9 @@ mod tests {
         assert!(dup["versions"][0]["observed_compile_ns"].is_null(), "cost is unavailable when the unit was never observed");
     }
 
+    // TEST0179: Semver compatibility
     #[test]
-    fn semver_compatibility() {
+    fn test0179_semver_compatibility() {
         assert!(semver_compatible("1.2.0", "1.9.3"));
         assert!(!semver_compatible("1.2.0", "2.0.0"));
         assert!(semver_compatible("0.4.1", "0.4.9"));
@@ -950,8 +959,9 @@ mod tests {
         assert!(!semver_compatible("0.0.1", "0.0.2"));
     }
 
+    // TEST0180: Build script without directives becomes a candidate only when it reruns
     #[test]
-    fn build_script_without_directives_becomes_a_candidate_only_when_it_reruns() {
+    fn test0180_build_script_without_directives_becomes_a_candidate_only_when_it_reruns() {
         let script = || json!({ "package": "p", "version": "1.0.0", "ran_in_session": true, "has_rerun_directives": false, "duration_ns": 5 });
         let mut index = Index::empty();
         let mut first = vec![script()];
@@ -967,8 +977,9 @@ mod tests {
         assert_eq!(precise[0]["state"], "observed");
     }
 
+    // TEST0181: Proc macro cost is separate from what waits on it
     #[test]
-    fn proc_macro_cost_is_separate_from_what_waits_on_it() {
+    fn test0181_proc_macro_cost_is_separate_from_what_waits_on_it() {
         let mut mac = Ev::new("mac", "1");
         mac.extra = vec!["--crate-type", "proc-macro"];
         let mut a = Ev::new("a", "2");

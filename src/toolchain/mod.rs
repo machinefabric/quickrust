@@ -674,8 +674,9 @@ mod tests {
         Selection { spec: Spec::parse(s).unwrap(), source: Source::Plus, file: None }
     }
 
+    // TEST0131: The engine is the toolchains cargo under another name and follows it
     #[test]
-    fn the_engine_is_the_toolchains_cargo_under_another_name_and_follows_it() {
+    fn test0131_the_engine_is_the_toolchains_cargo_under_another_name_and_follows_it() {
         let l = layout();
         let tc = Toolchain { id: "1.99.0-x86_64-unknown-linux-gnu".into(), dir: l.toolchains().join("1.99.0-x86_64-unknown-linux-gnu"), linked: false };
         std::fs::create_dir_all(tc.dir.join("bin")).unwrap();
@@ -703,8 +704,9 @@ mod tests {
         std::fs::remove_dir_all(l.toolchains().parent().unwrap()).unwrap();
     }
 
+    // TEST0132: A channel is installed once and then used without the network
     #[test]
-    fn a_channel_is_installed_once_and_then_used_without_the_network() {
+    fn test0132_a_channel_is_installed_once_and_then_used_without_the_network() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
@@ -728,8 +730,9 @@ mod tests {
         assert_eq!(installed(&l), vec![tc]);
     }
 
+    // TEST0133: Targets and components come from the installed release
     #[test]
-    fn targets_and_components_come_from_the_installed_release() {
+    fn test0133_targets_and_components_come_from_the_installed_release() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
@@ -750,8 +753,9 @@ mod tests {
         assert!(e.contains("no component `miri-preview`") || e.contains("no component `miri`"), "{}", e);
     }
 
+    // TEST0134: An update moves channels to the new release with what they had
     #[test]
-    fn an_update_moves_channels_to_the_new_release_with_what_they_had() {
+    fn test0134_an_update_moves_channels_to_the_new_release_with_what_they_had() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         publish_release(&d, "/dist/channel-rust-1.99.0.toml", "2026-10-01", "1.99.0", &h);
@@ -779,8 +783,9 @@ mod tests {
         assert!(remove(&l, &old.id, &mut NoReport::default()).unwrap_err().contains("no toolchain"));
     }
 
+    // TEST0135: An unchanged channel is confirmed by its checksum alone
     #[test]
-    fn an_unchanged_channel_is_confirmed_by_its_checksum_alone() {
+    fn test0135_an_unchanged_channel_is_confirmed_by_its_checksum_alone() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
@@ -796,8 +801,9 @@ mod tests {
         assert_eq!(d.srv.requests("/dist/channel-rust-stable.toml.sha256").len(), 2);
     }
 
+    // TEST0136: What a channel left is retired after a day unused and nothing else is
     #[test]
-    fn what_a_channel_left_is_retired_after_a_day_unused_and_nothing_else_is() {
+    fn test0136_what_a_channel_left_is_retired_after_a_day_unused_and_nothing_else_is() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         publish_release(&d, "/dist/channel-rust-1.98.0.toml", "2026-08-01", "1.98.0", &h);
@@ -819,8 +825,9 @@ mod tests {
         assert!(retire(&l, &mut NoReport::default()).unwrap().is_empty(), "the release a channel names stays, used or not");
     }
 
+    // TEST0137: A channel is checked a day after its last check and never when off
     #[test]
-    fn a_channel_is_checked_a_day_after_its_last_check_and_never_when_off() {
+    fn test0137_a_channel_is_checked_a_day_after_its_last_check_and_never_when_off() {
         let mut st = state::State::default();
         st.channels.insert("stable-h".into(), state::ChannelState { toolchain: "1.99.0-h".into(), manifest_sha256: String::new(), checked_ns: 1_000 });
         assert!(!update_due(&st, "stable-h", 1_000 + RETIRE_AFTER_NS - 1));
@@ -833,8 +840,9 @@ mod tests {
         assert_eq!(floating_key(&Spec::parse("nightly-2026-10-11").unwrap()), None);
     }
 
+    // TEST0138: A file that is not the published one installs nothing
     #[test]
-    fn a_file_that_is_not_the_published_one_installs_nothing() {
+    fn test0138_a_file_that_is_not_the_published_one_installs_nothing() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         // Replace one archive after publishing: its hash no longer matches the manifest.
@@ -848,8 +856,9 @@ mod tests {
         assert!(state::load(&l.toolchains()).unwrap().channels.is_empty());
     }
 
+    // TEST0139: Concurrent first uses install once
     #[test]
-    fn concurrent_first_uses_install_once() {
+    fn test0139_concurrent_first_uses_install_once() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-1.99.0.toml", "2026-10-01", "1.99.0", &h);
         let ids: Vec<String> = std::thread::scope(|s| {
@@ -861,8 +870,9 @@ mod tests {
         assert_eq!(d.srv.requests(&format!("/dist/2026-10-01/{}.tar.xz", root)).len(), 1, "one download of each archive");
     }
 
+    // TEST0140: An undated nightly is the latest with everything asked for
     #[test]
-    fn an_undated_nightly_is_the_latest_with_everything_asked_for() {
+    fn test0140_an_undated_nightly_is_the_latest_with_everything_asked_for() {
         let (d, l, h) = (Dist::start(), layout(), host());
         let mut today: Vec<(&str, String, bool)> = release(&h);
         today.iter_mut().filter(|p| p.0 == "rustfmt-preview").for_each(|p| p.2 = false);
@@ -881,8 +891,9 @@ mod tests {
         assert!(e.contains("no Rust nightly release of 2026-10-13"), "{}", e);
     }
 
+    // TEST0141: An interrupted add is undone and a conflicting one changes nothing
     #[test]
-    fn an_interrupted_add_is_undone_and_a_conflicting_one_changes_nothing() {
+    fn test0141_an_interrupted_add_is_undone_and_a_conflicting_one_changes_nothing() {
         let (d, l, h) = (Dist::start(), layout(), host());
         publish_release(&d, "/dist/channel-rust-stable.toml", "2026-10-01", "1.99.0", &h);
         let tc = ensure(&l, &sel("stable"), &Needs::default(), &d.srv.base, &mut NoReport::default()).unwrap();
@@ -901,8 +912,9 @@ mod tests {
         assert!(!tc.record().unwrap().has("rustc-dev", &h));
     }
 
+    // TEST0142: Linked toolchains are used as they are
     #[test]
-    fn linked_toolchains_are_used_as_they_are() {
+    fn test0142_linked_toolchains_are_used_as_they_are() {
         let l = layout();
         let dir = l.toolchains().join("..").join("mine");
         std::fs::create_dir_all(dir.join("bin")).unwrap();
@@ -919,8 +931,9 @@ mod tests {
         assert!(ensure(&l, &sel("other"), &Needs::default(), "http://127.0.0.1:9", &mut NoReport::default()).unwrap_err().contains("qrust toolchain link other"));
     }
 
+    // TEST0143: Days go back across months and years
     #[test]
-    fn days_go_back_across_months_and_years() {
+    fn test0143_days_go_back_across_months_and_years() {
         assert_eq!(previous_day("2026-10-12").as_deref(), Some("2026-10-11"));
         assert_eq!(previous_day("2026-03-01").as_deref(), Some("2026-02-28"));
         assert_eq!(previous_day("2024-03-01").as_deref(), Some("2024-02-29"));

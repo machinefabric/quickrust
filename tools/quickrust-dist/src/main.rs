@@ -359,8 +359,9 @@ mod tests {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    // TEST0287: A tarball is what quickrust unpacks and is the same bytes every time
     #[test]
-    fn a_tarball_is_what_quickrust_unpacks_and_is_the_same_bytes_every_time() {
+    fn test0287_a_tarball_is_what_quickrust_unpacks_and_is_the_same_bytes_every_time() {
         let dir = scratch("tarball");
         let entries = staged(&dir, "");
         let (first, second) = (dir.join("a.tar.gz"), dir.join("b.tar.gz"));
@@ -380,8 +381,9 @@ mod tests {
         }
     }
 
+    // TEST0288: A zip is what quickrust unpacks on windows
     #[test]
-    fn a_zip_is_what_quickrust_unpacks_on_windows() {
+    fn test0288_a_zip_is_what_quickrust_unpacks_on_windows() {
         let dir = scratch("zip");
         let entries = staged(&dir, ".exe");
         let (first, second) = (dir.join("a.zip"), dir.join("b.zip"));
@@ -398,8 +400,9 @@ mod tests {
         assert_eq!((mode(&unpacked.join("qrust.exe")), mode(&unpacked.join("LICENSE-MIT"))), (0o755, 0o644));
     }
 
+    // TEST0289: Every platform is archived in the form quickrust updates from
     #[test]
-    fn every_platform_is_archived_in_the_form_quickrust_updates_from() {
+    fn test0289_every_platform_is_archived_in_the_form_quickrust_updates_from() {
         for (platform, target) in PLATFORMS {
             let form = quickrust::release::Archive::of(platform);
             let name = archive_name("0.150.0", platform);
@@ -412,8 +415,9 @@ mod tests {
         assert_eq!(host_platform(), Some(here));
     }
 
+    // TEST0290: A release line is whole and is the one the programs carry
     #[test]
-    fn a_release_line_is_whole_and_is_the_one_the_programs_carry() {
+    fn test0290_a_release_line_is_whole_and_is_the_one_the_programs_carry() {
         let given = |missing: &'static str| {
             move |name: &str| {
                 if name == missing {

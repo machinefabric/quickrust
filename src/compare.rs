@@ -521,8 +521,9 @@ mod tests {
         parse_budgets(text, "test").unwrap()
     }
 
+    // TEST0038: Budget fails when over the relative threshold
     #[test]
-    fn budget_fails_when_over_the_relative_threshold() {
+    fn test0038_budget_fails_when_over_the_relative_threshold() {
         // FR-130 acceptance: +15% against a +10% clean-build budget in a compatible environment fails.
         let b = budgets("[policy]\nmode = \"blocking\"\n[[budget]]\nmetric = \"wall_time_ns\"\nscenario = \"clean\"\nmax-increase-percent = 10\n");
         let r = evaluate(&b, Some(&summary("1.99", "m", 100_000)), &summary("1.99", "m", 115_000));
@@ -534,8 +535,9 @@ mod tests {
         assert_eq!(exit_code(&ok, &b), None);
     }
 
+    // TEST0039: Different hardware is incomparable not a regression
     #[test]
-    fn different_hardware_is_incomparable_not_a_regression() {
+    fn test0039_different_hardware_is_incomparable_not_a_regression() {
         // FR-130 acceptance: different hardware classes ⇒ incomparable.
         let b = budgets("[policy]\nmode = \"blocking\"\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-increase-percent = 10\n");
         let r = evaluate(&b, Some(&summary("1.99", "big", 100)), &summary("1.99", "small", 500));
@@ -546,8 +548,9 @@ mod tests {
         assert_eq!(exit_code(&evaluate(&strict, Some(&summary("1.99", "big", 100)), &summary("1.99", "small", 500)), &strict), Some(crate::EXIT_INCOMPARABLE));
     }
 
+    // TEST0040: Cold and warm cache runs are not compared blindly
     #[test]
-    fn cold_and_warm_cache_runs_are_not_compared_blindly() {
+    fn test0040_cold_and_warm_cache_runs_are_not_compared_blindly() {
         let mut warm = summary("1.99", "m", 10);
         warm["scenario"]["cache_state"] = json!("warm");
         let (state, diffs) = comparability(&summary("1.99", "m", 100), &warm);
@@ -555,8 +558,9 @@ mod tests {
         assert_eq!(diffs[0]["field"], "scenario.cache_state");
     }
 
+    // TEST0041: Warn mode reports without blocking and absolute limits need no baseline
     #[test]
-    fn warn_mode_reports_without_blocking_and_absolute_limits_need_no_baseline() {
+    fn test0041_warn_mode_reports_without_blocking_and_absolute_limits_need_no_baseline() {
         let b = budgets("[[budget]]\nmetric = \"wall_time_ns\"\nmax-value = \"1ms\"\n");
         let r = evaluate(&b, None, &summary("1.99", "m", 5_000_000));
         assert_eq!(r["result"], "warn");
@@ -565,8 +569,9 @@ mod tests {
         assert_eq!(evaluate(&b, None, &summary("1.99", "m", 900_000))["result"], "pass");
     }
 
+    // TEST0042: Noise band and scenario filter
     #[test]
-    fn noise_band_and_scenario_filter() {
+    fn test0042_noise_band_and_scenario_filter() {
         let b = budgets("[policy]\nmode = \"blocking\"\nnoise-percent = 5\n[[budget]]\nmetric = \"wall_time_ns\"\nmax-increase-percent = 0\n[[budget]]\nmetric = \"critical_path_ns\"\nscenario = \"small-edit\"\nmax-value = 1\n");
         let r = evaluate(&b, Some(&summary("1.99", "m", 100_000)), &summary("1.99", "m", 104_000));
         assert_eq!(r["result"], "pass", "+4% is inside a 5% noise band");
@@ -574,8 +579,9 @@ mod tests {
         assert_eq!(evaluate(&b, Some(&summary("1.99", "m", 100_000)), &summary("1.99", "m", 106_000))["result"], "fail");
     }
 
+    // TEST0043: Budget files are validated strictly
     #[test]
-    fn budget_files_are_validated_strictly() {
+    fn test0043_budget_files_are_validated_strictly() {
         assert!(parse_budgets("[[budget]]\nmetric = \"wall_tim\"\nmax-value = 1\n", "f").unwrap_err().contains("unknown metric"));
         assert!(parse_budgets("[[budget]]\nmetric = \"wall_time_ns\"\n", "f").unwrap_err().contains("no threshold"));
         assert!(parse_budgets("[[budget]]\nmetric = \"wall_time_ns\"\nmax-valu = 1\n", "f").unwrap_err().contains("unknown key"));
@@ -583,8 +589,9 @@ mod tests {
         assert_eq!(budgets("[[budget]]\nmetric = \"artifact_allocated_bytes\"\nmax-value = \"2GiB\"\n").budgets[0].max_value, Some((2u64 << 30) as f64));
     }
 
+    // TEST0044: Compiler difference is shown before deltas and missing metrics are unavailable
     #[test]
-    fn compiler_difference_is_shown_before_deltas_and_missing_metrics_are_unavailable() {
+    fn test0044_compiler_difference_is_shown_before_deltas_and_missing_metrics_are_unavailable() {
         // FR-160 acceptance: different rustc versions are stated explicitly.
         let c = compare(&summary("rustc 1.98", "m", 100), &summary("rustc 1.99", "m", 80));
         assert_eq!(c["comparability"]["state"], "incomparable");
@@ -598,8 +605,9 @@ mod tests {
         assert!(rss.get("delta").is_none());
     }
 
+    // TEST0045: A run on another toolchain is left out of the sample group
     #[test]
-    fn a_run_on_another_toolchain_is_left_out_of_the_sample_group() {
+    fn test0045_a_run_on_another_toolchain_is_left_out_of_the_sample_group() {
         // FR-020 acceptance: three repetitions, one on a different toolchain ⇒ excluded.
         let (group, excluded) = homogeneous_group(vec![summary("1.99", "m", 10), summary("1.98", "m", 99), summary("1.99", "m", 12)]);
         assert_eq!(group.len(), 2);

@@ -708,8 +708,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    // TEST0102: Html escapes repository controlled strings
     #[test]
-    fn html_escapes_repository_controlled_strings() {
+    fn test0102_html_escapes_repository_controlled_strings() {
         // SEC-019: a hostile package name must not become markup.
         let r = json!({
             "run": { "id": "X", "command": { "argv_redacted": ["cargo", "build"] }, "result": {}, "upstream": {} },
@@ -725,8 +726,9 @@ mod tests {
         assert!(h.contains("a&quot;&gt;&lt;img src=x onerror=y&gt;@1"));
     }
 
+    // TEST0103: Empty sections distinguish nothing found from unavailable
     #[test]
-    fn empty_sections_distinguish_nothing_found_from_unavailable() {
+    fn test0103_empty_sections_distinguish_nothing_found_from_unavailable() {
         // UX-006.
         let none = json!({ "build_scripts": [], "unavailable": {} });
         assert!(run_text(&none, &["scripts"], Presentation::default()).contains("No build script was involved"));
@@ -737,14 +739,16 @@ mod tests {
         assert!(text.contains("No proc-macro crate") && text.contains("Unavailable: not exposed"));
     }
 
+    // TEST0104: Hit rate is never shown without its request count
     #[test]
-    fn hit_rate_is_never_shown_without_its_request_count() {
+    fn test0104_hit_rate_is_never_shown_without_its_request_count() {
         let r = json!({ "cache": { "hits": 80, "misses": 20, "non_cacheable": 3, "requests": 110, "state": "local", "non_cacheable_reasons": {}, "units": {} } });
         assert!(run_text(&r, &["cache"], Presentation::default()).contains("80/100 cacheable requests (80%)"));
     }
 
+    // TEST0105: Unknown gains are not given a number
     #[test]
-    fn unknown_gains_are_not_given_a_number() {
+    fn test0105_unknown_gains_are_not_given_a_number() {
         let mut out = String::new();
         recommendations(&json!([{ "title": "t", "impact": { "kind": "unknown" }, "evidence": [] }]), &mut out);
         assert!(out.contains("gain unknown (not measured)"));
