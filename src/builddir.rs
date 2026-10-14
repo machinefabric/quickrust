@@ -262,8 +262,9 @@ mod tests {
         classify(&args.iter().map(OsString::from).collect::<Vec<_>>())
     }
 
+    // TEST0027: The users choice wins and otherwise the workspace gets a directory of its own
     #[test]
-    fn the_users_choice_wins_and_otherwise_the_workspace_gets_a_directory_of_its_own() {
+    fn test0027_the_users_choice_wins_and_otherwise_the_workspace_gets_a_directory_of_its_own() {
         let cwd = Path::new("/w/app");
         let root = Path::new("/w/app");
         let none = |_: &str| None;
@@ -287,8 +288,9 @@ mod tests {
         assert_eq!(choose_in(&inv(&["build"]), cwd, Some(root), None, &inherited), Some(managed.clone()));
     }
 
+    // TEST0028: A variant is a build directory of its own beside the workspaces
     #[test]
-    fn a_variant_is_a_build_directory_of_its_own_beside_the_workspaces() {
+    fn test0028_a_variant_is_a_build_directory_of_its_own_beside_the_workspaces() {
         let cwd = Path::new("/w/app");
         let none = |_: &str| None;
         let plain = choose_in(&inv(&["build"]), cwd, Some(cwd), None, &none).unwrap();
@@ -310,8 +312,9 @@ mod tests {
         assert_eq!(choose_in(&inv(&["build"]), cwd, Some(cwd), Some("staging-nightly"), &inherited), Some(staging.clone()));
     }
 
+    // TEST0029: A hold names its directory and its holder
     #[test]
-    fn a_hold_names_its_directory_and_its_holder() {
+    fn test0029_a_hold_names_its_directory_and_its_holder() {
         assert_eq!(hold_of("app-fca2211b77f340ae.hold-4242"), Some(("app-fca2211b77f340ae", 4242)));
         // A variant's directory is held under its whole name, whatever the variant is called.
         assert_eq!(hold_of("app-fca2211b77f340ae.staging.hold-7"), Some(("app-fca2211b77f340ae.staging", 7)));
@@ -321,8 +324,9 @@ mod tests {
         }
     }
 
+    // TEST0030: A new hold clears the records of holders that are gone
     #[test]
-    fn a_new_hold_clears_the_records_of_holders_that_are_gone() {
+    fn test0030_a_new_hold_clears_the_records_of_holders_that_are_gone() {
         let builds = std::env::temp_dir().join(format!("qrust-holds-{}", util::new_id())).join("builds");
         let (app, lib) = (builds.join("app-fca2211b77f340ae"), builds.join("lib-0011223344556677.staging"));
         // A process that ran and was waited for: its id is nobody's now.
@@ -356,8 +360,9 @@ mod tests {
         fs::remove_dir_all(builds.parent().unwrap()).unwrap();
     }
 
+    // TEST0031: A variant is a plain word
     #[test]
-    fn a_variant_is_a_plain_word() {
+    fn test0031_a_variant_is_a_plain_word() {
         assert_eq!(variant_named(""), Ok(None));
         assert_eq!(variant_named("st-n_cu9"), Ok(Some("st-n_cu9".to_string())));
         assert_eq!(variant_named(&"v".repeat(VARIANT_MAX)), Ok(Some("v".repeat(VARIANT_MAX))));
@@ -367,8 +372,9 @@ mod tests {
         }
     }
 
+    // TEST0032: Names are safe and bounded
     #[test]
-    fn names_are_safe_and_bounded() {
+    fn test0032_names_are_safe_and_bounded() {
         let d = managed_dir(Path::new("/w/my project (copy) with a very long name indeed"), None);
         let name = d.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("my_project__copy__with_a-"), "{}", name);

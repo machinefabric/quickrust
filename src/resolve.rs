@@ -409,8 +409,9 @@ mod tests {
         v.iter().map(OsString::from).collect()
     }
 
+    // TEST0106: Classifies without consuming
     #[test]
-    fn classifies_without_consuming() {
+    fn test0106_classifies_without_consuming() {
         let inv = classify(&os(&["+nightly", "--config", "a=1", "-Zfoo", "test", "-p", "core", "--features", "foo"]));
         assert_eq!(inv.toolchain.as_deref(), Some("nightly"));
         assert_eq!(inv.command.as_deref(), Some("test"));
@@ -422,8 +423,9 @@ mod tests {
         assert_eq!((inv.configs, inv.configs_after_command, inv.command_index), (vec!["b=2".to_string(), "c=3".to_string()], true, Some(2)));
     }
 
+    // TEST0107: Global value flags are skipped
     #[test]
-    fn global_value_flags_are_skipped() {
+    fn test0107_global_value_flags_are_skipped() {
         let inv = classify(&os(&["--color", "always", "-C", "sub", "b", "--release"]));
         assert_eq!(inv.command.as_deref(), Some("b"));
         assert_eq!(inv.family, Family::Build);
@@ -431,8 +433,9 @@ mod tests {
         assert_eq!(inv.chdir, Some(PathBuf::from("sub")));
     }
 
+    // TEST0108: Unknown and bare invocations
     #[test]
-    fn unknown_and_bare_invocations() {
+    fn test0108_unknown_and_bare_invocations() {
         assert_eq!(classify(&os(&["nextest", "run"])).family, Family::External);
         assert_eq!(classify(&os(&["--version"])).family, Family::Query);
         assert_eq!(classify(&os(&[])).command, None);
@@ -446,8 +449,9 @@ mod tests {
         assert_eq!(classify(&os(&["nextest", "run", "-h"])).family, Family::External);
     }
 
+    // TEST0109: Sees json and paths
     #[test]
-    fn sees_json_and_paths() {
+    fn test0109_sees_json_and_paths() {
         let inv = classify(&os(&["build", "--message-format=json-diagnostic-rendered-ansi", "--manifest-path", "x/Cargo.toml", "--target", "wasm32-unknown-unknown"]));
         assert!(inv.json_messages);
         assert_eq!(inv.manifest_path, Some(PathBuf::from("x/Cargo.toml")));
@@ -456,8 +460,9 @@ mod tests {
         assert!(!classify(&os(&["run", "--", "--message-format=json"])).json_messages);
     }
 
+    // TEST0110: Aliases reclassify
     #[test]
-    fn aliases_reclassify() {
+    fn test0110_aliases_reclassify() {
         let mut inv = classify(&os(&["xb"]));
         let subset = CargoConfigSubset { aliases: vec![("xb".into(), "build --release".into())], ..Default::default() };
         apply_aliases(&mut inv, &subset);

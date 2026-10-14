@@ -544,8 +544,9 @@ mod tests {
         classify(&parts, &Knowledge::default(), &HashSet::new()).0
     }
 
+    // TEST0056: Classifies cargo layout
     #[test]
-    fn classifies_cargo_layout() {
+    fn test0056_classifies_cargo_layout() {
         assert_eq!(cat("debug/deps/libfoo-0123.rmeta"), "metadata");
         assert_eq!(cat("debug/deps/libfoo-0123.rlib"), "dependency");
         assert_eq!(cat("debug/deps/foo-0123.d"), "fingerprint");
@@ -567,16 +568,18 @@ mod tests {
         assert_eq!(cat("some/unrelated/deep/tree/file.bin"), "unknown-generated");
     }
 
+    // TEST0057: Proc macro identity comes from observed units
     #[test]
-    fn proc_macro_identity_comes_from_observed_units() {
+    fn test0057_proc_macro_identity_comes_from_observed_units() {
         let mut k = Knowledge::default();
         assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k, &HashSet::new()).0, "dependency");
         k.proc_macro_stems.insert("mac-9".into());
         assert_eq!(classify(&["debug", "deps", "libmac-9.dylib"], &k, &HashSet::new()).0, "proc-macro");
     }
 
+    // TEST0058: Classifies cargo build dir layout
     #[test]
-    fn classifies_cargo_build_dir_layout() {
+    fn test0058_classifies_cargo_build_dir_layout() {
         // Cargo's newer layout: one directory per unit, `build/<package>/<unit hash>/`.
         let h = "0123456789abcdef";
         assert_eq!(cat(&format!("debug/build/memchr/{h}/out/libmemchr-{h}.rlib")), "dependency");
@@ -594,8 +597,9 @@ mod tests {
         assert_eq!(classify(&["debug", "build", "memchr", h, "out", "libmemchr.rlib"], &Knowledge::default(), &runs).0, "dependency");
     }
 
+    // TEST0059: A scan tells a build scripts generated files from a units outputs
     #[test]
-    fn a_scan_tells_a_build_scripts_generated_files_from_a_units_outputs() {
+    fn test0059_a_scan_tells_a_build_scripts_generated_files_from_a_units_outputs() {
         let root = std::env::temp_dir().join(format!("qrust-bd-{}", util::new_id()));
         let (lib, run) = ("1111111111111111", "2222222222222222");
         for (dir, file, bytes) in [
@@ -618,8 +622,9 @@ mod tests {
         fs::File::options().write(true).open(p).unwrap().set_modified(t).unwrap();
     }
 
+    // TEST0060: Plan is conservative and never follows symlinks
     #[test]
-    fn plan_is_conservative_and_never_follows_symlinks() {
+    fn test0060_plan_is_conservative_and_never_follows_symlinks() {
         let base = std::env::temp_dir().join(format!("qrust-inv-{}", util::new_id()));
         let root = base.join("target");
         let outside = base.join("outside");
@@ -658,9 +663,10 @@ mod tests {
         fs::remove_dir_all(&base).ok();
     }
 
+    // TEST0061: Hard links are counted once
     #[cfg(unix)]
     #[test]
-    fn hard_links_are_counted_once() {
+    fn test0061_hard_links_are_counted_once() {
         let root = std::env::temp_dir().join(format!("qrust-hl-{}", util::new_id()));
         fs::create_dir_all(root.join("debug/deps")).unwrap();
         fs::write(root.join("debug/deps/app-1"), vec![0u8; 8_000]).unwrap();
@@ -671,9 +677,10 @@ mod tests {
         fs::remove_dir_all(&root).ok();
     }
 
+    // TEST0062: Files also linked from outside free nothing when deleted
     #[cfg(unix)]
     #[test]
-    fn files_also_linked_from_outside_free_nothing_when_deleted() {
+    fn test0062_files_also_linked_from_outside_free_nothing_when_deleted() {
         // QuickRust's artifact cache links outputs into its entries: deleting the build directory's
         // name of such a file frees no space.
         let base = std::env::temp_dir().join(format!("qrust-shared-{}", util::new_id()));

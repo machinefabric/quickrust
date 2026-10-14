@@ -290,8 +290,9 @@ pub fn rollback(store: &WsStore, id: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
 
+    // TEST0097: Diff is minimal and well formed
     #[test]
-    fn diff_is_minimal_and_well_formed() {
+    fn test0097_diff_is_minimal_and_well_formed() {
         let old = "a\nb\nc\nd\ne\nf\ng\nh\n";
         let new = "a\nb\nc\nd\nE\nf\ng\nh\n";
         let d = unified_diff(old, new, "x.toml");
@@ -300,8 +301,9 @@ mod tests {
         assert_eq!(unified_diff("", "k = 1\n", "new.toml"), "--- a/new.toml\n+++ b/new.toml\n@@ -0,0 +1,1 @@\n+k = 1\n");
     }
 
+    // TEST0098: Toml set preserves everything else
     #[test]
-    fn toml_set_preserves_everything_else() {
+    fn test0098_toml_set_preserves_everything_else() {
         let src = "# top comment\n[package]\nname = \"x\"   # keep me\n\n[profile.dev]\nopt-level = 1\n\n[dependencies]\nserde = \"1\"\n";
         let out = toml_set(src, "profile.dev", "debug", "\"line-tables-only\"").unwrap();
         assert_eq!(out, "# top comment\n[package]\nname = \"x\"   # keep me\n\n[profile.dev]\nopt-level = 1\ndebug = \"line-tables-only\"\n\n[dependencies]\nserde = \"1\"\n");
@@ -311,8 +313,9 @@ mod tests {
         assert!(appended.ends_with("\n[profile.dev.package.\"*\"]\ndebug = false\n"));
     }
 
+    // TEST0099: Toml set refuses forms it cannot edit exactly
     #[test]
-    fn toml_set_refuses_forms_it_cannot_edit_exactly() {
+    fn test0099_toml_set_refuses_forms_it_cannot_edit_exactly() {
         // The profile is defined through a dotted key; adding a section would redefine it.
         let err = toml_set("profile.dev.debug = true\n[package]\nname = \"x\"\n", "profile.dev", "debug", "false").unwrap_err();
         assert!(err.contains("would not be valid TOML"), "{}", err);
@@ -336,8 +339,9 @@ mod tests {
         (root, store, report)
     }
 
+    // TEST0100: Preview touches nothing and classifies changes
     #[test]
-    fn preview_touches_nothing_and_classifies_changes() {
+    fn test0100_preview_touches_nothing_and_classifies_changes() {
         let (root, _store, report) = fixture();
         let before = fs::read_to_string(root.join("Cargo.toml")).unwrap();
         let p = preview(&report, &root, None, None).unwrap();
@@ -352,8 +356,9 @@ mod tests {
         fs::remove_dir_all(root.parent().unwrap()).ok();
     }
 
+    // TEST0101: Apply checks the preimage refuses review required and rolls back
     #[test]
-    fn apply_checks_the_preimage_refuses_review_required_and_rolls_back() {
+    fn test0101_apply_checks_the_preimage_refuses_review_required_and_rolls_back() {
         let (root, store, report) = fixture();
         let p = preview(&report, &root, None, None).unwrap();
         save_previews(&store, &root, &p).unwrap();

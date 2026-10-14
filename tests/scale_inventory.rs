@@ -11,9 +11,10 @@ use serde_json::Value;
 use std::fs;
 use std::time::Instant;
 
+// TEST0281: Inventory of a build directory of a million files
 #[test]
 #[ignore = "slow: run with --ignored"]
-fn inventory_of_a_build_directory_of_a_million_files() {
+fn test0281_inventory_of_a_build_directory_of_a_million_files() {
     let sb = Sandbox::new("scale-files");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));

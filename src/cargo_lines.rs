@@ -80,8 +80,9 @@ mod tests {
         Line::Status { verb, rest }
     }
 
+    // TEST0035: Reads cargos status lines
     #[test]
-    fn reads_cargos_status_lines() {
+    fn test0035_reads_cargos_status_lines() {
         // Captured from Cargo 1.98 and 1.99.
         for (line, want) in [
             ("    Updating crates.io index", st("Updating", "crates.io index")),
@@ -106,15 +107,17 @@ mod tests {
         }
     }
 
+    // TEST0036: Everything else is shown as it is
     #[test]
-    fn everything_else_is_shown_as_it_is() {
+    fn test0036_everything_else_is_shown_as_it_is() {
         for line in ["error: failed to select a version for the requirement `serde = \"^1.0.229\"`", "             Features:", "             + derive", "  |", "note: see https://doc.rust-lang.org/cargo", "hello from a build script", "Compiling x", "   compiling x"] {
             assert_eq!(classify(line), Line::Other(line), "{:?}", line);
         }
     }
 
+    // TEST0037: Names packages and changes
     #[test]
-    fn names_packages_and_changes() {
+    fn test0037_names_packages_and_changes() {
         assert_eq!(package("serde v1.0.229 to dependencies"), Some(("serde", "1.0.229")));
         assert_eq!(change("serde v1.0.200 -> v1.0.229"), Some(("serde", "1.0.200", "1.0.229")));
         assert_eq!(change("libc v0.2.150 -> v0.2.190 (available: v0.3.0)"), Some(("libc", "0.2.150", "0.2.190")));

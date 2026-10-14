@@ -403,8 +403,9 @@ mod tests {
         (0..n).map(|i| (i * 7 % 251) as u8).collect()
     }
 
+    // TEST0063: A download that breaks off resumes where it stopped
     #[test]
-    fn a_download_that_breaks_off_resumes_where_it_stopped() {
+    fn test0063_a_download_that_breaks_off_resumes_where_it_stopped() {
         let srv = Server::start();
         let data = body(3 << 20);
         srv.route("/f", Route { body: data.clone(), cut_after: Some((1 << 20, 1)), ..Default::default() });
@@ -419,8 +420,9 @@ mod tests {
         assert_eq!(reqs[1].as_deref(), Some("bytes=1048576-"));
     }
 
+    // TEST0064: A part left by another process is completed and a server ignoring ranges starts over
     #[test]
-    fn a_part_left_by_another_process_is_completed_and_a_server_ignoring_ranges_starts_over() {
+    fn test0064_a_part_left_by_another_process_is_completed_and_a_server_ignoring_ranges_starts_over() {
         let srv = Server::start();
         let data = body(100_000);
         let sum = crate::util::sha256_hex(&data);
@@ -437,8 +439,9 @@ mod tests {
         assert_eq!(fs::read(&dest).unwrap(), data);
     }
 
+    // TEST0065: A stale part is fetched again and only a fresh mismatch fails
     #[test]
-    fn a_stale_part_is_fetched_again_and_only_a_fresh_mismatch_fails() {
+    fn test0065_a_stale_part_is_fetched_again_and_only_a_fresh_mismatch_fails() {
         let srv = Server::start();
         let data = body(50_000);
         let dir = scratch();
@@ -469,8 +472,9 @@ mod tests {
         assert!(!dest.exists() && !part_path(&dest).exists());
     }
 
+    // TEST0066: Missing files fail at once and conditional gets use the entity tag
     #[test]
-    fn missing_files_fail_at_once_and_conditional_gets_use_the_entity_tag() {
+    fn test0066_missing_files_fail_at_once_and_conditional_gets_use_the_entity_tag() {
         let srv = Server::start();
         let c = Client::new();
         match c.get_bytes(&srv.url("/nothing"), &[]) {
@@ -490,8 +494,9 @@ mod tests {
         assert!(matches!(c.get_if_changed(&srv.url("/i"), Some("\"v0\""), &[]).unwrap(), Fetched::Body { .. }));
     }
 
+    // TEST0067: A server error is retried and reported when it persists
     #[test]
-    fn a_server_error_is_retried_and_reported_when_it_persists() {
+    fn test0067_a_server_error_is_retried_and_reported_when_it_persists() {
         let srv = Server::start();
         srv.route("/busy", Route { status: Some(503), ..Default::default() });
         match Client::new().get_bytes(&srv.url("/busy"), &[]) {

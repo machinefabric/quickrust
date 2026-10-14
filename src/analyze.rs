@@ -1113,8 +1113,9 @@ mod tests {
         build_graph(units, 0, u64::MAX / 2, &HashMap::new()).0
     }
 
+    // TEST0003: Extern inputs become edges
     #[test]
-    fn extern_inputs_become_edges() {
+    fn test0003_extern_inputs_become_edges() {
         // FR-030 acceptance: B's --extern input maps to A's output ⇒ edge A→B.
         let g = graph(&[event("a", "1", &[], &[], 10, None), event("b", "2", &[("a", "liba-1.rlib")], &[], 5, None)]);
         assert_eq!(g.deps[1].len(), 1);
@@ -1123,8 +1124,9 @@ mod tests {
         assert!(g.deps[0].is_empty());
     }
 
+    // TEST0004: Unbuilt dependencies are fresh not invented timings
     #[test]
-    fn unbuilt_dependencies_are_fresh_not_invented_timings() {
+    fn test0004_unbuilt_dependencies_are_fresh_not_invented_timings() {
         let g = graph(&[event("b", "2", &[("serde", "libserde-9.rmeta")], &[], 5, None)]);
         assert_eq!(g.units.len(), 2);
         let fresh = &g.units[1];
@@ -1132,8 +1134,9 @@ mod tests {
         assert_eq!(fresh.duration_ns, None, "a unit that did not run has no duration, not a zero one");
     }
 
+    // TEST0005: Critical path differs from total cost
     #[test]
-    fn critical_path_differs_from_total_cost() {
+    fn test0005_critical_path_differs_from_total_cost() {
         // a(10) → c(4);  b(3) independent leaf feeding c as well. Total 17, critical 14.
         let g = graph(&[
             event("a", "1", &[], &[], 10, None),
@@ -1148,8 +1151,9 @@ mod tests {
         assert_eq!(total, 17);
     }
 
+    // TEST0006: Pipelining lets metadata dependents start early but linkers wait
     #[test]
-    fn pipelining_lets_metadata_dependents_start_early_but_linkers_wait() {
+    fn test0006_pipelining_lets_metadata_dependents_start_early_but_linkers_wait() {
         // a takes 10 but its metadata is ready at 2. A lib `b` (metadata edge) can start at 2;
         // a binary linking a must wait for all 10.
         let lib = graph(&[event("a", "1", &[], &[], 10, Some(2)), event("b", "2", &[("a", "liba-1.rmeta")], &[], 5, None)]);
@@ -1165,8 +1169,9 @@ mod tests {
         assert_eq!(cp.path.last().unwrap().1, "modeled", "the wait on a transitive dependency is modeled, not an observed edge");
     }
 
+    // TEST0007: Features and profile change identity separately
     #[test]
-    fn features_and_profile_change_identity_separately() {
+    fn test0007_features_and_profile_change_identity_separately() {
         let base = parse_unit(&event("a", "1", &[], &[], 1, None), false, &tok()).unwrap();
         let feat = parse_unit(&event("a", "2", &[], &["--cfg", "feature=\"std\""], 1, None), false, &tok()).unwrap();
         let opt = parse_unit(&event("a", "3", &[], &["-C", "opt-level=3"], 1, None), false, &tok()).unwrap();
@@ -1179,8 +1184,9 @@ mod tests {
         assert_ne!(base.exact_id, feat.exact_id);
     }
 
+    // TEST0008: Kinds and cacheability
     #[test]
-    fn kinds_and_cacheability() {
+    fn test0008_kinds_and_cacheability() {
         let pm = parse_unit(&event("m", "1", &[], &["--crate-type", "proc-macro"], 1, None), true, &tok()).unwrap();
         assert_eq!((pm.kind.as_str(), pm.role.as_str()), ("proc-macro", "host"));
         assert!(pm.cacheability.starts_with("non-cacheable: crate type"));
@@ -1191,8 +1197,9 @@ mod tests {
         assert_eq!(parse_unit(&event("l", "3", &[], &[], 1, None), false, &tok()).unwrap().cacheability, "n/a");
     }
 
+    // TEST0009: Compilers started by build scripts are not units
     #[test]
-    fn compilers_started_by_build_scripts_are_not_units() {
+    fn test0009_compilers_started_by_build_scripts_are_not_units() {
         // proc-macro2, serde and others compile a probe file with $RUSTC_WRAPPER $RUSTC; it inherits
         // the package environment but is not something Cargo scheduled.
         let mut probe = event("proc_macro2", "0", &[], &[], 5, None);
@@ -1202,8 +1209,9 @@ mod tests {
         assert!(parse_unit(&event("proc_macro2", "0", &[], &[], 5, None), false, &tok()).is_some());
     }
 
+    // TEST0010: Export tokenizes paths
     #[test]
-    fn export_tokenizes_paths() {
+    fn test0010_export_tokenizes_paths() {
         let ws = std::env::temp_dir().join("qrust-export-ws");
         let cfg = Config::defaults();
         let v = json!({ "p": format!("{}/src/lib.rs", ws.display()), "n": 3 });

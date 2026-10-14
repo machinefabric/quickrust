@@ -141,7 +141,7 @@ impl Engine {
 /// (see `builddir`).
 pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine, String> {
     let dir = inv.chdir.as_ref().map(|c| cwd.join(c)).unwrap_or_else(|| cwd.to_path_buf());
-    let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).cloned().collect();
+    let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).map(|t| toolchain::spec::rust_target(t).to_string()).collect();
     let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)?;
     let root = crate::builddir::workspace_root(&engine, &crate::builddir::start_dir(inv, cwd))?;
     let variant = crate::builddir::variant(cfg)?;

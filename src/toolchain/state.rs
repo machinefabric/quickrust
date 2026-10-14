@@ -84,8 +84,9 @@ pub fn update<T>(toolchains: &Path, change: impl FnOnce(&mut State) -> Result<T,
 mod tests {
     use super::*;
 
+    // TEST0148: Round trips and rejects foreign files
     #[test]
-    fn round_trips_and_rejects_foreign_files() {
+    fn test0148_round_trips_and_rejects_foreign_files() {
         let d = std::env::temp_dir().join(format!("qrust-tcstate-{}", util::new_id()));
         assert_eq!(load(&d).unwrap(), State::default());
         update(&d, |s| {

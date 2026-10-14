@@ -1302,8 +1302,9 @@ mod tests {
         String::from_utf8(sink).unwrap()
     }
 
+    // TEST0149: Every outcome line starts with its tag in one column
     #[test]
-    fn every_outcome_line_starts_with_its_tag_in_one_column() {
+    fn test0149_every_outcome_line_starts_with_its_tag_in_one_column() {
         assert_eq!(tagged(Tag::Ok, "Built: 2 compiled [1.20s]", false), "OK   Built: 2 compiled [1.20s]");
         assert_eq!(tagged(Tag::Fail, "Build [1.20s]", false), "FAIL Build [1.20s]");
         assert_eq!(tagged(Tag::Warn, "1 warning in app", false), "WARN 1 warning in app");
@@ -1316,8 +1317,9 @@ mod tests {
         assert_eq!(INDENT.len(), "FAIL ".len(), "lines that belong to an outcome start where its message does");
     }
 
+    // TEST0150: A message is a head its details and a closing duration
     #[test]
-    fn a_message_is_a_head_its_details_and_a_closing_duration() {
+    fn test0150_a_message_is_a_head_its_details_and_a_closing_duration() {
         assert_eq!(message("Built", &["2 compiled".into(), "1 fresh".into()], Some(1_200_000_000)), "Built: 2 compiled, 1 fresh [1.20s]");
         assert_eq!(message("Built", &[], Some(920_000_000)), "Built [920ms]");
         assert_eq!(message("Up to date", &["3 fresh".into()], None), "Up to date: 3 fresh");
@@ -1329,8 +1331,9 @@ mod tests {
         assert_eq!(bar(0, 0), "[>                   ]");
     }
 
+    // TEST0151: Lockfile changes are listed and summed up
     #[test]
-    fn lockfile_changes_are_listed_and_summed_up() {
+    fn test0151_lockfile_changes_are_listed_and_summed_up() {
         // Cargo 1.99's lines.
         let out = lines("update", &["    Updating crates.io index", "     Locking 3 packages to latest Rust 1.99.0 compatible versions", "    Updating serde v1.0.200 -> v1.0.229", "      Adding itoa v1.0.18", "    Removing autocfg v1.3.0"], 0);
         assert_eq!(
@@ -1340,8 +1343,9 @@ mod tests {
         assert_eq!(lines("update", &["    Updating crates.io index", "     Locking 0 packages to latest Rust 1.99.0 compatible versions"], 0), "OK   Lockfile up to date [920ms]\n");
     }
 
+    // TEST0152: Manifest edits and their features read as one
     #[test]
-    fn manifest_edits_and_their_features_read_as_one() {
+    fn test0152_manifest_edits_and_their_features_read_as_one() {
         let out = lines("add", &["    Updating crates.io index", "      Adding serde v1.0.229 to dependencies", "             Features:", "             + derive", "             + std", "             - alloc", "    Updating crates.io index", "     Locking 7 packages to latest compatible versions"], 0);
         assert_eq!(out, "     added      serde                    1.0.229 to dependencies\n     features +derive +std -alloc\nOK   [920ms]\n");
         // What the edit locked is one line, at the end.
@@ -1350,8 +1354,9 @@ mod tests {
         assert_eq!(lines("remove", &["    Removing serde from dependencies"], 0), "     removed    serde                    from dependencies\nOK   [920ms]\n");
     }
 
+    // TEST0153: A result cargo states is the summary and failures show cargos words
     #[test]
-    fn a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
+    fn test0153_a_result_cargo_states_is_the_summary_and_failures_show_cargos_words() {
         assert_eq!(lines("new", &["    Creating binary (application) `demo` package", "note: see more `Cargo.toml` keys"], 0), "OK   Created binary (application) `demo` package\nNOTE see more `Cargo.toml` keys\n");
         assert_eq!(lines("clean", &["    Cleaning [=====>       ]  21.43%", "     Removed 125 files, 75.8MiB total"], 0), "OK   Removed 125 files, 75.8 MiB\n");
         assert_eq!(lines("package", &["   Packaging p v0.1.0 (/w/p)", "    Packaged 4 files, 943B (694B compressed)"], 0), "OK   Packaged 4 files, 943 B (694 B compressed)\n");
@@ -1360,8 +1365,9 @@ mod tests {
         assert_eq!(failed, "error: failed to select a version for the requirement `serde = \"^9\"`\nlocation searched: crates.io index\nFAIL cargo update [920ms]\n");
     }
 
+    // TEST0154: Index lookups count in the status line and are never printed
     #[test]
-    fn index_lookups_count_in_the_status_line_and_are_never_printed() {
+    fn test0154_index_lookups_count_in_the_status_line_and_are_never_printed() {
         let mut ren = r();
         let mut sink: Vec<u8> = Vec::new();
         ren.on_stderr(&mut sink, "    Updating crates.io index");
@@ -1378,8 +1384,9 @@ mod tests {
         assert_eq!(lines("update", &["    Updating crates.io index", "       Fetch 3 complete; 1 pending", "     Locking 0 packages to latest compatible versions"], 0), "OK   Lockfile up to date [920ms]\n");
     }
 
+    // TEST0155: Downloads show progress then one line
     #[test]
-    fn downloads_show_progress_then_one_line() {
+    fn test0155_downloads_show_progress_then_one_line() {
         let mut ren = r();
         let mut sink: Vec<u8> = Vec::new();
         ren.on_stderr(&mut sink, " Downloading crates ...");
@@ -1396,8 +1403,9 @@ mod tests {
         assert_eq!(text, "     Downloaded 4 crates, 645.0 KiB [0.16s]\n");
     }
 
+    // TEST0156: Errors print in full warnings are counted
     #[test]
-    fn errors_print_in_full_warnings_are_counted() {
+    fn test0156_errors_print_in_full_warnings_are_counted() {
         let mut ren = r();
         let mut sink: Vec<u8> = Vec::new();
         ren.on_stderr(&mut sink, "   Compiling app v0.1.0 (/w/app)");
@@ -1423,8 +1431,9 @@ mod tests {
         assert!(text.contains("WARN 1 warning in app (bin): unused_variables x1; `qrust warnings` shows them"), "{}", text);
     }
 
+    // TEST0157: Success summary and ansi stripping
     #[test]
-    fn success_summary_and_ansi_stripping() {
+    fn test0157_success_summary_and_ansi_stripping() {
         let mut ren = r();
         let mut sink: Vec<u8> = Vec::new();
         // Four units Cargo ran the compiler for, three of them restored from QuickRust's cache.
@@ -1445,8 +1454,9 @@ mod tests {
         assert_eq!(strip_ansi("\x1b[1m\x1b[31merror\x1b[0m: x"), "error: x");
     }
 
+    // TEST0158: The message format goes before a double dash
     #[test]
-    fn the_message_format_goes_before_a_double_dash() {
+    fn test0158_the_message_format_goes_before_a_double_dash() {
         let a = with_arg(vec!["build".into(), "--release".into()], "--message-format=json");
         assert_eq!(a, vec![OsString::from("build"), "--release".into(), "--message-format=json".into()]);
         let a = with_arg(vec!["test".into(), "--no-run".into(), "--".into(), "x".into()], "--m");

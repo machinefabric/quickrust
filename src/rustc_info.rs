@@ -63,8 +63,9 @@ pub fn is_unstable_channel(version_verbose: &str) -> Option<bool> {
 mod tests {
     use super::*;
 
+    // TEST0111: A compiler is described by its own account whatever it is called
     #[test]
-    fn a_compiler_is_described_by_its_own_account_whatever_it_is_called() {
+    fn test0111_a_compiler_is_described_by_its_own_account_whatever_it_is_called() {
         let dir = std::env::temp_dir().join(format!("qrust-rustc-vv-{}", util::new_id()));
         // By bare name through PATH, as Cargo may pass it, and by absolute path: the same compiler.
         let by_name = version_verbose(&dir, "rustc").unwrap();
@@ -76,8 +77,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0112: The release channel comes from the release line
     #[test]
-    fn the_release_channel_comes_from_the_release_line() {
+    fn test0112_the_release_channel_comes_from_the_release_line() {
         let vv = |release: &str| format!("rustc {release} (abc 2026-10-01)\nbinary: rustc\nrelease: {release}\nLLVM version: 21.1.0\n");
         assert_eq!(is_unstable_channel(&vv("1.98.1")), Some(false));
         assert_eq!(is_unstable_channel(&vv("1.99.0-beta.3")), Some(false));

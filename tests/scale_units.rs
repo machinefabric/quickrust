@@ -39,9 +39,10 @@ fn latest_session(sb: &Sandbox) -> Value {
     sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap()
 }
 
+// TEST0282: Analysis of a build of ten thousand units
 #[test]
 #[ignore = "slow: run with --ignored"]
-fn analysis_of_a_build_of_ten_thousand_units() {
+fn test0282_analysis_of_a_build_of_ten_thousand_units() {
     const UNITS: usize = 10_000;
     const WORKSPACE: usize = 300;
     let sb = Sandbox::new("scale-units");

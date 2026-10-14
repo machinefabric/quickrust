@@ -100,8 +100,9 @@ fn released_quickrust() -> &'static Path {
     })
 }
 
+// TEST0277: A build from source has no release line and says so
 #[test]
-fn a_build_from_source_has_no_release_line_and_says_so() {
+fn test0277_a_build_from_source_has_no_release_line_and_says_so() {
     let sb = Sandbox::new("no-release-line");
     let home = sb.dir.join("user");
     fs::create_dir_all(&home).unwrap();
@@ -117,7 +118,7 @@ fn a_build_from_source_has_no_release_line_and_says_so() {
 /// A registry, its signing environment and its roots are what any build in a release environment
 /// is surrounded by. Without a channel they publish nothing: the build is one from source.
 #[test]
-fn a_registry_without_a_channel_does_not_make_a_release_build() {
+fn test0278_a_registry_without_a_channel_does_not_make_a_release_build() {
     let line = Line::new();
     let inputs = line_inputs(&line);
     let inputs: Vec<(&str, &str)> = inputs.iter().filter(|(k, _)| *k != "MFR_RELEASE_CHANNEL").map(|(k, v)| (*k, v.as_str())).collect();
@@ -130,8 +131,9 @@ fn a_registry_without_a_channel_does_not_make_a_release_build() {
     assert!(stdout(&doctor).contains("release line       none: built from source"), "{}", stdout(&doctor));
 }
 
+// TEST0279: A release build is given its release line whole or does not build
 #[test]
-fn a_release_build_is_given_its_release_line_whole_or_does_not_build() {
+fn test0279_a_release_build_is_given_its_release_line_whole_or_does_not_build() {
     let line = Line::new();
     let whole = line_inputs(&line);
     let refused = |change: &dyn Fn(&mut Inputs)| -> String {
@@ -220,8 +222,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
     sha2::Sha256::digest(bytes).iter().map(|b| format!("{:02x}", b)).collect()
 }
 
+// TEST0280: A released quickrust updates itself only to what its registry signed
 #[test]
-fn a_released_quickrust_updates_itself_only_to_what_its_registry_signed() {
+fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed() {
     let quickrust = released_quickrust();
     let sb = Sandbox::new("release-line");
     let home = sb.dir.join("user");

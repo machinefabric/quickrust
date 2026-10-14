@@ -408,8 +408,9 @@ pub fn workspace_snapshot(meta: &Value) -> Value {
 mod tests {
     use super::*;
 
+    // TEST0048: Reads head from plain and packed refs
     #[test]
-    fn reads_head_from_plain_and_packed_refs() {
+    fn test0048_reads_head_from_plain_and_packed_refs() {
         let dir = std::env::temp_dir().join(format!("qrust-git-{}", util::new_id()));
         fs::create_dir_all(dir.join(".git/refs/heads")).unwrap();
         fs::write(dir.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
@@ -423,8 +424,9 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    // TEST0049: Snapshot changes with content and ignores build output
     #[test]
-    fn snapshot_changes_with_content_and_ignores_build_output() {
+    fn test0049_snapshot_changes_with_content_and_ignores_build_output() {
         let dir = std::env::temp_dir().join(format!("qrust-snap-{}", util::new_id()));
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::create_dir_all(dir.join("target")).unwrap();

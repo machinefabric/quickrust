@@ -131,15 +131,17 @@ fn quantity(s: &[char]) -> Option<(usize, &'static str)> {
     None
 }
 
+// TEST0283: Placeholders replace only what varies
 #[test]
-fn placeholders_replace_only_what_varies() {
+fn test0283_placeholders_replace_only_what_varies() {
     let sb = Sandbox::new("normalize");
     let line = format!("OK   Built: 3 compiled, 45ms, 2m03.5s, 5.6 MiB, 12 B, {}/cache/builds/app-0123456789abcdef/debug/app, v1.2.3, x86_64, 10 warnings, 174 files [1.84s]", sb.home.display());
     assert_eq!(normalize(&line, &sb), "OK   Built: 3 compiled, <time>, <time>, <size>, <size>, <home>/cache/builds/app-<id>/debug/app, v1.2.3, x86_64, 10 warnings, <count> files [<time>]");
 }
 
+// TEST0284: Every screen matches its snapshot
 #[test]
-fn every_screen_matches_its_snapshot() {
+fn test0284_every_screen_matches_its_snapshot() {
     let sb = Sandbox::new("screens");
     let reg = Registry::start();
     reg.publish(&Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n"));
@@ -171,8 +173,9 @@ fn every_screen_matches_its_snapshot() {
     s.finish();
 }
 
+// TEST0285: Every screen of commands that do not build matches its snapshot
 #[test]
-fn every_screen_of_commands_that_do_not_build_matches_its_snapshot() {
+fn test0285_every_screen_of_commands_that_do_not_build_matches_its_snapshot() {
     let sb = Sandbox::new("screens-manifest");
     let reg = Registry::start();
     reg.publish(&Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello\"\n}\n"));
@@ -196,8 +199,9 @@ fn every_screen_of_commands_that_do_not_build_matches_its_snapshot() {
     s.finish();
 }
 
+// TEST0286: Every screen of a mistake matches its snapshot
 #[test]
-fn every_screen_of_a_mistake_matches_its_snapshot() {
+fn test0286_every_screen_of_a_mistake_matches_its_snapshot() {
     let sb = Sandbox::new("screens-mistakes");
     let nowhere = sb.dir.join("not-a-project");
     fs::create_dir_all(&nowhere).unwrap();

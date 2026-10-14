@@ -59,6 +59,22 @@ pub fn is_triple(s: &str) -> bool {
     parts.len() >= 2 && s.bytes().next().is_some_and(|c| c.is_ascii_lowercase()) && parts.iter().all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'.'))
 }
 
+/// The Rust target a `--target` value builds for: the value itself, except that a Linux GNU
+/// target may carry the glibc version to link against (`x86_64-unknown-linux-gnu.2.28`, the
+/// form cargo-zigbuild takes), which names no standard library of its own. The library is the
+/// target's (`x86_64-unknown-linux-gnu`); asked for under the suffixed name, a toolchain that
+/// had it reported "rust-std is not provided for x86_64-unknown-linux-gnu.2.28".
+pub fn rust_target(s: &str) -> &str {
+    if let Some((base, glibc)) = s.split_once(".") {
+        let version: Vec<&str> = glibc.split('.').collect();
+        let is_glibc = version.len() == 2 && version.iter().all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit()));
+        if is_glibc && base.contains("-linux-gnu") {
+            return base;
+        }
+    }
+    s
+}
+
 /// A name `qrust toolchain link` accepts.
 pub fn is_link_name(s: &str) -> bool {
     !s.is_empty() && s.len() <= 64 && s.bytes().next().is_some_and(|c| c.is_ascii_alphanumeric()) && s.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
@@ -153,8 +169,9 @@ mod tests {
         Spec::Dist { channel, date: date.map(str::to_string), host: host.map(str::to_string) }
     }
 
+    // TEST0144: Channels releases dates and hosts
     #[test]
-    fn channels_releases_dates_and_hosts() {
+    fn test0144_channels_releases_dates_and_hosts() {
         assert_eq!(Spec::parse("stable").unwrap(), dist(Channel::Stable, None, None));
         assert_eq!(Spec::parse("nightly-2026-10-11").unwrap(), dist(Channel::Nightly, Some("2026-10-11"), None));
         assert_eq!(Spec::parse("nightly-2026-10-11-aarch64-apple-darwin").unwrap(), dist(Channel::Nightly, Some("2026-10-11"), Some("aarch64-apple-darwin")));
@@ -168,8 +185,22 @@ mod tests {
         }
     }
 
+    // TEST0145: A glibc suffixed target needs its targets standard library
     #[test]
-    fn what_floats() {
+    fn test0145_a_glibc_suffixed_target_needs_its_targets_standard_library() {
+        assert_eq!(rust_target("x86_64-unknown-linux-gnu.2.28"), "x86_64-unknown-linux-gnu");
+        assert_eq!(rust_target("aarch64-unknown-linux-gnu.2.17"), "aarch64-unknown-linux-gnu");
+        assert_eq!(rust_target("armv7-unknown-linux-gnueabihf.2.28"), "armv7-unknown-linux-gnueabihf");
+        // Every other target is its own name: a plain triple, a non-GNU one, and a version
+        // that is not glibc's two numbers.
+        for t in ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl", "wasm32-wasip1", "aarch64-apple-darwin", "x86_64-unknown-linux-musl.2.28", "x86_64-unknown-linux-gnu.2", "x86_64-unknown-linux-gnu.2.28.1"] {
+            assert_eq!(rust_target(t), t, "{t}");
+        }
+    }
+
+    // TEST0146: What floats
+    #[test]
+    fn test0146_what_floats() {
         assert!(Spec::parse("stable").unwrap().floating());
         assert!(Spec::parse("1.98").unwrap().floating());
         assert!(!Spec::parse("1.98.1").unwrap().floating());
@@ -177,8 +208,9 @@ mod tests {
         assert!(!Spec::parse("dev").unwrap().floating());
     }
 
+    // TEST0147: Rejects what names nothing
     #[test]
-    fn rejects_what_names_nothing() {
+    fn test0147_rejects_what_names_nothing() {
         for s in ["", "1.98.1-2026-01-01", "stable-2026-13", "stable-Linux", "1.98.1.4", "1", "relative/dir", "-x", "stable-x86_64--gnu", "nightly-2026-10-11-"] {
             assert!(Spec::parse(s).is_err(), "{:?} accepted", s);
         }

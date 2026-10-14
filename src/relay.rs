@@ -281,8 +281,9 @@ mod tests {
         (String::from_utf8(out).unwrap(), f.totals)
     }
 
+    // TEST0080: Cargo lines are restyled and everything else passes as it comes
     #[test]
-    fn cargo_lines_are_restyled_and_everything_else_passes_as_it_comes() {
+    fn test0080_cargo_lines_are_restyled_and_everything_else_passes_as_it_comes() {
         let (text, totals) = shown(&[
             "    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s\n",
             "     Running unittests src/lib.rs (/h/cache/builds/app-0123/debug/deps/app-4567)\n",
@@ -297,8 +298,9 @@ mod tests {
         assert_eq!(totals, Totals { programs: 2, passed: 3, failed: 1, ignored: 1, measured: 0, filtered: 3 });
     }
 
+    // TEST0081: A line is held only while it may be cargos
     #[test]
-    fn a_line_is_held_only_while_it_may_be_cargos() {
+    fn test0081_a_line_is_held_only_while_it_may_be_cargos() {
         let mut f = Filter::new(false);
         // A test's `test x ... ` shows before its result.
         assert_eq!(f.feed(b"test slow ... "), b"test slow ... ");
