@@ -27,6 +27,8 @@ Facts are written only for Cargo's primary packages (the workspace's members), o
 | `definitions[]` | every item, associated item, field, variant, impl and macro of the crate |
 | `impls[]` | every impl block |
 | `calls[]` | every call in the crate's bodies whose callee is a function or method |
+| `layouts[]` | how rustc lays out the crate's structs, enums and unions that have no type parameters: `def`, `size` and `align` in bytes |
+| `constants[]` | the values of the crate's constants (free and associated) that have no type parameters and are a boolean, a character or an integer: `def`, and `value` as Rust writes it (`4096`, `-3`, `true`, `'x'`) |
 | `bodies[]` | with [`export.borrow-facts`](configuration.md#keys): what the borrow checker decided about each body it accepted; absent otherwise |
 | `files[]` | file names that positions index |
 

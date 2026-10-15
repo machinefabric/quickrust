@@ -58,7 +58,8 @@ With `QRUST_EXPORT_FACTS=1`, the workspace's crates are compiled with the compil
 
 - the crate's definitions;
 - every call, with the function typeck resolved it to and the implementation a trait call selects;
-- its impls.
+- its impls;
+- the layouts of its types and the values of its constants that have no type parameters.
 
 Rely on this only when `capabilities.facts-export` names the schema you read.
 

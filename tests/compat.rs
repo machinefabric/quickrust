@@ -1255,7 +1255,7 @@ fn test0288_quickrust_says_what_it_offers_a_program_that_embeds_it() {
 fn test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspaces_crates() {
     let sb = Sandbox::new("facts");
     let p = sb.package("p", "p");
-    sb.file("p/src/lib.rs", "pub trait Shape { fn area(&self) -> u32; }\npub struct Sq(pub u32);\nimpl Shape for Sq { fn area(&self) -> u32 { self.0 * self.0 } }\npub fn twice(x: u32) -> u32 { x * 2 }\npub fn total(s: &Sq) -> u32 { twice(s.area()) }\npub fn any(s: &dyn Shape) -> u32 { s.area() }\npub fn add(x: u32, y: u32) -> u32 { x + y }\n");
+    sb.file("p/src/lib.rs", "pub trait Shape { fn area(&self) -> u32; }\npub struct Sq(pub u32);\nimpl Shape for Sq { fn area(&self) -> u32 { self.0 * self.0 } }\npub fn twice(x: u32) -> u32 { x * 2 }\npub fn total(s: &Sq) -> u32 { twice(s.area()) }\npub fn any(s: &dyn Shape) -> u32 { s.area() }\npub fn add(x: u32, y: u32) -> u32 { x + y }\npub const LIMIT: u32 = 4 * 1024;\npub struct Wrap<T>(pub T);\n");
     // The driver for the toolchain, built as `qrust driver build` builds it (adding rustc-dev to a
     // toolchain QuickRust installed); embedded, QuickRust would only require it.
     build_driver(&sb, &p);
@@ -1303,6 +1303,12 @@ fn test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspace
         (format!("area@{}", lib.find("area()) }").unwrap()), "Shape::area", "trait", Some("<Sq as Shape>::area")),
         (format!("area@{}", lib.rfind("area()").unwrap()), "Shape::area", "dynamic", None),
     ]);
+    // How rustc lays out the types without type parameters, and the values of the constants.
+    let path_of = |def: &Value| facts["definitions"].as_array().unwrap().iter().find(|d| d["def"] == *def).unwrap()["path"].as_str().unwrap().to_string();
+    let layouts: Vec<(String, u64, u64)> = facts["layouts"].as_array().unwrap().iter().map(|l| (path_of(&l["def"]), l["size"].as_u64().unwrap(), l["align"].as_u64().unwrap())).collect();
+    assert_eq!(layouts, vec![("Sq".to_string(), 4, 4)]);
+    let constants: Vec<(String, &str)> = facts["constants"].as_array().unwrap().iter().map(|c| (path_of(&c["def"]), c["value"].as_str().unwrap())).collect();
+    assert_eq!(constants, vec![("LIMIT".to_string(), "4096")]);
     // Dependencies are not the workspace's: no facts are written for them (there are none here),
     // and the binary has its own.
     let bin = messages.iter().find(|m| m["reason"] == "compiler-artifact" && m["target"]["kind"][0] == "bin").unwrap();

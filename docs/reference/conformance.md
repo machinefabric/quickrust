@@ -179,7 +179,8 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 16. **Semantic facts (decision of 2026-10-15).** With `export.facts`, QuickRust's compiler
     driver, which until now only changed the crate hash, also writes what rustc decided about
     each workspace crate after analysis: definitions keyed by `DefPathHash`, calls with the
-    function typeck resolved them to and the impl a trait call selects, impls. Outputs stay
+    function typeck resolved them to and the impl a trait call selects, impls, and the layouts
+    of types and values of constants that have no type parameters. Outputs stay
     rustc's; the facts file is one output more, stored and restored with the unit, and the
     artifact cache keys units with facts apart. The driver then compiles the workspace's units
     even without early cut-off, leaving the crate hash as rustc computes it. This builds on
