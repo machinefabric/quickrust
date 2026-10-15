@@ -221,7 +221,8 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         }
         None => {
             let listed = fs::read_to_string(toolchain.join("lib/rustlib/components")).unwrap_or_default();
-            if !listed.lines().any(|l| l.trim() == "rustc-dev") {
+            let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).map(str::trim).unwrap_or_default();
+            if !lists_component(&listed, "rustc-dev", host) {
                 return Err(format!("{} for {}: the toolchain does not have it, and QuickRust only adds components to toolchains it installed", NO_RUSTC_DEV, name));
             }
         }
@@ -278,6 +279,12 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     Ok(exe)
 }
 
+/// Whether a toolchain's `lib/rustlib/components` lists `component` for `host`: QuickRust's
+/// installs name it alone, rustup's with the host it is built for (`rustc-dev-x86_64-unknown-linux-gnu`).
+fn lists_component(listed: &str, component: &str, host: &str) -> bool {
+    listed.lines().map(str::trim).any(|l| l == component || l.strip_prefix(component).and_then(|r| r.strip_prefix('-')) == Some(host))
+}
+
 /// The driver at `exe`, run as the compiler at `rustc` is run: with that toolchain's libraries
 /// first on `engine::LIBRARY_PATH`.
 fn run_against(exe: &Path, rustc: &Path) -> Command {
@@ -299,6 +306,17 @@ mod tests {
         let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
         assert_ne!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/dev"));
         assert_eq!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
+    }
+
+    // TEST0290: A toolchain lists rustc-dev as QuickRust or as rustup installs it
+    #[test]
+    fn test0290_a_toolchain_lists_rustc_dev_as_quickrust_or_as_rustup_installs_it() {
+        let host = "x86_64-unknown-linux-gnu";
+        assert!(lists_component("rustc\ncargo\nrustc-dev\n", "rustc-dev", host));
+        assert!(lists_component("rustc-x86_64-unknown-linux-gnu\nrustc-dev-x86_64-unknown-linux-gnu\n", "rustc-dev", host));
+        // Another host's, or another component that begins alike, is not it.
+        assert!(!lists_component("rustc-dev-aarch64-apple-darwin\n", "rustc-dev", host));
+        assert!(!lists_component("rustc-x86_64-unknown-linux-gnu\nrustc-docs-x86_64-unknown-linux-gnu\n", "rustc-dev", host));
     }
 
     // TEST0051: The release names the interface the driver adapts to
