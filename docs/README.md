@@ -46,6 +46,7 @@ Investigating and improving builds:
 - [How to review and apply QuickRust's recommendations](how-to/apply-a-recommendation.md)
 - [How to export a build report](how-to/export-a-report.md)
 - [How to run QuickRust in CI and gate on build time](how-to/set-up-ci.md)
+- [How to embed QuickRust in another program](how-to/embed-quickrust.md)
 
 ## Reference
 

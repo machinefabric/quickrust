@@ -167,6 +167,16 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     `qrust path` instead. Tests: `test0239_builds_go_to_quickrusts_cache_and_never_into_the_project`,
     `test0241_a_target_directory_the_user_chose_is_used…`, `test0242_a_build_script_building_another_workspace…`.
 
+15. **Embedded QuickRust (decision of 2026-10-15).** A program that runs QuickRust as a
+    component (omnicode's compiler checks) sets `embedded`: QuickRust then builds with the
+    `CARGO_HOME` and the toolchain directory it is given, never downloads, reads no
+    repository configuration, runs nothing in the background and leaves Cargo's output to
+    the program. Its home is the program's to give, one per trust level, so that the
+    artifact cache never restores across trust levels. `qrust capabilities` tells such a
+    program what this QuickRust offers before it relies on it. Tests:
+    `test0287_an_embedded_quickrust_builds_with_what_it_is_given_and_nothing_else`,
+    `test0288_quickrust_says_what_it_offers_a_program_that_embeds_it`.
+
 ## Open decisions of the specification, as resolved here
 
 | | Decision |

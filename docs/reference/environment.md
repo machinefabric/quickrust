@@ -26,7 +26,7 @@ Every other variable whose name starts with `QRUST_` is an error, except the [in
 | `CARGO_INCREMENTAL` | when set, wins over `incremental.local-dev` and `incremental.ci` |
 | `CARGO_PROFILE_*` | a profile setting the user made: the fast-mode setting it concerns is left alone ([Fast mode](fast-mode.md)) |
 | `CARGO_INSTALL_ROOT` | an error for `qrust install` without `--root` |
-| `CARGO_HOME` | read by `qrust setup` to find Cargo's home to import from (default `~/.cargo`); never used for builds, which use `~/.qrust/cargo` (`qrust doctor` notes when it is set) |
+| `CARGO_HOME` | read by `qrust setup` to find Cargo's home to import from (default `~/.cargo`); never used for builds, which use `~/.qrust/cargo` (`qrust doctor` notes when it is set), except by an [embedded](configuration.md#keys) QuickRust, which builds with the one it is given and requires it |
 
 ### CI detection
 
@@ -48,7 +48,7 @@ Every command runs the toolchain's Cargo with these variables. Cargo passes them
 
 | Variable | Value |
 |---|---|
-| `CARGO_HOME` | `~/.qrust/cargo` |
+| `CARGO_HOME` | `~/.qrust/cargo`; an embedded QuickRust's, the one it was given |
 | `RUSTUP_TOOLCHAIN` | the selected toolchain's id (`1.99.0-x86_64-unknown-linux-gnu`), so that a nested `cargo` or `rustc` uses the same toolchain |
 | `RUSTC`, `RUSTDOC` | the toolchain's `rustc` and `rustdoc`, unless the user set them to something else |
 | `PATH` | `~/.qrust/bin` first, then the inherited `PATH`, then the toolchain's `bin` |

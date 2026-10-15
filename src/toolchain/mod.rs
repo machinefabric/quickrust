@@ -223,6 +223,11 @@ pub fn ensure(layout: &Layout, sel: &Selection, needs: &Needs, server: &str, rep
             let dir = st.linked.get(name).ok_or_else(|| format!("no toolchain is named `{}` (`qrust toolchain link {} <dir>` names one)", name, name))?;
             linked(name.clone(), dir.clone(), &components, &targets)
         }
+        // An embedded QuickRust downloads nothing: its toolchain is given to it by directory.
+        Spec::Dist { .. } if util::embedded() => Err(format!(
+            "an embedded QuickRust uses the toolchain it is given by directory (RUSTUP_TOOLCHAIN=<directory>, or `+<directory>`), not {} from {}",
+            sel.spec, sel.source
+        )),
         Spec::Dist { channel, date, host: for_host } => {
             let host = for_host.clone().unwrap_or_else(host);
             let client = net::Client::new();

@@ -100,6 +100,9 @@ TOOLCHAINS (installed on first use; `+<toolchain>`, RUSTUP_TOOLCHAIN or rust-too
 
 INSTALLATION
     qrust doctor
+    qrust capabilities [--format text|json]
+                                     what this QuickRust offers a program that embeds it (embedded mode, the
+                                     report schema), for that program to check before relying on it
     qrust setup [--no-modify-path] [--toolchain T|none]
                                      install QuickRust for this user: ~/.qrust/bin first on PATH (cargo, rustc,
                                      rustfmt, ... are QuickRust), credentials and registries imported once from
@@ -310,6 +313,7 @@ pub fn main() {
         "cache" => cmd_cache(rest),
         "fix" => cmd_fix(rest),
         "doctor" => cmd_doctor(rest),
+        "capabilities" => cmd_capabilities(rest),
         "setup" => cmd_setup(rest),
         "self" => cmd_self(rest),
         // Anything else is Cargo syntax (including `+toolchain` and global flags).
@@ -1333,6 +1337,34 @@ fn cmd_fix(raw: &[OsString]) -> CmdResult {
 fn version_of(program: &Path, args: &[&str]) -> Option<String> {
     let out = crate::engine::toolchain_program(program).args(args).env(crate::ENV_EXEC_GUARD, format!("{}:doctor", std::process::id())).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").trim().to_string())
+}
+
+/// What this QuickRust offers a program that embeds it: a contract that grows only by new keys
+/// (a program checks the ones it needs and ignores the others).
+pub const CAPABILITIES: &[(&str, &str)] = &[
+    // `embedded`: QRUST_EMBEDDED, the Cargo home and toolchain directory given, no repository
+    // configuration, nothing in the background (docs/how-to/embed-quickrust.md).
+    ("embedded", "1"),
+    // The run report `QRUST_REPORT` writes (docs/reference/report-schema.md).
+    ("report-schema", "1.0"),
+];
+
+/// `qrust capabilities`: the version and the capabilities above, without loading any
+/// configuration or toolchain (a program asks before it gives QuickRust either).
+fn cmd_capabilities(raw: &[OsString]) -> CmdResult {
+    let mut a = Args::new(raw);
+    let format = a.format(&["text", "json"])?;
+    a.finish()?;
+    if format == "json" {
+        let caps: serde_json::Map<String, Value> = CAPABILITIES.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
+        println!("{}", json!({ "quickrust": env!("CARGO_PKG_VERSION"), "capabilities": caps }));
+    } else {
+        println!("QuickRust {}", env!("CARGO_PKG_VERSION"));
+        for (k, v) in CAPABILITIES {
+            println!("  {:<14} {}", k, v);
+        }
+    }
+    Ok(0)
 }
 
 fn cmd_doctor(raw: &[OsString]) -> CmdResult {

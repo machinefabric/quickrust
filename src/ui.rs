@@ -55,7 +55,8 @@ pub enum Prebuild {
 pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering {
     // compat mode leaves the terminal to Cargo unless the user asked for QuickRust's output explicitly.
     let setting = if cfg.str("mode") == "compat" && cfg.origin("output") == "default" { "cargo" } else { cfg.str("output") };
-    if setting != "qrust" || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
+    // An embedded QuickRust's output is the program's that embeds it: Cargo's, unchanged.
+    if setting != "qrust" || cfg.bool("embedded") || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
         return Rendering::Off;
     }
     let own: Vec<String> = args.iter().map(|a| a.to_string_lossy().into_owned()).take_while(|a| a != "--").collect();

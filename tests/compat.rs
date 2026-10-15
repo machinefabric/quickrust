@@ -1191,3 +1191,59 @@ fn test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds() 
     let differ: Vec<&String> = stock.iter().filter(|(k, v)| ours[*k] != **v).map(|(k, _)| k).collect();
     assert!(differ.is_empty(), "outputs that differ from rustc's: {:?}", differ);
 }
+
+// TEST0287: An embedded QuickRust builds with what it is given and nothing else
+#[test]
+fn test0287_an_embedded_quickrust_builds_with_what_it_is_given_and_nothing_else() {
+    let sb = Sandbox::new("embedded");
+    let p = sb.package("p", "p");
+    let tc = sb.toolchain_dir(&p);
+    // The Cargo home it is given: its configuration reaches the build.
+    let given = sb.dir.join("given-cargo-home");
+    fs::create_dir_all(&given).unwrap();
+    fs::write(given.join("config.toml"), "[env]\nEMBED_MARK = \"given\"\n").unwrap();
+    sb.file("p/src/lib.rs", "pub const MARK: &str = env!(\"EMBED_MARK\");\n\npub fn add(x: u32, y: u32) -> u32 { x + y }\n");
+    // The code it builds cannot steer it: a repository's configuration is not read (this one would
+    // be an error).
+    sb.file("p/.qrust/config.toml", "[cache]\nprovidr = \"sccache\"\n");
+    let embedded = |cmd: &mut Command| {
+        cmd.env("QRUST_EMBEDDED", "1").env("CARGO_HOME", &given).env("RUSTUP_TOOLCHAIN", &tc);
+    };
+    let report = sb.dir.join("report.json");
+    let mut cmd = sb.cargo(&p);
+    embedded(&mut cmd);
+    let out = ok(cmd.args(["check", "--message-format=json"]).env("QRUST_REPORT", &report));
+    // Cargo's output, unchanged: one JSON message per line on stdout.
+    let lines: Vec<serde_json::Value> = stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{}: {}", e, l))).collect();
+    assert!(lines.iter().any(|m| m["reason"] == "build-finished" && m["success"] == true), "{}", stdout(&out));
+    // The build's report, written as it was asked for.
+    let r: serde_json::Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+    assert!(r["units"].as_array().is_some_and(|u| u.iter().any(|u| u["package"]["name"] == "p" || u["crate_name"] == "p")), "{}", r["units"]);
+    // Nothing of QuickRust's own Cargo home was used.
+    assert!(!sb.cargo_home().join("config.toml").exists());
+
+    // A Cargo home is required: an embedded QuickRust never falls back to its own.
+    let out = run(sb.cargo(&p).arg("check").env("QRUST_EMBEDDED", "1").env("RUSTUP_TOOLCHAIN", &tc));
+    assert_eq!(out.status.code(), Some(2), "{}", stderr(&out));
+    assert!(stderr(&out).contains("CARGO_HOME"), "{}", stderr(&out));
+    // A toolchain named rather than given by directory: refused before anything is downloaded.
+    let mut cmd = sb.cargo(&p);
+    embedded(&mut cmd);
+    let out = run(cmd.arg("check").env("RUSTUP_TOOLCHAIN", "1.80.1"));
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("given by directory"), "{}", stderr(&out));
+}
+
+// TEST0288: QuickRust says what it offers a program that embeds it
+#[test]
+fn test0288_quickrust_says_what_it_offers_a_program_that_embeds_it() {
+    let sb = Sandbox::new("capabilities");
+    // Nothing is loaded to answer: not even a broken configuration stops it.
+    sb.file(".qrust/config.toml", "[cache]\nprovidr = \"sccache\"\n");
+    let out = ok(sb.qrust(&sb.dir).args(["capabilities", "--format", "json"]));
+    let caps: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
+    assert_eq!(caps["quickrust"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(caps["capabilities"]["embedded"], "1");
+    assert_eq!(caps["capabilities"]["report-schema"], "1.0");
+    assert!(stdout(&ok(sb.qrust(&sb.dir).arg("capabilities"))).contains("embedded"));
+}

@@ -168,9 +168,27 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// The Cargo home of every build QuickRust runs: `$QRUST_HOME/cargo` (see `engine`).
+static EMBEDDED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Records that this process is an embedded QuickRust (`embedded`), once its configuration is
+/// loaded.
+pub fn set_embedded(on: bool) {
+    let _ = EMBEDDED.set(on);
+}
+
+/// Whether this process is an embedded QuickRust: the program embedding it gives it its Cargo
+/// home and toolchain, and nothing runs in the background.
+pub fn embedded() -> bool {
+    EMBEDDED.get().copied().unwrap_or(false)
+}
+
+/// The Cargo home of every build QuickRust runs: `$QRUST_HOME/cargo` (see `engine`); an embedded
+/// QuickRust's is the `CARGO_HOME` it was given (`Config::load` requires one).
 pub fn cargo_home() -> PathBuf {
-    qrust_home().join("cargo")
+    match std::env::var_os("CARGO_HOME").filter(|v| embedded() && !v.is_empty()) {
+        Some(given) => PathBuf::from(given),
+        None => qrust_home().join("cargo"),
+    }
 }
 
 /// QuickRust's own state directory (`QRUST_HOME`, default `~/.qrust`).

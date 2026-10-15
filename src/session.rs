@@ -454,8 +454,11 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         let code = crate::install::run(&spec.args, &inv, &cwd, &cfg)?;
         return Ok(Outcome { exit: ExitInfo { code: Some(code), signal: None }, session_id: None, store: None, report: None, policy_exit: None });
     }
+    // An embedded QuickRust runs nothing in the background and leaves its cache to the program
+    // that embeds it (`qrust gc` with the same home): that program decides how long it runs.
+    let embedded = cfg.bool("embedded");
     // The disk nearly full: QuickRust's cache gives back what it can first (for ten seconds at most).
-    if let Some(freed) = crate::space::before_command(&cfg) {
+    if let Some(freed) = if embedded { None } else { crate::space::before_command(&cfg) } {
         match freed {
             Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: QuickRust's cache gave back {} ({} -> {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
             // Nothing of QuickRust's left to give: said once an hour, not on every command.
@@ -651,7 +654,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // Early cut-off needs QuickRust's compiler driver for this toolchain: built once, in the
     // background, after the build that found it missing (not alongside it, competing for the
     // processor).
-    if plan.early_cutoff {
+    if plan.early_cutoff && !embedded {
         let rustc = engine.rustc();
         let started = crate::driver::Compiler::of(&path_str(&rustc)).and_then(|c| crate::driver::start_build(&resolve::self_identity().0, &rustc, &c).map(|s| (s, c.version_verbose)));
         match started {
@@ -661,7 +664,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
     }
     // Once a day, a channel's newer release is looked for in the background.
-    if let Some(key) = &engine.channel {
+    if let Some(key) = engine.channel.as_ref().filter(|_| !embedded) {
         if let Err(e) = crate::toolchain::start_update(&crate::toolchain::Layout::current(), key, &resolve::self_identity().0, cfg.str("toolchain.auto-update")) {
             if render {
                 crate::ui::note(&format!("QuickRust could not check for a newer Rust release: {}", e));
@@ -826,7 +829,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
     // QuickRust's cache keeps within its space: a collection in the background when one is due.
-    if let Err(e) = crate::space::after_command(&cfg, &resolve::self_identity().0) {
+    if let Err(e) = if embedded { Ok(false) } else { crate::space::after_command(&cfg, &resolve::self_identity().0) } {
         if render {
             crate::ui::note(&format!("QuickRust could not check the space its cache uses: {}", e));
         }
