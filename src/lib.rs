@@ -42,7 +42,7 @@ pub mod view;
 pub mod waste;
 pub mod wrapper;
 
-pub const SCHEMA_VERSION: &str = "1.0";
+pub const SCHEMA_VERSION: &str = "1.1";
 
 pub const ENV_SESSION: &str = "QRUST_SESSION_ID";
 pub const ENV_EVENT_DIR: &str = "QRUST_EVENT_DIR";

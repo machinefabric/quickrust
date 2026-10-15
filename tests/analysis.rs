@@ -32,7 +32,7 @@ fn test0188_report_follows_the_versioned_contract() {
     let files = tree(&sb.dir.join("out"));
     assert_eq!(files.len(), 1, "exactly one sidecar, named after the session: {:?}", files);
     let r: Value = serde_json::from_slice(&fs::read(sb.dir.join("out").join(&files[0])).unwrap()).unwrap();
-    assert_eq!(r["schema_version"], "1.0");
+    assert_eq!(r["schema_version"], "1.1");
     assert_eq!(files[0], format!("{}.json", r["run"]["id"].as_str().unwrap()));
     // Fields of the documented contract (spec "CLI JSON contract").
     for path in [

@@ -40,6 +40,9 @@ pub struct Settings {
     /// Compile Cargo's units with QuickRust's compiler driver, when it is built for the compiler, and
     /// key dependents by the interfaces of the crates they compile against (early cut-off).
     pub early_cutoff: bool,
+    /// Compile the workspace's units with QuickRust's compiler driver writing their semantic facts
+    /// (`export.facts`; the driver is built).
+    pub export_facts: bool,
     /// The build's target directory, which holds generated inputs (build scripts' `OUT_DIR`).
     pub target_dir: Option<PathBuf>,
 }
@@ -123,11 +126,21 @@ pub fn main() {
     // when the program Cargo runs is rustc itself: a workspace wrapper (`cargo clippy`'s
     // clippy-driver, which describes itself exactly as rustc does) comes first, with rustc as
     // its first argument, and must run as it is.
+    //
+    // With `export.facts` the driver also compiles the workspace's own units (Cargo's primary
+    // packages), writing their semantic facts; without early cut-off it then leaves the crate hash
+    // as rustc computes it.
     let is_rustc = Path::new(&rustc).file_stem().is_some_and(|s| s == "rustc");
-    let mut driver: Option<PathBuf> = match (&settings, &inner, &compiler) {
-        (Some(s), None, Ok(_)) if s.early_cutoff && is_rustc && is_cargo_unit(&lossy) => rustc.to_str().and_then(|r| crate::driver::Compiler::of(r).ok()).and_then(|c| crate::driver::find(&c)).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))),
-        _ => None,
+    let primary = std::env::var_os("CARGO_PRIMARY_PACKAGE").is_some();
+    let (interface_hash, facts) = match (&settings, &inner, &compiler) {
+        (Some(s), None, Ok(_)) if is_rustc && is_cargo_unit(&lossy) => (s.early_cutoff, s.export_facts && primary),
+        _ => (false, false),
     };
+    let mut driver: Option<PathBuf> = if interface_hash || facts { rustc.to_str().and_then(|r| crate::driver::Compiler::of(r).ok()).and_then(|c| crate::driver::find(&c)).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))) } else { None };
+    let facts = facts && driver.is_some();
+    // What depends on the interface hash (keys by dependencies' interfaces, relinking) needs the
+    // driver computing it.
+    let interface_hash = interface_hash && driver.is_some();
 
     let start_wall = util::now_wall_ns();
     let started = Instant::now();
@@ -135,7 +148,7 @@ pub fn main() {
     // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
     let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let job = match (&inner, &event_dir, &args_utf8, &compiler) {
-        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, driver.as_deref(), args),
+        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, driver.as_deref().filter(|_| interface_hash), facts, args),
         (None, Some(_), Some(_), Err(e)) if cache_root.is_some() => Err(e.clone()),
         _ => Err("off".into()),
     };
@@ -195,7 +208,7 @@ pub fn main() {
     // writes the `.rlink` naming them, and they are hard-linked aside before linking deletes
     // them); relinking is rustc's `-Zlink-only`.
     let input = input_index(&lossy);
-    let relinkable = matches!((&driver, &job, unlock, input), (Some(_), Ok(j), Some(_), Some(_)) if j.relinkable() && !j.known_quick());
+    let relinkable = interface_hash && matches!((&job, unlock, input), (Ok(j), Some(_), Some(_)) if j.relinkable() && !j.known_quick());
     if relinkable {
         bootstrap = true;
     }
@@ -228,7 +241,16 @@ pub fn main() {
         let mut c = match driver {
             Some(d) => {
                 let mut c = Command::new(d);
-                c.env(crate::driver::ENV_INTERFACE_HASH, "1");
+                if interface_hash {
+                    c.env(crate::driver::ENV_INTERFACE_HASH, "1");
+                } else {
+                    c.env_remove(crate::driver::ENV_INTERFACE_HASH);
+                }
+                if facts {
+                    c.env(crate::driver::ENV_FACTS, "1");
+                } else {
+                    c.env_remove(crate::driver::ENV_FACTS);
+                }
                 match &keep_objects {
                     Some(dir) => c.env(crate::driver::ENV_KEEP_OBJECTS, dir),
                     None => c.env_remove(crate::driver::ENV_KEEP_OBJECTS),
@@ -885,7 +907,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qrust-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a QuickRust session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, target_dir: Some(dir.join("t")) };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, export_facts: true, target_dir: Some(dir.join("t")) };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
         std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"linker_dir":null,"from_the_future":true}"#).unwrap();

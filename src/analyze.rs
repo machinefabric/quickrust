@@ -1036,6 +1036,7 @@ fn finalize_one(store: &WsStore, id: &str, cfg: &Config, filesystem_current: boo
             "units": { "time": "ns", "size": "bytes" },
         },
         "cache": artifact_cache_summary(cache, &session, &events),
+        "facts": if session["policy"]["facts"].is_object() { session["policy"]["facts"].clone() } else { json!({ "state": "off" }) },
         "critical_path": critical,
         "critical_path_model": {
             "completeness": if partial_reasons.is_empty() { "observed" } else { "partial" },

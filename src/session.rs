@@ -292,6 +292,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
     if let Some(b) = before {
         p.policy["cache"]["stats_before"] = b;
     }
+    p.policy["facts"] = if cfg.bool("export.facts") { json!({ "state": "unavailable", "detail": "the build is not instrumented (measurement.enabled = false, or not a build command)" }) } else { json!({ "state": "off" }) };
 
     if wants && already_ours {
         // A nested build inside an instrumented session: its rustc events land in the parent's stream.
@@ -310,12 +311,21 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                 let unlockable = cfg.str("mode") == "fast" && inner.is_none() && std::env::var_os("RUSTC_BOOTSTRAP").is_none();
                 let threads = if unlockable { crate::config::frontend_threads(cfg.str("fast.frontend-threads")) } else { None };
                 let linker = if unlockable && cfg.str("fast.linker") == "auto" { fast_linker(engine) } else { None };
+                // Semantic facts need QuickRust's compiler driver for this toolchain, built now
+                // (before the build, which would compile without it), and no wrapper of the
+                // user's in front of the compiler.
+                let facts: Result<(), String> = match (cfg.bool("export.facts"), &inner) {
+                    (false, _) => Err(String::new()),
+                    (true, Some(_)) => Err("a rustc wrapper is configured, which runs the compiler itself".into()),
+                    (true, None) => crate::driver::build(&engine.rustc()).map(|_| ()),
+                };
                 let settings = crate::wrapper::Settings {
                     artifact_cache: artifacts.then(|| artifact_cache.to_path_buf()),
                     frontend_threads: threads,
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                     linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
                     early_cutoff: artifacts && crate::driver::wanted(cfg),
+                    export_facts: facts.is_ok(),
                     target_dir: engine.target.as_ref().map(|t| t.dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
@@ -334,6 +344,11 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
                     p.frontend_threads = threads;
                     p.early_cutoff = settings.early_cutoff;
+                    match &facts {
+                        Ok(()) => p.policy["facts"] = json!({ "state": "written", "schema": crate::driver::FACTS_SCHEMA }),
+                        Err(detail) if cfg.bool("export.facts") => p.policy["facts"] = json!({ "state": "unavailable", "detail": detail }),
+                        Err(_) => {}
+                    }
                     p.linker = linker.map(|(_, wild)| wild);
                     p.events_dir = Some(dir);
                 }
