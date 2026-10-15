@@ -186,6 +186,15 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     the out-of-process, file-based contract FR-180 prefers. Tests:
     `test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspaces_crates`,
     `test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`.
+17. **Borrow checker's facts (decision of 2026-10-15).** With `export.borrow-facts`, the
+    driver overrides the `mir_borrowck` query. rustc's own check runs first and decides; for
+    each body it accepted, the borrow checker's consumer interface computes the borrows again
+    on a copy of the body, and the driver records borrows of user variables (with where they
+    go out of scope) and moves out of them. The consumer interface differs between releases:
+    1.99 lists borrows by index instead of by location, which the driver adapts to by release
+    (`qrust_rustc_ge_99`). Tests:
+    `test0291_the_borrow_checkers_facts_say_where_each_borrow_is_made_and_ends_and_where_values_move`,
+    `test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`.
 
 ## Open decisions of the specification, as resolved here
 

@@ -87,7 +87,7 @@ QuickRust sets these for its own processes. They are not configuration, and sett
 | `QRUST_EXEC_GUARD` | recursion detection |
 | `QRUST_ENGINE` | the toolchain directory QuickRust set `RUSTC`, `RUSTDOC` and `PATH` for, so that a nested QuickRust can tell its own settings from the user's |
 | `QRUST_MANAGED_TARGET_DIR` | marks `CARGO_TARGET_DIR` and `CARGO_BUILD_BUILD_DIR` as set by QuickRust |
-| `QRUST_DRIVER_INTERFACE_HASH`, `QRUST_DRIVER_FACTS`, `QRUST_DRIVER_KEEP_OBJECTS`, `QRUST_DRIVER_READY_FD` | between the rustc wrapper and QuickRust's compiler driver |
+| `QRUST_DRIVER_INTERFACE_HASH`, `QRUST_DRIVER_FACTS`, `QRUST_DRIVER_BORROW_FACTS`, `QRUST_DRIVER_KEEP_OBJECTS`, `QRUST_DRIVER_READY_FD` | between the rustc wrapper and QuickRust's compiler driver |
 
 ## Recorded in run reports
 

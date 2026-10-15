@@ -27,6 +27,7 @@ Facts are written only for Cargo's primary packages (the workspace's members), o
 | `definitions[]` | every item, associated item, field, variant, impl and macro of the crate |
 | `impls[]` | every impl block |
 | `calls[]` | every call in the crate's bodies whose callee is a function or method |
+| `bodies[]` | with [`export.borrow-facts`](configuration.md#keys): what the borrow checker decided about each body it accepted; absent otherwise |
 | `files[]` | file names that positions index |
 
 ### `definitions[]`
@@ -79,3 +80,33 @@ A reference to a definition in any crate is an object with these fields:
 - `def`: its `DefPathHash`;
 - `crate`: its crate's name;
 - `path`: its path.
+
+### `bodies[]`
+
+A body is a function, closure or constant initializer that rustc's borrow checker accepted. Its facts are computed again, on a copy of the body, through the borrow checker's consumer interface (`rustc_borrowck::consumers`) after rustc's own check decided.
+
+Only places in the program's own variables are listed: compiler temporaries, the borrows rustc makes for matches and index expressions, and closure captures are left out.
+
+| Field | Content |
+|---|---|
+| `owner` | the `DefPathHash` of the body's definition. A closure's is its own; its position is inside its function. |
+| `borrows[]` | every borrow of a user variable's place |
+| `moves[]` | every move out of a user variable's place |
+
+A place is written as in source: `x`, `x.field`, `x.0`, `*x`, or `x[..]` for an element of `x`.
+
+#### `borrows[]`
+
+| Field | Content |
+|---|---|
+| `kind` | `shared` (`&`) or `mut` (`&mut`). Borrows rustc makes itself count too, such as the receiver of `v.len()`. |
+| `place` | what is borrowed |
+| `file`, `lo`, `hi`, `expanded` | the position of the borrowing expression |
+| `dead_at[]` | positions (`file`, `lo`, `hi`, `expanded`) where the borrow is no longer live: the first points, on each path, at which it is out of scope |
+
+#### `moves[]`
+
+| Field | Content |
+|---|---|
+| `place` | what is moved out of |
+| `file`, `lo`, `hi`, `expanded` | the position of the moving expression: a call's argument, or the expression read |

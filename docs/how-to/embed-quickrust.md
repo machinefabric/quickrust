@@ -70,3 +70,5 @@ qrust check --offline --message-format=json --workspace --all-targets
 The driver is built before the build when it is missing, with the same requirement: the toolchain's `rustc-dev` component. To find a crate's facts, take the `.rmeta` that Cargo's `compiler-artifact` message names and change its extension to `.qrust-facts.json` ([Semantic facts schema](../reference/facts-schema.md)). This also works for units that were fresh or restored from the artifact cache.
 
 The report's `facts` section says whether facts were written, and if not, why.
+
+With `QRUST_EXPORT_BORROW_FACTS=1` as well, the facts also say what the borrow checker decided about each body. They list every borrow of a variable with where it goes out of scope, and every move out of one. Rely on this only when `capabilities.borrow-facts` is present.

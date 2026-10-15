@@ -43,6 +43,8 @@ pub struct Settings {
     /// Compile the workspace's units with QuickRust's compiler driver writing their semantic facts
     /// (`export.facts`; the driver is built).
     pub export_facts: bool,
+    /// With `export_facts`: the borrow checker's facts too (`export.borrow-facts`).
+    pub export_borrow_facts: bool,
     /// The build's target directory, which holds generated inputs (build scripts' `OUT_DIR`).
     pub target_dir: Option<PathBuf>,
 }
@@ -138,6 +140,7 @@ pub fn main() {
     };
     let mut driver: Option<PathBuf> = if interface_hash || facts { rustc.to_str().and_then(|r| crate::driver::Compiler::of(r).ok()).and_then(|c| crate::driver::find(&c)).filter(|d| !crate::driver::failed_before(d, &unit_identity(&lossy))) } else { None };
     let facts = facts && driver.is_some();
+    let borrow_facts = facts && settings.as_ref().is_some_and(|s| s.export_borrow_facts);
     // What depends on the interface hash (keys by dependencies' interfaces, relinking) needs the
     // driver computing it.
     let interface_hash = interface_hash && driver.is_some();
@@ -148,7 +151,7 @@ pub fn main() {
     // The global artifact cache (fast mode): only without a user wrapper, which might be a cache itself.
     let args_utf8: Option<Vec<String>> = argv.iter().map(|a| a.to_str().map(str::to_string)).collect();
     let job = match (&inner, &event_dir, &args_utf8, &compiler) {
-        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, driver.as_deref().filter(|_| interface_hash), facts, args),
+        (None, Some(_), Some(args), Ok(c)) => artifact_cache::prepare(cache_root.as_deref(), c, driver.as_deref().filter(|_| interface_hash), facts.then_some(borrow_facts), args),
         (None, Some(_), Some(_), Err(e)) if cache_root.is_some() => Err(e.clone()),
         _ => Err("off".into()),
     };
@@ -250,6 +253,11 @@ pub fn main() {
                     c.env(crate::driver::ENV_FACTS, "1");
                 } else {
                     c.env_remove(crate::driver::ENV_FACTS);
+                }
+                if borrow_facts {
+                    c.env(crate::driver::ENV_BORROW_FACTS, "1");
+                } else {
+                    c.env_remove(crate::driver::ENV_BORROW_FACTS);
                 }
                 match &keep_objects {
                     Some(dir) => c.env(crate::driver::ENV_KEEP_OBJECTS, dir),
@@ -907,7 +915,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("qrust-settings-{}", util::new_id()));
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), None, "no settings file: not in a QuickRust session");
-        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, export_facts: true, target_dir: Some(dir.join("t")) };
+        let s = Settings { artifact_cache: Some(dir.join("c")), frontend_threads: Some(8), min_link_store_ns: 300_000_000, linker_dir: Some(dir.join("l")), early_cutoff: true, export_facts: true, export_borrow_facts: true, target_dir: Some(dir.join("t")) };
         s.write(&dir).unwrap();
         assert_eq!(Settings::read(&dir).unwrap(), Some(s));
         std::fs::write(dir.join(SETTINGS_FILE), r#"{"artifact_cache":null,"frontend_threads":null,"min_link_store_ns":1,"linker_dir":null,"from_the_future":true}"#).unwrap();

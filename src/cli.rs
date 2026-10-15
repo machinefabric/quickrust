@@ -1350,6 +1350,8 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     // `export.facts`: rustc's semantic facts beside each workspace crate's metadata
     // (docs/reference/facts-schema.md).
     ("facts-export", crate::driver::FACTS_SCHEMA),
+    // `export.borrow-facts`: the borrow checker's facts within them (`bodies`).
+    ("borrow-facts", "1"),
 ];
 
 /// `qrust capabilities`: the version and the capabilities above, without loading any

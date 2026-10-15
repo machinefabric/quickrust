@@ -34,7 +34,7 @@ Rules (API-001 … API-004):
 | `duplication` | multiple versions (`versions[]`: `state` `necessary` for SemVer-incompatible versions, `separate-sources` for compatible ones, which Cargo keeps apart only because they come from different sources) and build variants |
 | `build_scripts`, `proc_macros`, `codegen` | per-concern analyses |
 | `artifacts` | build-directory inventory and GC plan, one entry per directory |
-| `facts` | whether the workspace's semantic facts were written ([`export.facts`](configuration.md#keys)): `state` `off`, `written` (with `schema`, `qrust-facts/1`; [Semantic facts schema](facts-schema.md)) or `unavailable` (with `detail`: the driver could not be built for the toolchain, a rustc wrapper is configured, or the build was not instrumented) |
+| `facts` | whether the workspace's semantic facts were written ([`export.facts`](configuration.md#keys)): `state` `off`, `written` (with `schema`, `qrust-facts/1`, and `borrow_check`, whether they include the borrow checker's; [Semantic facts schema](facts-schema.md)) or `unavailable` (with `detail`: the driver could not be built for the toolchain, a rustc wrapper is configured, or the build was not instrumented) |
 | `recommendations` | ranked findings |
 | `budget` | policy evaluation, when one ran |
 | `unavailable` | field path → reason |
