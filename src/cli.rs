@@ -1346,7 +1346,10 @@ pub const CAPABILITIES: &[(&str, &str)] = &[
     // configuration, nothing in the background (docs/how-to/embed-quickrust.md).
     ("embedded", "1"),
     // The run report `QRUST_REPORT` writes (docs/reference/report-schema.md).
-    ("report-schema", "1.0"),
+    ("report-schema", crate::SCHEMA_VERSION),
+    // `export.facts`: rustc's semantic facts beside each workspace crate's metadata
+    // (docs/reference/facts-schema.md).
+    ("facts-export", crate::driver::FACTS_SCHEMA),
 ];
 
 /// `qrust capabilities`: the version and the capabilities above, without loading any

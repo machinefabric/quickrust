@@ -1244,6 +1244,76 @@ fn test0288_quickrust_says_what_it_offers_a_program_that_embeds_it() {
     let caps: Value = serde_json::from_str(stdout(&out).trim()).unwrap();
     assert_eq!(caps["quickrust"], env!("CARGO_PKG_VERSION"));
     assert_eq!(caps["capabilities"]["embedded"], "1");
-    assert_eq!(caps["capabilities"]["report-schema"], "1.0");
+    assert_eq!(caps["capabilities"]["report-schema"], "1.1");
+    assert_eq!(caps["capabilities"]["facts-export"], "qrust-facts/1");
     assert!(stdout(&ok(sb.qrust(&sb.dir).arg("capabilities"))).contains("embedded"));
+}
+
+// TEST0289: An embedded QuickRust writes rustc's semantic facts for the workspace's crates
+#[test]
+fn test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspaces_crates() {
+    let sb = Sandbox::new("facts");
+    let p = sb.package("p", "p");
+    sb.file("p/src/lib.rs", "pub trait Shape { fn area(&self) -> u32; }\npub struct Sq(pub u32);\nimpl Shape for Sq { fn area(&self) -> u32 { self.0 * self.0 } }\npub fn twice(x: u32) -> u32 { x * 2 }\npub fn total(s: &Sq) -> u32 { twice(s.area()) }\npub fn any(s: &dyn Shape) -> u32 { s.area() }\npub fn add(x: u32, y: u32) -> u32 { x + y }\n");
+    // The driver for the toolchain, built as `qrust driver build` builds it (adding rustc-dev to a
+    // toolchain QuickRust installed); embedded, QuickRust would only require it.
+    build_driver(&sb, &p);
+    let tc = sb.toolchain_dir(&p);
+    let given = sb.dir.join("given-cargo-home");
+    fs::create_dir_all(&given).unwrap();
+    let check = |target: &str, facts: bool| -> (Vec<Value>, Value) {
+        let report = sb.dir.join(format!("{}.json", target));
+        let mut cmd = sb.cargo(&p);
+        cmd.env("QRUST_EMBEDDED", "1").env("CARGO_HOME", &given).env("RUSTUP_TOOLCHAIN", &tc).env("CARGO_TARGET_DIR", sb.dir.join(target)).env("QRUST_REPORT", &report);
+        if facts {
+            cmd.env("QRUST_EXPORT_FACTS", "1");
+        }
+        let out = ok(cmd.args(["check", "--message-format=json"]));
+        let messages = stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+        (messages, serde_json::from_slice(&fs::read(&report).unwrap()).unwrap())
+    };
+    // Where Cargo says the library's metadata is, the facts are beside it.
+    let facts_of = |messages: &[Value]| -> Option<Value> {
+        let lib = messages.iter().find(|m| m["reason"] == "compiler-artifact" && m["target"]["kind"][0] == "lib").expect("the library's artifact");
+        let rmeta = lib["filenames"].as_array().unwrap().iter().filter_map(Value::as_str).find(|f| f.ends_with(".rmeta")).unwrap();
+        fs::read(std::path::Path::new(rmeta).with_extension("qrust-facts.json")).ok().map(|b| serde_json::from_slice(&b).unwrap())
+    };
+
+    let (messages, report) = check("t1", true);
+    assert_eq!(report["facts"], serde_json::json!({ "state": "written", "schema": "qrust-facts/1" }));
+    let facts = facts_of(&messages).expect("the library's facts");
+    assert_eq!((facts["schema"].as_str(), facts["crate"]["name"].as_str()), (Some("qrust-facts/1"), Some("p")));
+    let defs: Vec<(&str, &str)> = facts["definitions"].as_array().unwrap().iter().map(|d| (d["kind"].as_str().unwrap(), d["path"].as_str().unwrap())).collect();
+    assert!(defs.contains(&("function", "twice")) && defs.contains(&("method", "<Sq as Shape>::area")), "{:?}", defs);
+    // Positions are byte offsets into the file as written.
+    let lib = fs::read_to_string(p.join("src/lib.rs")).unwrap();
+    let at = |v: &Value| &lib[v["lo"].as_u64().unwrap() as usize..v["hi"].as_u64().unwrap() as usize];
+    let twice = facts["definitions"].as_array().unwrap().iter().find(|d| d["path"] == "twice").unwrap();
+    assert_eq!(at(twice), "twice");
+    assert_eq!(facts["files"][twice["file"].as_u64().unwrap() as usize], "src/lib.rs");
+    // Every call, with what the compiler resolved it to: the impl a trait call selects; a call
+    // on a trait object, dynamic.
+    let calls: Vec<(String, &str, &str, Option<&str>)> = facts["calls"].as_array().unwrap().iter().map(|c| (format!("{}@{}", at(c), c["lo"]), c["callee"]["path"].as_str().unwrap(), c["dispatch"].as_str().unwrap(), c["target"]["path"].as_str())).collect();
+    let total = lib.find("twice(s").unwrap();
+    assert_eq!(calls, vec![
+        (format!("twice@{}", total), "twice", "static", None),
+        (format!("area@{}", lib.find("area()) }").unwrap()), "Shape::area", "trait", Some("<Sq as Shape>::area")),
+        (format!("area@{}", lib.rfind("area()").unwrap()), "Shape::area", "dynamic", None),
+    ]);
+    // Dependencies are not the workspace's: no facts are written for them (there are none here),
+    // and the binary has its own.
+    let bin = messages.iter().find(|m| m["reason"] == "compiler-artifact" && m["target"]["kind"][0] == "bin").unwrap();
+    let rmeta = bin["filenames"].as_array().unwrap().iter().filter_map(Value::as_str).find(|f| f.ends_with(".rmeta")).unwrap();
+    assert!(std::path::Path::new(rmeta).with_extension("qrust-facts.json").exists());
+
+    // Restored from the artifact cache into another target directory, with its facts.
+    let (messages, report) = check("t2", true);
+    let unit = report["units"].as_array().unwrap().iter().find(|u| u["crate_name"] == "p" && u["kind"] == "lib").unwrap();
+    assert_eq!(unit["freshness"], "restored", "{}", unit);
+    assert_eq!(facts_of(&messages).unwrap(), facts);
+
+    // Not asked for: none, and the report says so.
+    let (messages, report) = check("t3", false);
+    assert_eq!(report["facts"], serde_json::json!({ "state": "off" }));
+    assert!(facts_of(&messages).is_none());
 }

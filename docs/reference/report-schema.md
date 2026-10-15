@@ -1,4 +1,4 @@
-# Run report schema, version 1.0
+# Run report schema, version 1.1
 
 One JSON document per recorded run, produced by `QRUST_REPORT=<path> cargo …`,
 `measurement.report`, or `qrust report --format json`.
@@ -20,7 +20,7 @@ Rules (API-001 … API-004):
 
 | Field | Content |
 |---|---|
-| `schema_version` | `"1.0"` |
+| `schema_version` | `"1.1"` (1.1 added `facts`) |
 | `run` | identity, command, result |
 | `workspace` | members, digests, directories, source state |
 | `toolchain` | Cargo and rustc identity, host, capabilities |
@@ -34,6 +34,7 @@ Rules (API-001 … API-004):
 | `duplication` | multiple versions (`versions[]`: `state` `necessary` for SemVer-incompatible versions, `separate-sources` for compatible ones, which Cargo keeps apart only because they come from different sources) and build variants |
 | `build_scripts`, `proc_macros`, `codegen` | per-concern analyses |
 | `artifacts` | build-directory inventory and GC plan, one entry per directory |
+| `facts` | whether the workspace's semantic facts were written ([`export.facts`](configuration.md#keys)): `state` `off`, `written` (with `schema`, `qrust-facts/1`; [Semantic facts schema](facts-schema.md)) or `unavailable` (with `detail`: the driver could not be built for the toolchain, a rustc wrapper is configured, or the build was not instrumented) |
 | `recommendations` | ranked findings |
 | `budget` | policy evaluation, when one ran |
 | `unavailable` | field path → reason |

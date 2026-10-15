@@ -9,7 +9,7 @@ qrust capabilities --format json
 ```
 
 ```json
-{"quickrust":"1.151.1495","capabilities":{"embedded":"1","report-schema":"1.0"}}
+{"quickrust":"1.151.1495","capabilities":{"embedded":"1","report-schema":"1.1","facts-export":"qrust-facts/1"}}
 ```
 
 Rely on embedded mode only when `capabilities.embedded` is present: an older QuickRust rejects `QRUST_EMBEDDED` as an unknown variable.
@@ -51,3 +51,22 @@ QRUST_HOME=/var/lib/myindexer/qrust/trusted RUSTUP_TOOLCHAIN=$HOME/.rustup/toolc
 ```
 
 Without the driver, builds still use the artifact cache; early cut-off is off for them.
+
+## Read what rustc decided
+
+With `QRUST_EXPORT_FACTS=1`, the workspace's crates are compiled with the compiler driver, which writes rustc's semantic facts beside each crate's metadata. The facts cover:
+
+- the crate's definitions;
+- every call, with the function typeck resolved it to and the implementation a trait call selects;
+- its impls.
+
+Rely on this only when `capabilities.facts-export` names the schema you read.
+
+```bash
+QRUST_EMBEDDED=1 QRUST_EXPORT_FACTS=1 QRUST_HOME=… CARGO_HOME=… RUSTUP_TOOLCHAIN=<directory> QRUST_REPORT=… \
+qrust check --offline --message-format=json --workspace --all-targets
+```
+
+The driver is built before the build when it is missing, with the same requirement: the toolchain's `rustc-dev` component. To find a crate's facts, take the `.rmeta` that Cargo's `compiler-artifact` message names and change its extension to `.qrust-facts.json` ([Semantic facts schema](../reference/facts-schema.md)). This also works for units that were fresh or restored from the artifact cache.
+
+The report's `facts` section says whether facts were written, and if not, why.

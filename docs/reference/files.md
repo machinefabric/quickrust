@@ -75,6 +75,7 @@ Never removed: anything used in the last 15 minutes; a build directory a QuickRu
 | Path | Content |
 |---|---|
 | `<target>/<profile>/deps/<unit>.qrust-svh` | a library's interface hash (early cut-off) |
+| `<target>/<profile>/deps/<unit>.qrust-facts.json` | a workspace crate's semantic facts (`export.facts`, [Semantic facts schema](facts-schema.md)) |
 | `<target>/<profile>/deps/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | a binary's kept objects and what they were compiled from, for relinking |
 
 They go with the rest of the directory (`cargo clean`).

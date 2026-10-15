@@ -176,6 +176,16 @@ and listed in `toolchain.capabilities`; nothing depends on them.
     program what this QuickRust offers before it relies on it. Tests:
     `test0287_an_embedded_quickrust_builds_with_what_it_is_given_and_nothing_else`,
     `test0288_quickrust_says_what_it_offers_a_program_that_embeds_it`.
+16. **Semantic facts (decision of 2026-10-15).** With `export.facts`, QuickRust's compiler
+    driver, which until now only changed the crate hash, also writes what rustc decided about
+    each workspace crate after analysis: definitions keyed by `DefPathHash`, calls with the
+    function typeck resolved them to and the impl a trait call selects, impls. Outputs stay
+    rustc's; the facts file is one output more, stored and restored with the unit, and the
+    artifact cache keys units with facts apart. The driver then compiles the workspace's units
+    even without early cut-off, leaving the crate hash as rustc computes it. This builds on
+    the out-of-process, file-based contract FR-180 prefers. Tests:
+    `test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspaces_crates`,
+    `test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds`.
 
 ## Open decisions of the specification, as resolved here
 

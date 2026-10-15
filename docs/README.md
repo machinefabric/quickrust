@@ -63,6 +63,7 @@ Descriptions of the machinery, to consult while you work.
 - [Compatibility with Cargo](reference/compatibility.md): what passes through unchanged and what differs
 - [Platforms](reference/platforms.md): supported systems, known gaps, and the limits of observation
 - [Run report schema](reference/report-schema.md): the versioned JSON report
+- [Semantic facts schema](reference/facts-schema.md): what `export.facts` writes about each workspace crate
 - [Specification](reference/specification.md) and [Conformance](reference/conformance.md): the requirements QuickRust implements, and where it deviates
 
 ## Explanation

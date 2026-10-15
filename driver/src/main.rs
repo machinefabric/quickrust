@@ -21,6 +21,9 @@
 //!
 //! Procedural macros, whose bodies run inside their dependents' compilations, keep rustc's hash.
 //!
+//! With `QRUST_DRIVER_FACTS` set, the crate's semantic facts (definitions, resolved calls,
+//! impls) go to `<out-dir>/lib<crate name><extra filename>.qrust-facts.json` (see `facts`).
+//!
 //! With `QRUST_DRIVER_READY_FD` set (Unix), the outputs are linked before rustc saves its
 //! incremental state, and the wrapper is told when they are written (see `early_link`).
 //! The crate hash goes to `<out-dir>/lib<crate name><extra filename>.qrust-svh` for QuickRust's wrapper.
@@ -57,6 +60,7 @@ use std::sync::OnceLock;
 
 #[cfg(unix)]
 mod early_link;
+mod facts;
 
 const INTERFACE_HASH: &str = "QRUST_DRIVER_INTERFACE_HASH";
 
@@ -65,11 +69,20 @@ static STOCK_CRATE_HASH: OnceLock<for<'tcx> fn(TyCtxt<'tcx>, LocalCrate) -> Svh>
 
 struct Callbacks {
     interface_hash: bool,
+    /// Write the crate's semantic facts after analysis (see `facts`).
+    facts: bool,
     /// The pipe on which to say the outputs are written (see `early_link`).
     ready_fd: Option<i32>,
 }
 
 impl rustc_driver::Callbacks for Callbacks {
+    fn after_analysis<'tcx>(&mut self, _compiler: &rustc_interface::interface::Compiler, tcx: TyCtxt<'tcx>) -> rustc_driver::Compilation {
+        if self.facts {
+            facts::write(tcx);
+        }
+        rustc_driver::Compilation::Continue
+    }
+
     fn config(&mut self, config: &mut rustc_interface::interface::Config) {
         // As rustc's own driver sets it: it decides how paths are printed into metadata.
         config.opts.trimmed_def_paths = true;
@@ -555,6 +568,6 @@ fn main() -> std::process::ExitCode {
     let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok()).inspect(|fd| early_link::keep_to_self(*fd));
     #[cfg(not(unix))]
     let ready_fd = None;
-    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), ready_fd };
+    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), facts: std::env::var_os(facts::ENV).is_some(), ready_fd };
     rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&rustc_driver::args::raw_args(&early), &mut callbacks))
 }
