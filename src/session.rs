@@ -326,6 +326,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
                     early_cutoff: artifacts && crate::driver::wanted(cfg),
                     export_facts: facts.is_ok(),
+                    export_borrow_facts: facts.is_ok() && cfg.bool("export.borrow-facts"),
                     target_dir: engine.target.as_ref().map(|t| t.dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
@@ -345,7 +346,7 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     p.frontend_threads = threads;
                     p.early_cutoff = settings.early_cutoff;
                     match &facts {
-                        Ok(()) => p.policy["facts"] = json!({ "state": "written", "schema": crate::driver::FACTS_SCHEMA }),
+                        Ok(()) => p.policy["facts"] = json!({ "state": "written", "schema": crate::driver::FACTS_SCHEMA, "borrow_check": cfg.bool("export.borrow-facts") }),
                         Err(detail) if cfg.bool("export.facts") => p.policy["facts"] = json!({ "state": "unavailable", "detail": detail }),
                         Err(_) => {}
                     }

@@ -285,7 +285,59 @@ pub fn render(tcx: TyCtxt<'_>) -> String {
         }
         out.push('}');
     }
-    out.push_str("],\"files\":[");
+    out.push(']');
+    if std::env::var_os(crate::borrows::ENV).is_some() {
+        let bodies = std::mem::take(&mut *crate::borrows::BODIES.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut files = files.borrow_mut();
+        let mut place = |out: &mut String, a: &crate::borrows::At| {
+            let p = Place { file: files.id(a.file.clone()), lo: a.lo, hi: a.hi, expanded: a.expanded };
+            write_place(out, &p);
+        };
+        out.push_str(",\"bodies\":[");
+        for (i, b) in bodies.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str("{\"owner\":");
+            string(&mut out, &b.owner);
+            out.push_str(",\"borrows\":[");
+            for (j, r) in b.borrows.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"kind\":");
+                string(&mut out, r.kind);
+                out.push_str(",\"place\":");
+                string(&mut out, &r.place);
+                out.push(',');
+                place(&mut out, &r.at);
+                out.push_str(",\"dead_at\":[");
+                for (k, d) in r.dead_at.iter().enumerate() {
+                    if k > 0 {
+                        out.push(',');
+                    }
+                    out.push('{');
+                    place(&mut out, d);
+                    out.push('}');
+                }
+                out.push_str("]}");
+            }
+            out.push_str("],\"moves\":[");
+            for (j, m) in b.moves.iter().enumerate() {
+                if j > 0 {
+                    out.push(',');
+                }
+                out.push_str("{\"place\":");
+                string(&mut out, &m.place);
+                out.push(',');
+                place(&mut out, &m.at);
+                out.push('}');
+            }
+            out.push_str("]}");
+        }
+        out.push(']');
+    }
+    out.push_str(",\"files\":[");
     for (i, name) in files.borrow().order.iter().enumerate() {
         if i > 0 {
             out.push(',');

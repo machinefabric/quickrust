@@ -1246,6 +1246,7 @@ fn test0288_quickrust_says_what_it_offers_a_program_that_embeds_it() {
     assert_eq!(caps["capabilities"]["embedded"], "1");
     assert_eq!(caps["capabilities"]["report-schema"], "1.1");
     assert_eq!(caps["capabilities"]["facts-export"], "qrust-facts/1");
+    assert_eq!(caps["capabilities"]["borrow-facts"], "1");
     assert!(stdout(&ok(sb.qrust(&sb.dir).arg("capabilities"))).contains("embedded"));
 }
 
@@ -1280,7 +1281,9 @@ fn test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspace
     };
 
     let (messages, report) = check("t1", true);
-    assert_eq!(report["facts"], serde_json::json!({ "state": "written", "schema": "qrust-facts/1" }));
+    assert_eq!(report["facts"], serde_json::json!({ "state": "written", "schema": "qrust-facts/1", "borrow_check": false }));
+    // Not asked for, no borrow checker's facts.
+    assert!(facts_of(&messages).unwrap().get("bodies").is_none());
     let facts = facts_of(&messages).expect("the library's facts");
     assert_eq!((facts["schema"].as_str(), facts["crate"]["name"].as_str()), (Some("qrust-facts/1"), Some("p")));
     let defs: Vec<(&str, &str)> = facts["definitions"].as_array().unwrap().iter().map(|d| (d["kind"].as_str().unwrap(), d["path"].as_str().unwrap())).collect();
@@ -1316,4 +1319,36 @@ fn test0289_an_embedded_quickrust_writes_rustcs_semantic_facts_for_the_workspace
     let (messages, report) = check("t3", false);
     assert_eq!(report["facts"], serde_json::json!({ "state": "off" }));
     assert!(facts_of(&messages).is_none());
+}
+
+// TEST0291: The borrow checker's facts say where each borrow is made and ends and where values move
+#[test]
+fn test0291_the_borrow_checkers_facts_say_where_each_borrow_is_made_and_ends_and_where_values_move() {
+    let sb = Sandbox::new("borrow-facts");
+    let p = sb.package("p", "p");
+    let lib = "pub struct Acc { pub total: u32, pub items: Vec<u32> }\npub fn add(x: u32, y: u32) -> u32 { x + y }\npub fn consume(v: Vec<u32>) -> usize { v.len() }\npub fn work(mut a: Acc) -> usize {\n    let first = &a.items;\n    let n = first.len();\n    let r = &mut a.total;\n    *r += n as u32;\n    let items = a.items;\n    consume(items)\n}\n";
+    sb.file("p/src/lib.rs", lib);
+    build_driver(&sb, &p);
+    let tc = sb.toolchain_dir(&p);
+    let given = sb.dir.join("given-cargo-home");
+    fs::create_dir_all(&given).unwrap();
+    let report = sb.dir.join("report.json");
+    let out = ok(sb.cargo(&p).env("QRUST_EMBEDDED", "1").env("CARGO_HOME", &given).env("RUSTUP_TOOLCHAIN", &tc).env("QRUST_EXPORT_FACTS", "1").env("QRUST_EXPORT_BORROW_FACTS", "1").env("QRUST_REPORT", &report).args(["check", "--message-format=json"]));
+    let r: Value = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
+    assert_eq!(r["facts"]["borrow_check"], true);
+    let messages: Vec<Value> = stdout(&out).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let artifact = messages.iter().find(|m| m["reason"] == "compiler-artifact" && m["target"]["kind"][0] == "lib").unwrap();
+    let rmeta = artifact["filenames"].as_array().unwrap().iter().filter_map(Value::as_str).find(|f| f.ends_with(".rmeta")).unwrap();
+    let facts: Value = serde_json::from_slice(&fs::read(std::path::Path::new(rmeta).with_extension("qrust-facts.json")).unwrap()).unwrap();
+    let at = |v: &Value| &lib[v["lo"].as_u64().unwrap() as usize..v["hi"].as_u64().unwrap() as usize];
+    let work = facts["definitions"].as_array().unwrap().iter().find(|d| d["path"] == "work").unwrap();
+    let body = facts["bodies"].as_array().unwrap().iter().find(|b| b["owner"] == work["def"]).expect("work's body");
+    let borrows: Vec<(&str, &str, &str)> = body["borrows"].as_array().unwrap().iter().map(|b| (b["kind"].as_str().unwrap(), b["place"].as_str().unwrap(), at(b))).collect();
+    assert_eq!(borrows, vec![("shared", "a.items", "&a.items"), ("mut", "a.total", "&mut a.total")]);
+    // Each borrow ends before what would conflict with it: the shared one before `a.items` moves.
+    let shared_ends: Vec<usize> = body["borrows"][0]["dead_at"].as_array().unwrap().iter().map(|d| d["lo"].as_u64().unwrap() as usize).collect();
+    assert!(!shared_ends.is_empty() && shared_ends.iter().all(|e| *e > lib.find("&a.items").unwrap()), "{:?}", shared_ends);
+    assert!(shared_ends.iter().any(|e| *e <= lib.find("let items").unwrap()), "{:?}", shared_ends);
+    let moves: Vec<(&str, &str)> = body["moves"].as_array().unwrap().iter().map(|m| (m["place"].as_str().unwrap(), at(m))).collect();
+    assert_eq!(moves, vec![("a.items", "a.items"), ("items", "items")]);
 }

@@ -18,6 +18,8 @@ pub const ENV_INTERFACE_HASH: &str = "QRUST_DRIVER_INTERFACE_HASH";
 /// Set for the driver: write the crate's semantic facts beside its metadata
 /// (`lib<crate><extra>.qrust-facts.json`, schema `FACTS_SCHEMA`).
 pub const ENV_FACTS: &str = "QRUST_DRIVER_FACTS";
+/// Set for the driver, with `ENV_FACTS`: the borrow checker's facts too (`bodies`).
+pub const ENV_BORROW_FACTS: &str = "QRUST_DRIVER_BORROW_FACTS";
 /// The schema of the facts the driver writes.
 pub const FACTS_SCHEMA: &str = "qrust-facts/1";
 /// Set for the driver: the descriptor of a pipe on which it says its outputs are written.
@@ -26,7 +28,7 @@ pub const ENV_READY_FD: &str = "QRUST_DRIVER_READY_FD";
 pub const ENV_KEEP_OBJECTS: &str = "QRUST_DRIVER_KEEP_OBJECTS";
 
 const MANIFEST: &str = include_str!("../driver/Cargo.toml");
-const SOURCES: [(&str, &str); 3] = [("main.rs", include_str!("../driver/src/main.rs")), ("early_link.rs", include_str!("../driver/src/early_link.rs")), ("facts.rs", include_str!("../driver/src/facts.rs"))];
+const SOURCES: [(&str, &str); 4] = [("main.rs", include_str!("../driver/src/main.rs")), ("early_link.rs", include_str!("../driver/src/early_link.rs")), ("facts.rs", include_str!("../driver/src/facts.rs")), ("borrows.rs", include_str!("../driver/src/borrows.rs"))];
 /// The binary's name inside its directory.
 const BINARY: &str = "qrust-rustc-driver";
 /// Releases whose compiler interface the driver's sources adapt to: the driver is built with

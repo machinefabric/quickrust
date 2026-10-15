@@ -332,8 +332,9 @@ fn tree_digest(root: &Path) -> Option<String> {
 /// Prepares a lookup, or says why this compilation is not cached.
 /// `compiler` is the compiler's own account of itself (`rustc -vV`, see `rustc_info`);
 /// `driver`, QuickRust's compiler driver when it compiles this unit instead of rustc computing the
-/// interface hash; `facts`, when a driver writes the unit's semantic facts (one output more).
-pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, facts: bool, args: &[String]) -> Result<Job, String> {
+/// interface hash; `facts`, when a driver writes the unit's semantic facts (one output more),
+/// and whether they include the borrow checker's.
+pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, facts: Option<bool>, args: &[String]) -> Result<Job, String> {
     let root = root.ok_or("the artifact cache is off")?.to_path_buf();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").map_err(|_| "not a Cargo unit")?;
     let local = !crate::wrapper::is_external_source(Path::new(&manifest_dir));
@@ -343,9 +344,9 @@ pub fn prepare(root: Option<&Path>, compiler: &str, driver: Option<&Path>, facts
         // The driver's directory names the compiler and the driver's own source.
         key.push(format!("driver={}", d.parent().and_then(Path::file_name).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
     }
-    if facts {
+    if let Some(borrows) = facts {
         // Outputs as rustc's (or the interface-hash driver's), plus the facts file.
-        key.push(format!("facts={}", crate::driver::FACTS_SCHEMA));
+        key.push(format!("facts={}{}", crate::driver::FACTS_SCHEMA, if borrows { "+borrows" } else { "" }));
     }
     if local {
         // Workspace units carry the checkout's absolute path in their debug information: they are

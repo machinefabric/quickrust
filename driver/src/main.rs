@@ -22,7 +22,9 @@
 //! Procedural macros, whose bodies run inside their dependents' compilations, keep rustc's hash.
 //!
 //! With `QRUST_DRIVER_FACTS` set, the crate's semantic facts (definitions, resolved calls,
-//! impls) go to `<out-dir>/lib<crate name><extra filename>.qrust-facts.json` (see `facts`).
+//! impls) go to `<out-dir>/lib<crate name><extra filename>.qrust-facts.json` (see `facts`); with
+//! `QRUST_DRIVER_BORROW_FACTS` too, what the borrow checker decided about each body (see
+//! `borrows`).
 //!
 //! With `QRUST_DRIVER_READY_FD` set (Unix), the outputs are linked before rustc saves its
 //! incremental state, and the wrapper is told when they are written (see `early_link`).
@@ -31,6 +33,7 @@
 #![feature(rustc_private)]
 
 extern crate rustc_ast;
+extern crate rustc_borrowck;
 extern crate rustc_codegen_ssa;
 extern crate rustc_data_structures;
 extern crate rustc_driver;
@@ -60,6 +63,7 @@ use std::sync::OnceLock;
 
 #[cfg(unix)]
 mod early_link;
+mod borrows;
 mod facts;
 
 const INTERFACE_HASH: &str = "QRUST_DRIVER_INTERFACE_HASH";
@@ -71,6 +75,8 @@ struct Callbacks {
     interface_hash: bool,
     /// Write the crate's semantic facts after analysis (see `facts`).
     facts: bool,
+    /// With them, what the borrow checker decided about each body (see `borrows`).
+    borrow_facts: bool,
     /// The pipe on which to say the outputs are written (see `early_link`).
     ready_fd: Option<i32>,
 }
@@ -95,10 +101,16 @@ impl rustc_driver::Callbacks for Callbacks {
                 Box::new(early_link::EarlyLink::new(backend, fd, keep))
             }));
         }
-        if self.interface_hash {
+        if self.interface_hash || self.borrow_facts {
             config.override_queries = Some(|_, providers| {
-                let _ = STOCK_CRATE_HASH.set(providers.queries.crate_hash);
-                providers.queries.crate_hash = interface_hash;
+                if std::env::var_os(INTERFACE_HASH).is_some() {
+                    let _ = STOCK_CRATE_HASH.set(providers.queries.crate_hash);
+                    providers.queries.crate_hash = interface_hash;
+                }
+                if std::env::var_os(facts::ENV).is_some() && std::env::var_os(borrows::ENV).is_some() {
+                    let _ = borrows::STOCK_MIR_BORROWCK.set(providers.queries.mir_borrowck);
+                    providers.queries.mir_borrowck = borrows::mir_borrowck;
+                }
             });
         }
     }
@@ -568,6 +580,6 @@ fn main() -> std::process::ExitCode {
     let ready_fd = std::env::var(early_link::READY_FD).ok().and_then(|v| v.parse().ok()).inspect(|fd| early_link::keep_to_self(*fd));
     #[cfg(not(unix))]
     let ready_fd = None;
-    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), facts: std::env::var_os(facts::ENV).is_some(), ready_fd };
+    let mut callbacks = Callbacks { interface_hash: std::env::var_os(INTERFACE_HASH).is_some(), facts: std::env::var_os(facts::ENV).is_some(), borrow_facts: std::env::var_os(facts::ENV).is_some() && std::env::var_os(borrows::ENV).is_some(), ready_fd };
     rustc_driver::catch_with_exit_code(|| rustc_driver::run_compiler(&rustc_driver::args::raw_args(&early), &mut callbacks))
 }
