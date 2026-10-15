@@ -1,6 +1,7 @@
 //! rustc's semantic results for a crate, as facts another program can read (`qrust-facts/1`):
 //! the crate's definitions, every call in its bodies with the function typeck resolved it to (and,
-//! for a trait method, the implementation it selects where the types decide it), and its impls.
+//! for a trait method, the implementation it selects where the types decide it), its impls, the
+//! layouts of its types and the values of its constants that do not depend on type parameters.
 //!
 //! Written after analysis, with `QRUST_DRIVER_FACTS` set, to `lib<crate name><extra
 //! filename>.qrust-facts.json` beside the metadata. Nothing the compiler produces changes.
@@ -121,6 +122,33 @@ fn kind(k: DefKind) -> Option<&'static str> {
     })
 }
 
+/// The size and alignment of a type without type parameters, as rustc lays it out.
+fn layout(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<(u64, u64)> {
+    if tcx.generics_of(def_id).requires_monomorphization(tcx) {
+        return None;
+    }
+    let ty = tcx.erase_and_anonymize_regions(tcx.type_of(def_id).skip_binder());
+    let layout = tcx.layout_of(ty::TypingEnv::post_analysis(tcx, def_id.to_def_id()).as_query_input(ty)).ok()?;
+    Some((layout.size.bytes(), layout.align.abi.bytes()))
+}
+
+/// The value of a constant without type parameters, when it is a boolean, a character or an
+/// integer.
+fn constant(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<String> {
+    if tcx.generics_of(def_id).requires_monomorphization(tcx) {
+        return None;
+    }
+    let scalar = tcx.const_eval_poly(def_id.to_def_id()).ok()?.try_to_scalar_int()?;
+    let size = scalar.size();
+    Some(match tcx.type_of(def_id).skip_binder().kind() {
+        ty::Bool => scalar.try_to_bool().ok()?.to_string(),
+        ty::Char => format!("{:?}", char::from_u32(scalar.to_uint(size) as u32)?),
+        ty::Int(_) => scalar.to_int(size).to_string(),
+        ty::Uint(_) => scalar.to_uint(size).to_string(),
+        _ => return None,
+    })
+}
+
 /// How a call reaches its target.
 enum Dispatch {
     /// A function, or an inherent method: the callee is the target.
@@ -206,6 +234,8 @@ pub fn render(tcx: TyCtxt<'_>) -> String {
     let files = std::cell::RefCell::new(Files::default());
     let mut defs = String::new();
     let mut impls = String::new();
+    let mut layouts = String::new();
+    let mut constants = String::new();
     for def_id in tcx.hir_crate_items(()).definitions() {
         let dk = tcx.def_kind(def_id);
         let Some(kind) = kind(dk) else { continue };
@@ -223,6 +253,27 @@ pub fn render(tcx: TyCtxt<'_>) -> String {
         let _ = write!(defs, ",\"public\":{},", tcx.visibility(def_id).is_public());
         write_place(&mut defs, &name);
         defs.push('}');
+        let hash = tcx.def_path_hash(def_id.to_def_id()).0.to_hex();
+        let laid_out = if matches!(dk, DefKind::Struct | DefKind::Enum | DefKind::Union) { layout(tcx, def_id) } else { None };
+        if let Some((size, align)) = laid_out {
+            if !layouts.is_empty() {
+                layouts.push(',');
+            }
+            layouts.push_str("{\"def\":");
+            string(&mut layouts, &hash);
+            let _ = write!(layouts, ",\"size\":{},\"align\":{}}}", size, align);
+        }
+        let value = if matches!(dk, DefKind::Const { .. } | DefKind::AssocConst { .. }) { constant(tcx, def_id) } else { None };
+        if let Some(value) = value {
+            if !constants.is_empty() {
+                constants.push(',');
+            }
+            constants.push_str("{\"def\":");
+            string(&mut constants, &hash);
+            constants.push_str(",\"value\":");
+            string(&mut constants, &value);
+            constants.push('}');
+        }
         if let DefKind::Impl { .. } = dk {
             if !impls.is_empty() {
                 impls.push(',');
@@ -261,6 +312,10 @@ pub fn render(tcx: TyCtxt<'_>) -> String {
     out.push_str(&defs);
     out.push_str("],\"impls\":[");
     out.push_str(&impls);
+    out.push_str("],\"layouts\":[");
+    out.push_str(&layouts);
+    out.push_str("],\"constants\":[");
+    out.push_str(&constants);
     out.push_str("],\"calls\":[");
     for (i, c) in calls.iter().enumerate() {
         if i > 0 {
