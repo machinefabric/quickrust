@@ -2,7 +2,9 @@
 //! interpreted here for execution semantics (COMP-050).
 //!
 //! Precedence: built-in defaults < `$QRUST_HOME/config.toml`
-//! < repository `.qrust/config.toml` < `QRUST_*` environment.
+//! < repository `.qrust/config.toml` < `QRUST_*` environment. An embedded QuickRust (`embedded`,
+//! set in its home's file or the environment) reads no repository configuration: the program
+//! that embeds it decides how it builds, not the code it builds.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -80,6 +82,7 @@ const KEYS: &[Key] = &[
     Key { name: "toolchain.dist-server", kind: Kind::Str, default: "https://static.rust-lang.org", env: Some("QRUST_DIST_SERVER"), help: "where QuickRust downloads Rust releases from (a mirror of static.rust-lang.org)" },
     Key { name: "security.persist-environment", kind: Kind::Enum(&["allowlist", "none"]), default: "allowlist", env: None, help: "which environment values may be persisted in run records" },
     Key { name: "security.redact-path-home", kind: Kind::Bool, default: "true", env: None, help: "tokenise home/workspace paths in exported reports" },
+    Key { name: "embedded", kind: Kind::Bool, default: "false", env: Some("QRUST_EMBEDDED"), help: "QuickRust runs as a component of another program, which gives it everything it uses: the toolchain (linked, by directory; nothing is downloaded), CARGO_HOME, and a QuickRust home of its own. A repository's .qrust/config.toml is not read, nothing runs in the background, and Cargo's output passes through unchanged" },
     Key { name: "benchmark.allow-mutation", kind: Kind::Bool, default: "false", env: None, help: "allow synthetic source edits without interactive confirmation" },
 ];
 
@@ -250,11 +253,21 @@ impl Config {
     pub fn load(cwd: &Path) -> Result<Config, String> {
         let mut c = Config::defaults();
         c.apply_file(&crate::util::qrust_home().join("config.toml"))?;
-        if let Some(repo) = find_repo_config(cwd) {
-            c.apply_file(&repo)?;
-            c.repo_config = Some(repo);
+        // Whether this QuickRust is embedded is decided before the repository could say otherwise.
+        let mut decided = c.clone();
+        decided.apply_env()?;
+        let embedded = decided.bool("embedded");
+        if !embedded {
+            if let Some(repo) = find_repo_config(cwd) {
+                c.apply_file(&repo)?;
+                c.repo_config = Some(repo);
+            }
         }
         c.apply_env()?;
+        if embedded && std::env::var_os("CARGO_HOME").map_or(true, |v| v.is_empty()) {
+            return Err("an embedded QuickRust builds with the CARGO_HOME it is given, and none is set (`embedded` from ".to_string() + c.origin("embedded") + ")");
+        }
+        crate::util::set_embedded(embedded);
         Ok(c)
     }
 
