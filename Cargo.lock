@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "quickrust"
-version = "1.151.1495"
+version = "1.153.1572"
 dependencies = [
  "blake3",
  "ed25519-dalek",
