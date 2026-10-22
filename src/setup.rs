@@ -145,13 +145,16 @@ enum Proxies {
 const PROXIES: Proxies = if cfg!(windows) { Proxies::Copies } else { Proxies::Links };
 
 /// The digests of every QuickRust binary `bin` may hold copies of besides the one being installed:
-/// the `qrust` this install replaced, and every one setup recorded installing (`binaries` in
+/// the `qrust` this install replaced, the ones earlier installs moved aside in `bin`
+/// (`.qrust.exe.old.<pid>` on Windows), and every one setup recorded installing (`binaries` in
 /// `setup.json`).
 ///
 /// A copy of an earlier QuickRust is QuickRust's own. Recognised only as a copy of the binary
 /// installing now, every proxy a previous release left on Windows was refused, so a machine set up
 /// by one release could not update to the next, by `qrust self update` or by `qrust setup` (22 Oct
-/// 2026). The replaced binary covers machines whose record predates `binaries`.
+/// 2026). Such a refused update had already replaced `qrust` and moved the earlier one aside, so the
+/// proxies are copies of neither the binary installing now nor the one it replaces. The binary moved
+/// aside is what they are copies of, and the record predates `binaries`.
 fn known_binaries(record: Option<&Value>, installed: &Installed) -> Vec<String> {
     let mut known: Vec<String> = record
         .and_then(|r| r.get("binaries"))
@@ -159,7 +162,25 @@ fn known_binaries(record: Option<&Value>, installed: &Installed) -> Vec<String> 
         .map(|digests| digests.iter().filter_map(|d| d.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
     known.extend(installed.replaced.clone());
+    known.extend(moved_aside(&installed.qrust));
     known
+}
+
+/// The digests of the binaries an install moved aside beside `qrust`, named
+/// `.<qrust's file name>.old.<pid>` by `install_from`.
+fn moved_aside(qrust: &Path) -> Vec<String> {
+    let (Some(bin), Some(name)) = (qrust.parent(), qrust.file_name().map(util::lossy)) else {
+        return Vec::new();
+    };
+    let prefix = format!(".{name}.old.");
+    let Ok(entries) = fs::read_dir(bin) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(Result::ok)
+        .filter(|entry| util::lossy(&entry.file_name()).starts_with(&prefix))
+        .filter_map(|entry| util::blake3_file(&entry.path()).ok())
+        .collect()
 }
 
 /// Adds the digest of `qrust` to the record's `binaries`, once.
@@ -552,6 +573,23 @@ mod tests {
         let third = install_from(&bin, &release(&dir.join("third"), "QuickRust 3")).unwrap();
         link_proxies(&bin, &third.qrust, &known_binaries(Some(&json!({ "format": 1 })), &third), Proxies::Copies)
             .expect("an install whose record predates `binaries` still recognises its proxies");
+
+        // A machine an earlier QuickRust left half-updated: `qrust` already replaced, the one before
+        // it moved aside (as Windows installs do), the proxies still copies of that one, and a record
+        // that names no binaries. The update finishes.
+        let half = dir.join("half");
+        fs::create_dir_all(&half).unwrap();
+        let old = release(&dir.join("old"), "QuickRust old");
+        let half_qrust = util::exe_candidates(&half, "qrust").remove(0);
+        let old_name = half_qrust.file_name().map(util::lossy).unwrap();
+        fs::copy(&old, half.join(format!(".{old_name}.old.4242"))).unwrap();
+        fs::write(&half_qrust, "QuickRust newer").unwrap();
+        let half_cargo = util::exe_candidates(&half, "cargo").remove(0);
+        fs::copy(&old, &half_cargo).unwrap();
+        let next = install_from(&half, &release(&dir.join("next"), "QuickRust next")).unwrap();
+        link_proxies(&half, &next.qrust, &known_binaries(Some(&json!({ "format": 1 })), &next), Proxies::Copies)
+            .expect("the proxies of the binary moved aside are QuickRust's");
+        assert_eq!(fs::read_to_string(&half_cargo).unwrap(), "QuickRust next");
 
         // Something that is no QuickRust is never overwritten. A new file, not a write through the
         // proxy: a proxy may be a hard link to `qrust` itself.
