@@ -10,7 +10,7 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 |---|---|---|
 | `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`); `cargo` and the toolchain programs as links to `qrust` ([Commands](commands.md#toolchain-programs)); programs `qrust install` installed | the links are recreated by the next command; installed programs are lost |
 | `~/.qrust/config.toml` | the user's QuickRust configuration ([Configuration](configuration.md)) | yours |
-| `~/.qrust/setup.json` | what `qrust setup` did: where it installed, which shell files it changed, what it imported; read by `qrust doctor` and `qrust self uninstall` | `qrust setup` writes it again |
+| `~/.qrust/setup.json` | what `qrust setup` did: where it installed, which shell files it changed, what it imported, and the digest of every QuickRust binary it or `qrust self update` installed (so an update recognises the proxies an earlier release made, which on Windows are copies of it); read by `qrust doctor`, `qrust self update` and `qrust self uninstall` | `qrust setup` writes it again |
 | `~/.qrust/env`, `~/.qrust/env.fish` | the scripts the shell startup files source to put `~/.qrust/bin` first on `PATH` | `qrust setup` writes them again |
 | `~/.qrust/installs.json` | what `qrust install` installed, by root and package (`qrust install --list`) | use `qrust uninstall` instead |
 | `~/.qrust/toolchains/` | the Rust toolchains QuickRust installed (`qrust toolchain list`); `channels.json` says which release each channel names, the default, and the linked toolchains | use `qrust toolchain remove`; a deleted toolchain is installed again on its next use |
