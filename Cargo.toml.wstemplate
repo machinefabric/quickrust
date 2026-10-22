@@ -11,6 +11,11 @@ default-run = "qrust"
 [workspace]
 members = [".", "bench", "tools/quickrust-dist"]
 
+# The version the members that build QuickRust's release carry, so a release build
+# names the version it releases.
+[workspace.package]
+version = "{{ project.version }}"
+
 [lib]
 name = "quickrust"
 path = "src/lib.rs"
