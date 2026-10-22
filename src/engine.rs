@@ -18,7 +18,8 @@
 //!   `lib/rustlib/<host>/lib` there for build scripts, and with the `rustc-dev` component that
 //!   holds a copy of `librustc_driver` which finds LLVM only through the toolchain's `lib`.
 //! - Cargo never deletes cached downloads on its own (`CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`):
-//!   QuickRust manages that space.
+//!   QuickRust manages that space, and runs Cargo's clean only while no process with an engine is
+//!   running (`space::CargoRuns`).
 //!
 //! `+<toolchain>` is consumed here and never reaches Cargo.
 
@@ -181,6 +182,9 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     };
     progress.finish(&tc);
     toolchain::mark_used(&tc);
+    // What runs with this engine uses QuickRust's Cargo home: Cargo's own clean waits for it (see
+    // `space::CargoRuns`). Unrecorded, a collection could run Cargo's clean under it.
+    crate::space::running_cargo()?;
     let program = toolchain::engine_program(&tc).map_err(|e| format!("toolchain {}: {}", tc.id, e))?;
     let mut env = environment(&tc);
     if program != tc.cargo() {

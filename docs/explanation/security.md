@@ -160,7 +160,8 @@ directory the user chose, or among toolchains (`qrust toolchain remove`, and cha
 releases after a day unused, aside). A collection never removes
 anything used in the last 15 minutes, a build directory a QuickRust command holds (its lock) or one
 a Cargo holds a lock in; it renames what it removes into `cache/tmp` before deleting it, so
-nothing is ever seen half deleted, and logs every removal (`cache/gc-log.jsonl`). The scans
+nothing is ever seen half deleted, and logs what each collection removed (`cache/gc-log.jsonl`:
+counts and bytes by kind, and the build directories and program sources by path). The scans
 never follow symbolic links. `qrust gc --dry-run` says what a collection would remove.
 
 `qrust inventory` plans within a build directory and deletes nothing: it classifies anything it

@@ -1141,20 +1141,26 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     let policy = crate::space::policy(&cfg, &fs);
     let phase = crate::ui::Phase::start();
     let done = crate::space::collect(&cache, crate::space::downloads().as_ref(), &policy, to, dry_run, None)?;
+    // Recorded with what the collection did until then; the command fails with it.
+    let failed = done.failed.clone().map_or(Ok(0), Err);
     if background {
-        return Ok(0);
+        return failed;
     }
     if format == "json" {
-        let removed: Vec<Value> = done.removed.iter().map(|(k, p, b, why)| json!({ "kind": k.name(), "path": path_str(p), "bytes": b, "why": why })).collect();
-        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available })).unwrap_or_default());
-        return Ok(0);
+        let removed: Vec<Value> = done.removed.iter().map(|r| json!({ "kind": r.kind.name(), "path": path_str(&r.path), "bytes": r.bytes, "why": r.why.to_string() })).collect();
+        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available, "free_counted": done.free_before, "unseen": done.unseen, "cargo_left": done.cargo_left, "failed": done.failed })).unwrap_or_default());
+        return failed;
     }
-    for (kind, path, bytes, why) in &done.removed {
-        println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, if dry_run { "would remove" } else { "removed" }, human_bytes(*bytes), kind.name(), path.display(), why);
+    for r in &done.removed {
+        println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, if dry_run { "would remove" } else { "removed" }, human_bytes(r.bytes), r.kind.name(), r.path.display(), r.why);
+    }
+    if let Some(left) = &done.cargo_left {
+        crate::ui::note(left);
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
-    phase.finish(true, &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
-    Ok(0)
+    let unseen = if done.unseen > 0 { format!(" and {} removed that the disk does not show yet", human_bytes(done.unseen)) } else { String::new() };
+    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), unseen, if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
+    failed
 }
 
 fn cmd_policy(raw: &[OsString]) -> CmdResult {
@@ -1213,13 +1219,14 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     let qrust_cache = util::cache_dir();
     let fs = crate::space::fs_space(util::qrust_home().as_path()).ok();
     let bounds = fs.map(|f| crate::space::policy(&ctx.cfg, &f));
+    let counted_free = fs.map(|f| crate::space::free(&qrust_cache, &f, util::now_wall_ns()));
     let v = json!({
         "provider_policy": provider, "policy_origin": ctx.cfg.origin("cache.provider"), "fail": ctx.cfg.str("cache.fail"),
         "existing_rustc_wrapper": existing.as_ref().map(|(w, s)| json!({ "wrapper": w, "source": s })),
         "sccache": sccache, "state": state, "server_statistics": stats, "last_analysed_run": last,
         "qrust_cache": {
             "dir": path_str(&qrust_cache), "usage": crate::space::usage(&qrust_cache), "recent_collections": crate::space::recent(&qrust_cache, 5),
-            "max_bytes": bounds.map(|b| b.max_bytes), "min_free": bounds.map(|b| b.min_free), "free": fs.map(|f| f.available),
+            "max_bytes": bounds.map(|b| b.max_bytes), "min_free": bounds.map(|b| b.min_free), "free": fs.map(|f| f.available), "free_counted": counted_free,
         },
     });
     if format == "json" {
@@ -1254,10 +1261,14 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
             v.parse::<u64>().map(human_bytes).unwrap_or_else(|_| v.to_string())
         };
         println!("  {:<24} at most {} (cache.max-size = {}), keeps {} of the disk free (cache.min-free = {}), {} free now", "bounds", human_bytes(m), setting("cache.max-size"), human_bytes(f), setting("cache.min-free"), human_bytes(free));
+        if let Some(counted) = hc["free_counted"].as_u64().filter(|c| *c > free) {
+            println!("  {:<24} {} removed by collections that the disk does not show free yet (a snapshot holds it); counted as free until it does, for a day at most", "not shown yet", human_bytes(counted - free));
+        }
     }
     for c in hc["recent_collections"].as_array().into_iter().flatten() {
         let at = util::parse_iso8601(&vstr(c, "at")).map(|t| util::human_ago(t, now)).unwrap_or_else(|| vstr(c, "at"));
-        println!("  {:<24} {}, {} -> {}, {} removed", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), c["removed"].as_array().map(|r| r.len()).unwrap_or(0));
+        let count: u64 = c["removed"].as_array().into_iter().flatten().filter_map(|g| g["count"].as_u64()).sum();
+        println!("  {:<24} {}, {} -> {}, {} removed{}", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), count, c["cargo_left"].as_str().or(c["failed"].as_str()).map(|l| format!("; {}", l)).unwrap_or_default());
     }
     println!();
     // A compiler cache (sccache) besides QuickRust's own: what it is and what it did.

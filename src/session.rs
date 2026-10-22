@@ -457,10 +457,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // The disk nearly full: QuickRust's cache gives back what it can first (for ten seconds at most).
     if let Some(freed) = crate::space::before_command(&cfg) {
         match freed {
+            Ok(crate::space::Collected { failed: Some(e), .. }) | Err(e) => crate::ui::note(&format!("the disk is nearly full, and QuickRust's cache could not give back space: {}", e)),
             Ok(c) if c.after < c.before => crate::ui::note(&format!("the disk is nearly full: QuickRust's cache gave back {} ({} -> {}){}", util::human_bytes(c.before - c.after), util::human_bytes(c.before), util::human_bytes(c.after), if c.stopped_early { "; more in the background" } else { "" })),
             // Nothing of QuickRust's left to give: said once an hour, not on every command.
             Ok(c) => crate::ui::notice_hourly("disk-full", &format!("the disk is nearly full, and nothing in QuickRust's cache ({}) can go now", util::human_bytes(c.after))),
-            Err(e) => crate::ui::note(&format!("the disk is nearly full, and QuickRust's cache could not give back space: {}", e)),
         }
     }
     let engine = crate::engine::for_command(&inv, &cwd, &cfg)?;
@@ -712,6 +712,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let post = Instant::now();
     let mut outcome = Outcome { exit, session_id: None, store: None, report: None, policy_exit: None };
     if !store_ok {
+        crate::space::done_running_cargo();
         // Observation is optional; the build result stands on its own (NFR-020).
         crate::ui::say(crate::ui::Tag::Warn, &format!("state directory {} is not writable; this run was not recorded", store.dir.display()));
         if cfg.bool("measurement.strict") && exit.success() {
@@ -825,7 +826,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if id.as_bytes()[25] % 32 == 0 {
         store.prune(cfg.int("measurement.keep-runs") as usize, cfg.int("measurement.keep-raw-events") as usize);
     }
-    // QuickRust's cache keeps within its space: a collection in the background when one is due.
+    // QuickRust's cache keeps within its space: a collection in the background when one is due,
+    // free to collect Cargo's downloads now that this command's Cargo has ended (and the analysis's,
+    // which asks Cargo for the workspace's metadata).
+    crate::space::done_running_cargo();
     if let Err(e) = crate::space::after_command(&cfg, &resolve::self_identity().0) {
         if render {
             crate::ui::note(&format!("QuickRust could not check the space its cache uses: {}", e));

@@ -18,6 +18,7 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 | `~/.qrust/workspaces/<id>/` | per workspace: `workspace.json` (its root), `sessions/` (run records), `events/` (raw rustc events and stored output), `runs/` (analysed reports), `index/units.json` (last known unit fingerprints), `benchmarks/`, `remediations/`, `restore/` (journals of benchmark edits in progress) | history is lost |
 | `~/.qrust/workspaces/<id>/prebuilt/` | stamps of builds that succeeded in a terminal: the files each depended on, with sizes and times (at most 32 per workspace) | the next build asks Cargo |
 | `~/.qrust/active/` | one file per running session | only while no QuickRust command runs |
+| `~/.qrust/cargo-runs/` | one empty file per QuickRust process that may be running a Cargo with QuickRust's Cargo home, named by its process id, and the `.lock` they are written under; a collection runs Cargo's clean only while none of them is running ([Collection](#collection)). A file whose process is gone holds nothing and is removed by the next command or collection. A command that cannot write its file stops before it runs Cargo | only while no QuickRust command runs |
 | `~/.qrust/linker/ld` | a link to the `wild` in use ([Fast mode](fast-mode.md#linker)) | recreated by the next build |
 | `~/.qrust/notices/` | markers of notes shown once or once an hour | the notes are shown again |
 | `~/.qrust/cache/` | QuickRust's cache (below) | see below |
@@ -42,8 +43,8 @@ Everything under `~/.qrust/cache/` can be rebuilt or downloaded again. QuickRust
 | `memo/rustc/` | each compiler's `rustc -vV`, asked once per binary |
 | `memo/roots/` | which workspace a directory belongs to, as `cargo locate-project` said (asked again when a `Cargo.toml` from there up changes) |
 | `tmp/` | what a collection is deleting; renamed here first |
-| `usage.json` | the cache's last count |
-| `gc-log.jsonl` | what collections removed (the last 200) |
+| `usage.json` | the cache's last count, the disk's free space then, and what collections removed that the disk did not show free yet; a count QuickRust cannot write fails the collection, and one of an older format is no count (the next collection counts again) |
+| `gc-log.jsonl` | one line per collection (the last 200): by kind and reason, how many things went and their bytes; the build directories and program sources that went, by path; Cargo's summary, or why Cargo's downloads were left; the free space it started from and its goal |
 | `gc.lock` | held by a running collection |
 
 ### Collection
@@ -52,14 +53,16 @@ A collection removes, in this order:
 
 1. whatever nothing can use any more: build directories of workspaces that are gone, drivers of toolchains that are gone, week-old unfinished downloads, month-old memos, leftovers in `tmp/`;
 2. while the cache is above `cache.max-size` or the disk below `cache.min-free`: build directories, artifact entries and sources of installed programs, least recently used first, until the cache is under 90% of `cache.max-size` and the disk has 125% of `cache.min-free` free;
-3. crates and git checkouts downloaded into QuickRust's Cargo home, removed by Cargo itself (`cargo -Zgc clean gc`): by Cargo's usual ages at every collection and, while the bounds are still exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn.
+3. crates and git checkouts downloaded into QuickRust's Cargo home, removed by Cargo itself (`cargo -Zgc clean gc`): by Cargo's usual ages at every collection and, while the bounds are still exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn. Only while no QuickRust command is running a Cargo (`~/.qrust/cargo-runs/`). Otherwise they are left for the next collection, which `qrust gc` and `qrust cache status` report. Cargo's clean deletes its records of registries it does not find in the Cargo home, such as the temporary one `cargo package` builds against, and a running Cargo that holds one of those records stops with an internal error. A command that starts while Cargo's clean runs waits for it and says so.
+
+A collection counts what it frees itself and does not measure the disk again until it ends, because the disk may not show what it frees. A snapshot (Time Machine's hourly local snapshots on macOS, btrfs or ZFS snapshots) keeps the blocks of every file older than itself, and what was used least recently always is. What the disk does not show at the end is recorded in `usage.json` and counted as free, before and after commands and by the next collection, until the disk shows it. That lasts a day at most, the life of a Time Machine local snapshot. After a day, the disk's own figure counts again.
 
 Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a source an install holds; an artifact entry whose files a build directory in use links. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
 
 | Trigger | Collection |
 |---|---|
-| after every command, when the disk is below `cache.min-free`, the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds | `qrust gc --background`, detached, at the lowest priority |
-| before a command, when the disk is below a quarter of `cache.min-free` | in the command, for at most ten seconds, with a `NOTE` |
+| after every command, when the disk is below `cache.min-free` (counting what collections removed that it does not show yet), the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds | `qrust gc --background`, detached, at the lowest priority |
+| before a command, when the disk is below a quarter of `cache.min-free` (counted the same way) | in the command, for at most ten seconds, with a `NOTE`; Cargo's downloads are left alone |
 | `qrust gc` | now |
 
 `qrust cache status` shows the last count and recent collections; `qrust gc --dry-run` lists what a collection would remove.

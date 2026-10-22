@@ -23,6 +23,8 @@ QuickRust's cache: 102.8 MiB, counted just now, /home/me/.qrust/cache
 
 The figures are those of the last count; each collection counts again. If the first line says `not counted yet`, no collection has run so far; QuickRust counts the cache in the background after the next command, and `qrust gc --dry-run` prints its current size meanwhile.
 
+A line `not shown yet` says how much collections removed that the disk does not show as free. A snapshot keeps the blocks of files older than itself until it is deleted: on macOS, Time Machine's hourly local snapshots (`tmutil listlocalsnapshots /`) are kept for a day. QuickRust counts that space as free until the disk shows it, for a day at most, so it does not remove more to make up for space it has already given back. A `collected` line that ends with `QuickRust command was running Cargo` means that collection left Cargo's downloads, because removing them while a Cargo runs can stop that Cargo. The next collection takes them.
+
 ## Free space now
 
 ```bash
@@ -49,9 +51,9 @@ max-size = "40GiB"   # the most the cache uses
 min-free = "10%"     # the free space it leaves on the disk
 ```
 
-Both take a size (`500MB`, `40GiB`), a share of the disk (`10%`) or `auto`. The defaults are `auto`: at most 10% of the disk, between 10 and 100 GiB, and at least 5% of the disk free, between 2 and 20 GiB. For one shell or a CI job, use `QRUST_CACHE_MAX_SIZE` and `QRUST_CACHE_MIN_FREE`.
+Both take a size (`500MB`, `40GiB`), a share of the disk (`10%`) or `auto`. The defaults are `auto`: at most 10% of the disk, between 10 and 100 GiB, and at least 5% of the disk free, between 2 and 20 GiB. This file is the place for a limit that holds on the machine: every command run as you reads it, whoever starts it (a script, an editor, another tool's build). For one shell or a CI job, use `QRUST_CACHE_MAX_SIZE` and `QRUST_CACHE_MIN_FREE`. `qrust policy explain` shows which one is in force and where it comes from.
 
-If the disk is shared with other large data, raise `min-free`; QuickRust then gives space back as the disk fills up, whatever its own size.
+If the disk is shared with other large data, raise `min-free`; QuickRust then gives space back as the disk fills up, whatever its own size. It gives back what the disk is short of and a quarter of `min-free` more, least recently used first, and again when the disk has lost that margin. On a disk that is usually below `min-free` because of other data, lower `min-free` to what you want kept free: the cache otherwise stays smaller by the difference.
 
 ## Look inside one workspace's build directory
 
