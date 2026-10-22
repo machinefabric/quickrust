@@ -58,15 +58,16 @@ pub type Imported = (PathBuf, Vec<String>, Vec<String>);
 pub fn setup(opts: &Options) -> Result<Done, String> {
     let bin = engine::bin_dir();
     util::create_private_dir(&bin).map_err(|e| format!("cannot create {}: {}", bin.display(), e))?;
-    let qrust = install_binaries(&bin)?;
-    let proxies = link_proxies(&bin, &qrust)?;
-    let path_edits = if opts.modify_path { put_on_path(&bin)? } else { vec![] };
     let previous = util::read_json(&record_path());
+    let installed = install_binaries(&bin)?;
+    let proxies = link_proxies(&bin, &installed.qrust, &known_binaries(previous.as_ref(), &installed), PROXIES)?;
+    let path_edits = if opts.modify_path { put_on_path(&bin)? } else { vec![] };
     let import = match previous.as_ref().and_then(|r| r.get("imported_from")).filter(|v| !v.is_null()) {
         Some(_) => None,
         None => import_cargo_home()?,
     };
     let mut record = previous.unwrap_or_else(|| json!({ "format": 1 }));
+    remember_binary(&mut record, &installed.qrust)?;
     record["version"] = json!(env!("CARGO_PKG_VERSION"));
     record["bin"] = json!(util::path_str(&bin));
     record["set_up_at"] = json!(util::iso8601(util::now_wall_ns()));
@@ -88,22 +89,35 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
     Ok(Done { version: env!("CARGO_PKG_VERSION").to_string(), bin, proxies, path_edits, import })
 }
 
-/// Copies the running QuickRust and its rustc wrapper into `bin` (unless they run from there);
-/// returns `bin/qrust`.
-fn install_binaries(bin: &Path) -> Result<PathBuf, String> {
+/// What an install put in `bin`: `bin/qrust`, and the digest of the `qrust` it replaced, if it
+/// replaced one.
+struct Installed {
+    qrust: PathBuf,
+    replaced: Option<String>,
+}
+
+/// Copies the running QuickRust and its rustc wrapper into `bin` (unless they run from there).
+fn install_binaries(bin: &Path) -> Result<Installed, String> {
     let (me, _) = crate::resolve::self_identity();
     install_from(bin, &me)
 }
 
 /// Copies the QuickRust binary `qrust` and the rustc wrapper next to it into `bin` (unless they are
-/// there already); returns `bin/qrust`.
-fn install_from(bin: &Path, me: &Path) -> Result<PathBuf, String> {
+/// there already).
+///
+/// The digest of the `qrust` this replaces is kept: on Windows the proxies are copies of it, and an
+/// update that forgot what it replaced took its own proxies for a stranger's.
+fn install_from(bin: &Path, me: &Path) -> Result<Installed, String> {
     let me = me.to_path_buf();
     let wrapper = util::exe_candidates(me.parent().unwrap_or(Path::new(".")), "qrust-rustc-wrapper").into_iter().find(|p| util::is_executable(p)).ok_or_else(|| format!("qrust-rustc-wrapper is not next to {}; QuickRust is installed with it", me.display()))?;
     let target = util::exe_candidates(bin, "qrust").remove(0);
+    let mut replaced = None;
     for (from, to) in [(&me, target.clone()), (&wrapper, util::exe_candidates(bin, "qrust-rustc-wrapper").remove(0))] {
         if util::canon(from) == util::canon(&to) {
             continue;
+        }
+        if to == target && to.is_file() {
+            replaced = Some(util::blake3_file(&to).map_err(|e| format!("cannot read {}: {}", to.display(), e))?);
         }
         let staged = bin.join(format!(".{}.{}", to.file_name().map(util::lossy).unwrap_or_default(), std::process::id()));
         fs::copy(from, &staged).map_err(|e| format!("cannot copy {} to {}: {}", from.display(), staged.display(), e))?;
@@ -117,27 +131,63 @@ fn install_from(bin: &Path, me: &Path) -> Result<PathBuf, String> {
             format!("cannot install {}: {}", to.display(), e)
         })?;
     }
-    Ok(target)
+    Ok(Installed { qrust: target, replaced })
+}
+
+/// How `bin` holds the proxies: symbolic links to `qrust` (Unix), or copies of it (Windows, as hard
+/// links where the filesystem allows).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Proxies {
+    Links,
+    Copies,
+}
+
+const PROXIES: Proxies = if cfg!(windows) { Proxies::Copies } else { Proxies::Links };
+
+/// The digests of every QuickRust binary `bin` may hold copies of besides the one being installed:
+/// the `qrust` this install replaced, and every one setup recorded installing (`binaries` in
+/// `setup.json`).
+///
+/// A copy of an earlier QuickRust is QuickRust's own. Recognised only as a copy of the binary
+/// installing now, every proxy a previous release left on Windows was refused, so a machine set up
+/// by one release could not update to the next, by `qrust self update` or by `qrust setup` (22 Oct
+/// 2026). The replaced binary covers machines whose record predates `binaries`.
+fn known_binaries(record: Option<&Value>, installed: &Installed) -> Vec<String> {
+    let mut known: Vec<String> = record
+        .and_then(|r| r.get("binaries"))
+        .and_then(Value::as_array)
+        .map(|digests| digests.iter().filter_map(|d| d.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    known.extend(installed.replaced.clone());
+    known
+}
+
+/// Adds the digest of `qrust` to the record's `binaries`, once.
+fn remember_binary(record: &mut Value, qrust: &Path) -> Result<(), String> {
+    let digest = util::blake3_file(qrust).map_err(|e| format!("cannot read {}: {}", qrust.display(), e))?;
+    let mut binaries: Vec<Value> = record["binaries"].as_array().cloned().unwrap_or_default();
+    if !binaries.contains(&json!(digest)) {
+        binaries.push(json!(digest));
+    }
+    record["binaries"] = json!(binaries);
+    Ok(())
 }
 
 /// Makes `cargo` and every proxy in `bin` QuickRust (`bin/qrust`). An entry there that is not QuickRust's
-/// is an error, never overwritten.
-fn link_proxies(bin: &Path, qrust: &Path) -> Result<usize, String> {
+/// is an error, never overwritten. `known` names the earlier QuickRust binaries a copy may be of.
+fn link_proxies(bin: &Path, qrust: &Path, known: &[String], mode: Proxies) -> Result<usize, String> {
     let names: Vec<&str> = std::iter::once("cargo").chain(engine::PROXIES.iter().copied()).collect();
+    let current = util::blake3_file(qrust).map_err(|e| format!("cannot read {}: {}", qrust.display(), e))?;
     for name in &names {
         let link = util::exe_candidates(bin, name).remove(0);
         if let Ok(md) = fs::symlink_metadata(&link) {
-            if !is_qrust(&link, &md, qrust) {
+            if !is_qrust(&link, &md, &current, known, mode) {
                 return Err(format!("{} exists and is not QuickRust; move it away and run `qrust setup` again", link.display()));
             }
         }
         let staged = bin.join(format!(".{}.{}", name, std::process::id()));
         let _ = fs::remove_file(&staged);
-        #[cfg(unix)]
-        let made = std::os::unix::fs::symlink(qrust.file_name().unwrap_or_default(), &staged);
-        #[cfg(not(unix))]
-        let made = fs::hard_link(qrust, &staged).or_else(|_| fs::copy(qrust, &staged).map(|_| ()));
-        made.and_then(|_| fs::rename(&staged, &link)).map_err(|e| {
+        make_proxy(qrust, &staged, mode).and_then(|_| fs::rename(&staged, &link)).map_err(|e| {
             let _ = fs::remove_file(&staged);
             format!("cannot create {}: {}", link.display(), e)
         })?;
@@ -145,13 +195,26 @@ fn link_proxies(bin: &Path, qrust: &Path) -> Result<usize, String> {
     Ok(names.len())
 }
 
-/// Whether the entry at `link` is QuickRust: a link to a QuickRust binary (QuickRust's `bin` holds only QuickRust's
-/// links), or on Windows a copy of `qrust`.
-fn is_qrust(link: &Path, md: &fs::Metadata, qrust: &Path) -> bool {
+fn make_proxy(qrust: &Path, staged: &Path, mode: Proxies) -> std::io::Result<()> {
+    match mode {
+        Proxies::Copies => fs::hard_link(qrust, staged).or_else(|_| fs::copy(qrust, staged).map(|_| ())),
+        #[cfg(unix)]
+        Proxies::Links => std::os::unix::fs::symlink(qrust.file_name().unwrap_or_default(), staged),
+        #[cfg(not(unix))]
+        Proxies::Links => Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "this platform's proxies are copies")),
+    }
+}
+
+/// Whether the entry at `link` is QuickRust: a link (QuickRust's `bin` holds only QuickRust's
+/// links), or, where proxies are copies, a copy of the binary installing now (`current`) or of one
+/// QuickRust installed before (`known`).
+fn is_qrust(link: &Path, md: &fs::Metadata, current: &str, known: &[String], mode: Proxies) -> bool {
     if md.file_type().is_symlink() {
         return true;
     }
-    cfg!(windows) && md.len() == fs::metadata(qrust).map(|m| m.len()).unwrap_or(u64::MAX) && util::blake3_file(link).ok() == util::blake3_file(qrust).ok()
+    mode == Proxies::Copies
+        && md.is_file()
+        && util::blake3_file(link).is_ok_and(|digest| digest == current || known.contains(&digest))
 }
 
 /// The shell code that puts `bin` first on `PATH` (sh and fish).
@@ -389,9 +452,11 @@ pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::T
         if says != format!("qrust {}", release.version) {
             return Err(format!("the downloaded QuickRust says {:?}, not qrust {}", says, release.version));
         }
-        let qrust = install_from(&bin, &new)?;
-        link_proxies(&bin, &qrust)?;
-        let mut record = util::read_json(&record_path()).unwrap_or_else(|| json!({ "format": 1 }));
+        let previous = util::read_json(&record_path());
+        let installed = install_from(&bin, &new)?;
+        link_proxies(&bin, &installed.qrust, &known_binaries(previous.as_ref(), &installed), PROXIES)?;
+        let mut record = previous.unwrap_or_else(|| json!({ "format": 1 }));
+        remember_binary(&mut record, &installed.qrust)?;
         record["version"] = json!(release.version);
         util::write_json(&record_path(), &record).map_err(|e| e.to_string())?;
         Ok(Updated { from: current.clone(), to: release.version.clone() })
@@ -438,5 +503,63 @@ mod tests {
         assert_eq!(without_setup_lines("export A=1\n", line), None);
         // A source line someone wrote themselves stays.
         assert_eq!(without_setup_lines(&format!("{}\n", line), line), None);
+    }
+
+    /// A stand-in QuickRust: `qrust` with `contents`, and the rustc wrapper beside it.
+    fn release(dir: &Path, contents: &str) -> PathBuf {
+        fs::create_dir_all(dir).unwrap();
+        let qrust = util::exe_candidates(dir, "qrust").remove(0);
+        fs::write(&qrust, contents).unwrap();
+        fs::write(util::exe_candidates(dir, "qrust-rustc-wrapper").remove(0), "wrapper").unwrap();
+        #[cfg(unix)]
+        for p in [&qrust, &util::exe_candidates(dir, "qrust-rustc-wrapper").remove(0)] {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(p, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        qrust
+    }
+
+    // TEST0302: where proxies are copies, a machine set up by one QuickRust updates to the next,
+    // and a stranger's program in `bin` is still refused
+    //
+    // On Windows the proxies are copies of `qrust`, and only a copy of the binary installing now
+    // was taken for QuickRust's: the next release refused every proxy the previous one left, so
+    // neither `qrust self update` nor `qrust setup` could update a machine. Run with copies on every
+    // platform, so it is held here and not only on Windows.
+    #[test]
+    fn test0302_where_proxies_are_copies_one_release_updates_to_the_next() {
+        let dir = std::env::temp_dir().join(format!("qrust-setup-{}", util::new_id()));
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let cargo = util::exe_candidates(&bin, "cargo").remove(0);
+
+        // The first release sets the machine up.
+        let first = install_from(&bin, &release(&dir.join("first"), "QuickRust 1")).unwrap();
+        link_proxies(&bin, &first.qrust, &known_binaries(None, &first), Proxies::Copies).unwrap();
+        let mut record = json!({ "format": 1 });
+        remember_binary(&mut record, &first.qrust).unwrap();
+        assert_eq!(fs::read_to_string(&cargo).unwrap(), "QuickRust 1");
+
+        // The next one replaces it and takes the first one's proxies for its own: by the binary it
+        // replaced, and by the record.
+        let second = install_from(&bin, &release(&dir.join("second"), "QuickRust 2")).unwrap();
+        assert!(second.replaced.is_some(), "the install did not keep what it replaced");
+        link_proxies(&bin, &second.qrust, &known_binaries(Some(&record), &second), Proxies::Copies)
+            .expect("a copy of the previous QuickRust is QuickRust's own");
+        assert_eq!(fs::read_to_string(&cargo).unwrap(), "QuickRust 2");
+
+        // A machine whose record names no binaries still updates, by the one replaced.
+        let third = install_from(&bin, &release(&dir.join("third"), "QuickRust 3")).unwrap();
+        link_proxies(&bin, &third.qrust, &known_binaries(Some(&json!({ "format": 1 })), &third), Proxies::Copies)
+            .expect("an install whose record predates `binaries` still recognises its proxies");
+
+        // Something that is no QuickRust is never overwritten. A new file, not a write through the
+        // proxy: a proxy may be a hard link to `qrust` itself.
+        fs::remove_file(&cargo).unwrap();
+        fs::write(&cargo, "somebody else's cargo").unwrap();
+        let refused = link_proxies(&bin, &third.qrust, &known_binaries(Some(&record), &third), Proxies::Copies).unwrap_err();
+        assert!(refused.contains("is not QuickRust"), "{refused}");
+        assert_eq!(fs::read_to_string(&cargo).unwrap(), "somebody else's cargo");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
