@@ -1,6 +1,6 @@
 [package]
 name = "quickrust"
-version = "1.153.1572"
+version = "1.154.1575"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
@@ -10,6 +10,11 @@ default-run = "qrust"
 # The benchmark harness is a separate member so its code never ships in QuickRust.
 [workspace]
 members = [".", "bench", "tools/quickrust-dist"]
+
+# The version the members that build QuickRust's release carry, so a release build
+# names the version it releases.
+[workspace.package]
+version = "1.154.1575"
 
 [lib]
 name = "quickrust"
