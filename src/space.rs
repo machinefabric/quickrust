@@ -14,7 +14,18 @@
 //!    (`cargo -Zgc clean gc`, which knows when each was last used and waits for builds reading
 //!    them), unused for its usual ages at every collection, and, while the bounds are still
 //!    exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn. They come
-//!    last: they need the network to come back.
+//!    last: they need the network to come back. Cargo's clean runs only while no Cargo that
+//!    QuickRust started is running (see `CargoRuns`): it deletes the tracker rows of registries
+//!    it does not find in the Cargo home, such as a packaging run's temporary one, and a running
+//!    Cargo that holds such a row's id panics at its next save.
+//!
+//! A collection goes by its own count of what it frees, never by measuring the disk again while
+//! it runs: a snapshot (Time Machine's hourly local ones, btrfs, ZFS) keeps the blocks of every
+//! file older than itself, and the least recently used ones always are, so the disk shows nothing
+//! freed until the snapshot goes. Measured again, every removal would look like no progress, and
+//! the collection would remove everything it may. What it removed that the disk does not show yet
+//! is recorded with the count and counted as free (`free`) until the disk shows it, for at most a
+//! day, the life of a Time Machine local snapshot.
 //!
 //! Nothing used in the last 15 minutes is removed, nor a build directory a command holds (its
 //! lock) or Cargo is building in (Cargo's locks), nor a source an install holds (its lock), nor
@@ -26,10 +37,10 @@
 //! restores into build directories) counts once, and is freed only with its last link.
 //!
 //! After a build QuickRust checks whether a collection is due (one `statvfs` and a small file read):
-//! below the free space, above the size by the free space it has lost since the last count, or a
-//! day after that count; but not within 15 minutes of one that could not get within the bounds
-//! (a disk others fill), when nothing more has become removable. It then runs `qrust gc
-//! --background` detached, at the lowest priority.
+//! below the free space (as `free` counts it), above the size by the free space it has lost since
+//! the last count, or a day after that count; but not within 15 minutes of one that could not get
+//! within the bounds (a disk others fill), when nothing more has become removable. It then runs
+//! `qrust gc --background` detached, at the lowest priority.
 //! When the disk is nearly full (a quarter of the free space QuickRust keeps) a command collects
 //! first, for at most ten seconds. `qrust gc` collects now.
 
@@ -46,8 +57,12 @@ use std::time::{Duration, Instant};
 pub const PROTECTED_NS: u64 = 15 * 60 * 1_000_000_000;
 const DAY_NS: u64 = 24 * 3_600 * 1_000_000_000;
 const USAGE: &str = "usage.json";
+/// The format of `USAGE`; a count of another is no count, and the next collection writes one.
+const USAGE_FORMAT: u64 = 2;
 const LOG: &str = "gc-log.jsonl";
 const LOG_KEEP: usize = 200;
+/// The format of a line of `LOG`; lines of another are not read, and are dropped at the next write.
+const LOG_FORMAT: u64 = 2;
 
 /// A filesystem's size and what is available to unprivileged users.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -272,18 +287,105 @@ fn entries(dir: &Path) -> Vec<PathBuf> {
     v
 }
 
-/// QuickRust's Cargo home and a Cargo to collect its downloads with.
+/// QuickRust's Cargo home, a Cargo to collect its downloads with, and the processes that run
+/// Cargo with that home.
 #[derive(Clone, Debug)]
 pub struct Downloads {
     pub cargo_home: PathBuf,
     pub cargo: PathBuf,
+    pub runs: CargoRuns,
 }
 
 /// QuickRust's Cargo home with the newest installed toolchain's Cargo; `None` without a toolchain.
 pub fn downloads() -> Option<Downloads> {
     let layout = crate::toolchain::Layout::current();
     let newest = crate::toolchain::installed(&layout).into_iter().filter_map(|tc| Some((semver::Version::parse(&tc.record()?.version).ok()?, tc))).max_by(|a, b| a.0.cmp(&b.0))?;
-    Some(Downloads { cargo_home: util::cargo_home(), cargo: newest.1.cargo() })
+    Some(Downloads { cargo_home: util::cargo_home(), cargo: newest.1.cargo(), runs: CargoRuns::current() })
+}
+
+/// The QuickRust processes that may be running a Cargo with QuickRust's Cargo home: one empty file
+/// per process, named by its id, in `$QRUST_HOME/cargo-runs`, written and read under the lock
+/// beside them. A process registers before it starts the first (`engine::start`); an exec'd Cargo
+/// keeps its process id, and so its record. A record whose process is gone holds nothing, and
+/// whoever next registers or reads removes it.
+///
+/// Cargo's own clean (`cargo -Zgc clean gc`) runs only while it holds the lock and no process
+/// is registered (`idle`); a command that starts meanwhile waits for it, as it waits for Cargo's
+/// package lock.
+#[derive(Clone, Debug)]
+pub struct CargoRuns {
+    dir: PathBuf,
+}
+
+/// This process's record, while it has one.
+static REGISTERED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+impl CargoRuns {
+    pub fn current() -> CargoRuns {
+        CargoRuns { dir: util::qrust_home().join("cargo-runs") }
+    }
+
+    fn lock(&self) -> PathBuf {
+        self.dir.join(".lock")
+    }
+
+    /// Records process `pid`; `waiting` is called first when a collection holds the lock.
+    fn register(&self, pid: u32, waiting: impl FnOnce()) -> io::Result<PathBuf> {
+        let _lock = match util::ExclusiveLock::try_acquire(&self.lock())? {
+            Some(l) => l,
+            None => {
+                waiting();
+                util::ExclusiveLock::acquire(&self.lock())?
+            }
+        };
+        self.running();
+        let record = self.dir.join(pid.to_string());
+        fs::write(&record, b"")?;
+        Ok(record)
+    }
+
+    /// The processes registered and running; the records of those that are gone are removed.
+    /// Read under the lock.
+    fn running(&self) -> Vec<u32> {
+        let mut alive = vec![];
+        for p in entries(&self.dir) {
+            let Some(pid) = p.file_name().and_then(|n| n.to_str()).and_then(|n| n.parse::<u32>().ok()) else { continue };
+            if crate::proc::pid_alive(pid) {
+                alive.push(pid);
+            } else {
+                let _ = fs::remove_file(&p);
+            }
+        }
+        alive
+    }
+
+    /// The lock, held, when no registered process is running: Cargo's clean may run while it is
+    /// held. Otherwise the processes that are.
+    fn idle(&self) -> io::Result<Result<util::ExclusiveLock, Vec<u32>>> {
+        let lock = util::ExclusiveLock::acquire(&self.lock())?;
+        let running = self.running();
+        Ok(if running.is_empty() { Ok(lock) } else { Err(running) })
+    }
+}
+
+/// Records that this process runs Cargo with QuickRust's Cargo home, once (see `CargoRuns`).
+pub fn running_cargo() -> Result<(), String> {
+    let mut registered = REGISTERED.lock().unwrap_or_else(|e| e.into_inner());
+    if registered.is_some() {
+        return Ok(());
+    }
+    let runs = CargoRuns::current();
+    let record = runs.register(std::process::id(), || crate::ui::note("waiting for QuickRust to finish collecting Cargo's downloads")).map_err(|e| format!("cannot record in {} that this command runs Cargo, and a collection could remove Cargo's records under it: {}", runs.dir.display(), e))?;
+    *registered = Some(record);
+    Ok(())
+}
+
+/// This process's Cargo has ended: its record goes, so that the collection it starts next may run
+/// Cargo's clean.
+pub fn done_running_cargo() {
+    if let Some(record) = REGISTERED.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        let _ = fs::remove_file(record);
+    }
 }
 
 /// When the bounds need room from Cargo's downloads: what was used longer ago than each of these
@@ -457,18 +559,58 @@ pub fn scan(cache: &Path, now: u64) -> Scan {
     Scan { units, links: Links { map: all } }
 }
 
+/// Why a collection removed something.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Why {
+    /// Nothing can use it any more; the reason.
+    Unusable(String),
+    /// The bounds needed the room, and it was used longest ago.
+    LeastRecentlyUsed,
+    /// Cargo removed it from its downloads; its summary.
+    Cargo(String),
+}
+
+impl std::fmt::Display for Why {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Why::Unusable(reason) => f.write_str(reason),
+            Why::LeastRecentlyUsed => f.write_str("used least recently"),
+            Why::Cargo(summary) => write!(f, "Cargo: {}", summary),
+        }
+    }
+}
+
+/// One thing a collection removed (or, in a dry run, would).
+#[derive(Clone, Debug)]
+pub struct Removal {
+    pub kind: Kind,
+    pub path: PathBuf,
+    /// The bytes its removal frees (shared files with their last link only).
+    pub bytes: u64,
+    pub why: Why,
+}
+
 /// A collection's outcome.
 #[derive(Debug, Default)]
 pub struct Collected {
     pub before: u64,
     pub after: u64,
-    /// `(kind, path, bytes freed, why)`.
-    pub removed: Vec<(Kind, PathBuf, u64, String)>,
+    /// The free space it started from, as the bounds count it (`free`).
+    pub free_before: u64,
+    pub removed: Vec<Removal>,
     /// What would have been removed but is in use.
     pub skipped_in_use: usize,
     pub stopped_early: bool,
     /// The bounds were still exceeded at the end: everything else was in use or too recent.
     pub unmet: bool,
+    /// What it and the collections before it removed that the disk did not show as free at its
+    /// end (a snapshot holds it); counted as free until the disk shows it.
+    pub unseen: u64,
+    /// Why Cargo's downloads were left, when they were: a Cargo QuickRust started was running.
+    pub cargo_left: Option<String>,
+    /// Why the collection stopped short (a removal or Cargo failed), when it did; what it did
+    /// until then is recorded all the same.
+    pub failed: Option<String>,
 }
 
 pub struct Goal {
@@ -478,9 +620,54 @@ pub struct Goal {
     pub min_free: u64,
 }
 
-/// The goal for `policy` now: back under 90% of the size, and a quarter above the free space.
-pub fn goal(policy: &Policy, total: u64, fs: &FsSpace) -> Goal {
-    Goal { max_total: if total > policy.max_bytes { policy.max_bytes / 10 * 9 } else { u64::MAX }, min_free: if fs.available < policy.min_free { policy.min_free / 4 * 5 } else { 0 } }
+/// The goal for `policy` now, with `total` in the cache and `free` on the disk (`free`): back under
+/// 90% of the size, and a quarter above the free space.
+pub fn goal(policy: &Policy, total: u64, free: u64) -> Goal {
+    Goal { max_total: if total > policy.max_bytes { policy.max_bytes / 10 * 9 } else { u64::MAX }, min_free: if free < policy.min_free { policy.min_free / 4 * 5 } else { 0 } }
+}
+
+/// The cache's last count, as `USAGE` records it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Count {
+    scanned_ns: u64,
+    total_bytes: u64,
+    /// The disk's free space when it was taken.
+    free_at_scan: u64,
+    /// What collections removed that the disk did not show free then.
+    unseen_bytes: u64,
+    /// The collection could not get within the bounds.
+    unmet: bool,
+}
+
+impl Count {
+    /// The count `v` records, if it is one of `USAGE_FORMAT` with every field.
+    fn of(v: &Value) -> Option<Count> {
+        if v["format"] != json!(USAGE_FORMAT) {
+            return None;
+        }
+        Some(Count { scanned_ns: v["scanned_ns"].as_u64()?, total_bytes: v["total_bytes"].as_u64()?, free_at_scan: v["free_at_scan"].as_u64()?, unseen_bytes: v["unseen_bytes"].as_u64()?, unmet: v["unmet"].as_bool()? })
+    }
+
+    /// What it records as removed and not shown free, with `fs` measured `now`: less what the
+    /// disk has gained since; none a day after it (a Time Machine local snapshot's life: the disk
+    /// shows it by then, or never will).
+    fn unseen(&self, fs: &FsSpace, now: u64) -> u64 {
+        if self.scanned_ns + DAY_NS <= now {
+            return 0;
+        }
+        self.unseen_bytes.saturating_sub(fs.available.saturating_sub(self.free_at_scan))
+    }
+}
+
+/// The last count of the cache at `cache`.
+fn count(cache: &Path) -> Option<Count> {
+    util::read_json(&cache.join(USAGE)).as_ref().and_then(Count::of)
+}
+
+/// The disk's free space as the bounds count it: what `fs` measures `now`, and what the cache at
+/// `cache` removed that the disk does not show yet (see the module notes).
+pub fn free(cache: &Path, fs: &FsSpace, now: u64) -> u64 {
+    fs.available.saturating_add(count(cache).map(|c| c.unseen(fs, now)).unwrap_or(0))
 }
 
 /// Removes a build directory unless a command or Cargo uses it, or a program's source unless an
@@ -541,14 +728,28 @@ fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
 /// Collects the cache at `cache`, and the downloads of `downloads` (see the module notes).
 /// `dry_run`: says what would go. `max_total`: removes down to this size whatever the policy
 /// says (`qrust gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
-/// builds reading them).
+/// builds reading them). A removal or Cargo that fails stops it (`Collected::failed`), and what it
+/// did until then is counted and logged like any collection; `Err` only when the disk cannot be
+/// measured.
 pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
+    collect_on(cache, downloads, policy, max_total, dry_run, deadline, &|| fs_space(cache))
+}
+
+/// `collect`, with the disk's space measured by `disk`.
+fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>, disk: &dyn Fn() -> io::Result<FsSpace>) -> Result<Collected, String> {
     let now = util::now_wall_ns();
+    let measure = || disk().map_err(|e| format!("cannot measure the free space of {}: {}", cache.display(), e));
+    let start = measure()?;
+    // What earlier collections removed that the disk does not show yet counts as free, as it
+    // does for the bounds outside a collection.
+    let carried = count(cache).map(|c| c.unseen(&start, now)).unwrap_or(0);
     let mut scan = scan(cache, now);
     let (registry_before, git_before) = downloads.map(download_bytes).unwrap_or((0, 0));
-    let mut out = Collected { before: scan.total() + registry_before + git_before, ..Default::default() };
+    let mut out = Collected { before: scan.total() + registry_before + git_before, free_before: start.available.saturating_add(carried), ..Default::default() };
     let mut total = out.before;
-    let fs_now = || fs_space(cache).unwrap_or(FsSpace { total: 0, available: u64::MAX });
+    // The free space, by this collection's count of what it has freed: the disk is not measured
+    // again until the end (see the module notes).
+    let mut available = out.free_before;
     let mut units = std::mem::take(&mut scan.units);
     let late = |u: &Unit| u.last_used_ns + PROTECTED_NS > now;
     // 1: what nothing can use.
@@ -563,15 +764,22 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
             continue;
         }
         let freed = scan.links.release(&u);
-        if dry_run || remove(cache, &u)? {
-            total = total.saturating_sub(freed);
-            out.removed.push((u.kind, u.path.clone(), freed, u.orphan.clone().unwrap_or_default()));
-        } else {
-            out.skipped_in_use += 1;
+        match if dry_run { Ok(true) } else { remove(cache, &u) } {
+            Ok(true) => {
+                total = total.saturating_sub(freed);
+                available = available.saturating_add(freed);
+                let why = Why::Unusable(u.orphan.clone().expect("what nothing can use says why"));
+                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed, why });
+            }
+            Ok(false) => out.skipped_in_use += 1,
+            Err(e) => {
+                out.failed = Some(e);
+                break;
+            }
         }
     }
     // 2: least recently used, while the bounds are exceeded.
-    let mut goal = goal(policy, total, &fs_now());
+    let mut goal = goal(policy, total, available);
     if let Some(m) = max_total {
         goal.max_total = goal.max_total.min(m);
     }
@@ -588,10 +796,8 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
         let freeable = u.own_bytes + u.shared.iter().filter(|(id, _, _)| !held.contains(id)).map(|(_, b, _)| b).sum::<u64>();
         freeable * 2 < u.bytes()
     };
-    let mut available = fs_now().available;
-    let mut freed_since_check = 0u64;
     for u in candidates {
-        if total <= goal.max_total && available >= goal.min_free {
+        if out.failed.is_some() || (total <= goal.max_total && available >= goal.min_free) {
             break;
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
@@ -606,74 +812,94 @@ pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max
             continue;
         }
         let freed = scan.links.release(&u);
-        if dry_run || remove(cache, &u)? {
-            total = total.saturating_sub(freed);
-            out.removed.push((u.kind, u.path.clone(), freed, "used least recently".into()));
-            freed_since_check += freed;
-            available = if dry_run { available.saturating_add(freed) } else if freed_since_check >= 1 << 30 {
-                freed_since_check = 0;
-                fs_now().available
-            } else {
-                available.saturating_add(freed)
-            };
-        } else {
-            out.skipped_in_use += 1;
+        match if dry_run { Ok(true) } else { remove(cache, &u) } {
+            Ok(true) => {
+                total = total.saturating_sub(freed);
+                available = available.saturating_add(freed);
+                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed, why: Why::LeastRecentlyUsed });
+            }
+            Ok(false) => out.skipped_in_use += 1,
+            Err(e) => out.failed = Some(e),
         }
     }
-    // 3: Cargo's downloads, by its ages, and down to what the bounds leave if still needed.
-    if let (Some(d), None) = (downloads, deadline) {
-        let before = registry_before + git_before;
-        let measured = |d: &Downloads| {
-            let (r, g) = download_bytes(d);
-            r + g
-        };
-        // Cargo's own ages, then what was used longer ago than each of CARGO_AGES while the
-        // bounds need room (a dry run goes by what Cargo says it would remove); none that
-        // cannot remove anything.
-        let oldest = oldest_download_ns(d);
-        let may_remove = |age_ns: u64| oldest.is_some_and(|o| o + age_ns < now);
-        let (mut summary, mut after) = (String::new(), before);
-        if may_remove(CARGO_OWN_AGE_NS) {
-            let (s, would) = cargo_gc(d, None, dry_run)?;
-            summary = s;
-            after = if dry_run { before.saturating_sub(would) } else { measured(d) };
-        }
-        for &(age, age_ns) in CARGO_AGES {
-            let freed = before.saturating_sub(after);
-            let needed = total.saturating_sub(freed).saturating_sub(goal.max_total).max(goal.min_free.saturating_sub(available.saturating_add(freed)));
-            if needed == 0 {
-                break;
+    // 3: Cargo's downloads, by its ages, and down to what the bounds leave if still needed; only
+    // while no Cargo QuickRust started runs (see `CargoRuns`).
+    if let (Some(d), None, None) = (downloads, deadline, &out.failed) {
+        match d.runs.idle() {
+            Err(e) => out.failed = Some(format!("Cargo's downloads were not collected: cannot read which commands run Cargo ({}): {}", d.runs.dir.display(), e)),
+            Ok(Err(running)) => out.cargo_left = Some(format!("Cargo's downloads were left: {} QuickRust command{} running Cargo (process {})", running.len(), if running.len() == 1 { " was" } else { "s were" }, running.iter().map(u32::to_string).collect::<Vec<_>>().join(", "))),
+            Ok(Ok(_idle)) => {
+                let (freed, summary, failed) = collect_downloads(d, registry_before + git_before, &goal, total, available, now, dry_run);
+                total = total.saturating_sub(freed);
+                available = available.saturating_add(freed);
+                if freed > 0 {
+                    out.removed.push(Removal { kind: Kind::Registry, path: d.cargo_home.clone(), bytes: freed, why: Why::Cargo(summary) });
+                }
+                out.failed = failed;
             }
-            if !may_remove(age_ns) {
-                continue;
-            }
-            let (s, would) = cargo_gc(d, Some(age), dry_run)?;
-            summary = s;
-            after = if dry_run { before.saturating_sub(would) } else { measured(d) };
-        }
-        let freed = before.saturating_sub(after);
-        total = total.saturating_sub(freed);
-        available = available.saturating_add(freed);
-        if freed > 0 {
-            out.removed.push((Kind::Registry, d.cargo_home.clone(), freed, format!("Cargo: {}", summary)));
         }
     }
     out.after = total;
     out.unmet = total > goal.max_total || available < goal.min_free;
     if !dry_run {
-        let fs = fs_now();
+        // What it counted as freed that the disk does not show: what the disk shows beyond its
+        // start is taken as that, the rest is still held (by a snapshot).
+        let end = measure()?;
+        let freed = available - out.free_before;
+        out.unseen = (carried + freed).saturating_sub(end.available.saturating_sub(start.available));
         let mut by_kind: serde_json::Map<String, Value> = scan_summary(cache, now);
         if let Some(d) = downloads {
             let (r, g) = download_bytes(d);
             by_kind.insert(Kind::Registry.name().to_string(), json!({ "count": 2, "bytes": r + g }));
         }
-        let usage = json!({ "format": 1, "scanned_ns": now, "total_bytes": total, "free_at_scan": fs.available, "fs_total": fs.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet });
-        let _ = util::write_json_fast(&cache.join(USAGE), &usage);
-        if !out.removed.is_empty() {
-            log(cache, &out, now);
+        let usage = json!({ "format": USAGE_FORMAT, "scanned_ns": now, "total_bytes": total, "free_at_scan": end.available, "unseen_bytes": out.unseen, "fs_total": end.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet });
+        // A count that is not written would forget what the disk does not show yet, and the next
+        // collection would remove it again: the collection fails with it.
+        if let Err(e) = util::write_json_fast(&cache.join(USAGE), &usage) {
+            failed(&mut out, format!("cannot record the count in {}: {}", cache.join(USAGE).display(), e));
+        }
+        if !out.removed.is_empty() || out.cargo_left.is_some() || out.failed.is_some() {
+            if let Err(e) = log(cache, &out, &goal, now) {
+                failed(&mut out, format!("cannot log the collection in {}: {}", cache.join(LOG).display(), e));
+            }
         }
     }
     Ok(out)
+}
+
+/// Cargo's collection of the downloads of `d`, which held `before` bytes: by Cargo's own ages,
+/// then by each of CARGO_AGES while the bounds need room, with the cache at `total` and the disk's
+/// free space at `available` (a dry run goes by what Cargo says it would remove); none that cannot
+/// remove anything. What it freed, Cargo's last summary, and why it stopped if Cargo failed.
+fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, available: u64, now: u64, dry_run: bool) -> (u64, String, Option<String>) {
+    let measured = |d: &Downloads| {
+        let (r, g) = download_bytes(d);
+        r + g
+    };
+    let oldest = oldest_download_ns(d);
+    let may_remove = |age_ns: u64| oldest.is_some_and(|o| o + age_ns < now);
+    let (mut summary, mut after) = (String::new(), before);
+    let ages = std::iter::once((None, CARGO_OWN_AGE_NS)).chain(CARGO_AGES.iter().map(|&(age, age_ns)| (Some(age), age_ns)));
+    for (age, age_ns) in ages {
+        let freed = before.saturating_sub(after);
+        let needed = total.saturating_sub(freed).saturating_sub(goal.max_total).max(goal.min_free.saturating_sub(available.saturating_add(freed)));
+        // Cargo's own ages apply at every collection; the shorter ones only while needed.
+        if age.is_some() && needed == 0 {
+            break;
+        }
+        if !may_remove(age_ns) {
+            continue;
+        }
+        match cargo_gc(d, age, dry_run) {
+            Ok((s, would)) => {
+                summary = s;
+                after = if dry_run { before.saturating_sub(would) } else { measured(d) };
+            }
+            // What it removed before it failed is counted.
+            Err(e) => return (before.saturating_sub(if dry_run { after } else { measured(d) }), summary, Some(e)),
+        }
+    }
+    (before.saturating_sub(after), summary, None)
 }
 
 /// What the cache holds by kind, measured again (after a collection).
@@ -681,24 +907,62 @@ fn scan_summary(cache: &Path, now: u64) -> serde_json::Map<String, Value> {
     scan(cache, now).by_kind().into_iter().map(|(k, n, b)| (k.name().to_string(), json!({ "count": n, "bytes": b }))).collect()
 }
 
-fn log(cache: &Path, c: &Collected, now: u64) {
-    let p = cache.join(LOG);
-    let mut lines: Vec<String> = fs::read_to_string(&p).unwrap_or_default().lines().map(str::to_string).collect();
-    let removed: Vec<Value> = c.removed.iter().map(|(k, path, b, why)| json!({ "kind": k.name(), "path": util::path_str(path), "bytes": b, "why": why })).collect();
-    lines.push(json!({ "at": util::iso8601(now), "before": c.before, "after": c.after, "removed": removed }).to_string());
-    let keep = lines.len().saturating_sub(LOG_KEEP);
-    let _ = util::write_atomic_fast(&p, (lines[keep..].join("\n") + "\n").as_bytes());
+/// A collection's line in `LOG`: by kind and why, how many went and how many bytes; build
+/// directories and program sources by name, as a build that comes back cold is traced to them
+/// and they are few; Cargo's summary; and what the collection started from and aimed for.
+fn log_line(c: &Collected, goal: &Goal, now: u64) -> Value {
+    let mut groups: std::collections::BTreeMap<(Kind, &str), (u64, u64)> = Default::default();
+    let mut named = vec![];
+    let mut cargo = None;
+    for r in &c.removed {
+        let why = match &r.why {
+            Why::Unusable(_) => "nothing could use it",
+            Why::LeastRecentlyUsed => "used least recently",
+            Why::Cargo(summary) => {
+                cargo = Some(summary.clone());
+                "Cargo"
+            }
+        };
+        let g = groups.entry((r.kind, why)).or_default();
+        g.0 += 1;
+        g.1 += r.bytes;
+        if matches!(r.kind, Kind::Build | Kind::Source) {
+            named.push(json!({ "kind": r.kind.name(), "path": util::path_str(&r.path), "bytes": r.bytes, "why": r.why.to_string() }));
+        }
+    }
+    let removed: Vec<Value> = groups.into_iter().map(|((kind, why), (count, bytes))| json!({ "kind": kind.name(), "why": why, "count": count, "bytes": bytes })).collect();
+    json!({
+        "format": LOG_FORMAT, "at": util::iso8601(now), "before": c.before, "after": c.after, "free_before": c.free_before, "unseen": c.unseen,
+        "goal": { "max_total": (goal.max_total != u64::MAX).then_some(goal.max_total), "min_free": (goal.min_free > 0).then_some(goal.min_free) },
+        "removed": removed, "named": named, "cargo": cargo, "cargo_left": c.cargo_left, "failed": c.failed, "unmet": c.unmet,
+    })
 }
 
-/// The last count (`usage.json`), if any.
+/// Records `why` the collection `out` fell short, after whatever it already says.
+fn failed(out: &mut Collected, why: String) {
+    out.failed = Some(match out.failed.take() {
+        Some(earlier) => format!("{}; {}", earlier, why),
+        None => why,
+    });
+}
+
+fn log(cache: &Path, c: &Collected, goal: &Goal, now: u64) -> io::Result<()> {
+    let p = cache.join(LOG);
+    let mut lines: Vec<String> = fs::read_to_string(&p).unwrap_or_default().lines().filter(|l| serde_json::from_str::<Value>(l).is_ok_and(|v| v["format"] == json!(LOG_FORMAT))).map(str::to_string).collect();
+    lines.push(log_line(c, goal, now).to_string());
+    let keep = lines.len().saturating_sub(LOG_KEEP);
+    util::write_atomic_fast(&p, (lines[keep..].join("\n") + "\n").as_bytes())
+}
+
+/// The last count (`usage.json`) as recorded, if there is one of `USAGE_FORMAT`.
 pub fn usage(cache: &Path) -> Option<Value> {
-    util::read_json(&cache.join(USAGE)).filter(|v| v["format"] == json!(1))
+    util::read_json(&cache.join(USAGE)).filter(|v| Count::of(v).is_some())
 }
 
 /// Recent collections, newest last.
 pub fn recent(cache: &Path, n: usize) -> Vec<Value> {
     let text = fs::read_to_string(cache.join(LOG)).unwrap_or_default();
-    let all: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let all: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["format"] == json!(LOG_FORMAT)).collect();
     all[all.len().saturating_sub(n)..].to_vec()
 }
 
@@ -707,19 +971,18 @@ pub fn recent(cache: &Path, n: usize) -> Vec<Value> {
 /// become removable, and each collection would only compete with builds (Cargo's downloads are
 /// collected under Cargo's package lock).
 pub fn due(cache: &Path, policy: &Policy, fs: &FsSpace, now: u64) -> bool {
-    let u = usage(cache);
-    if u.as_ref().is_some_and(|u| u["unmet"] == json!(true) && u["scanned_ns"].as_u64().unwrap_or(0) + PROTECTED_NS > now) {
+    let c = count(cache);
+    if c.is_some_and(|c| c.unmet && c.scanned_ns + PROTECTED_NS > now) {
         return false;
     }
-    if fs.available < policy.min_free {
+    if fs.available.saturating_add(c.map(|c| c.unseen(fs, now)).unwrap_or(0)) < policy.min_free {
         return true;
     }
-    match u {
+    match c {
         None => cache.exists(),
-        Some(u) => {
-            let total = u["total_bytes"].as_u64().unwrap_or(0);
-            let lost = u["free_at_scan"].as_u64().unwrap_or(fs.available).saturating_sub(fs.available);
-            total + lost > policy.max_bytes || u["scanned_ns"].as_u64().unwrap_or(0) + DAY_NS <= now
+        Some(c) => {
+            let lost = c.free_at_scan.saturating_sub(fs.available);
+            c.total_bytes + lost > policy.max_bytes || c.scanned_ns + DAY_NS <= now
         }
     }
 }
@@ -757,8 +1020,8 @@ pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
 
 /// Before a command: a cache never counted and still empty gets its first count without a scan
 /// (nothing in it, the disk's free space now: what it grows by later is bounded by the free space
-/// lost). When the disk is nearly full (a quarter of `cache.min-free`), collects for at most ten
-/// seconds. `None` when nothing needed doing.
+/// lost). When the disk is nearly full (a quarter of `cache.min-free`, as `free` counts it),
+/// collects for at most ten seconds. `None` when nothing needed doing.
 pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
     before_command_in(cfg, &util::cache_dir(), &util::qrust_home())
 }
@@ -767,9 +1030,9 @@ pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
 fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<Collected, String>> {
     let cache = cache.to_path_buf();
     let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
-    if empty && usage(&cache).is_none() {
+    if empty && count(&cache).is_none() {
         if let Ok(fs) = fs_space(home) {
-            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": 1, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "counted": false })));
+            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "unseen_bytes": 0, "counted": false, "unmet": false })));
         }
     }
     if !cache.exists() {
@@ -777,7 +1040,7 @@ fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<C
     }
     let fs = fs_space(&cache).ok()?;
     let policy = policy(cfg, &fs);
-    if fs.available >= policy.min_free / 4 {
+    if free(&cache, &fs, util::now_wall_ns()) >= policy.min_free / 4 {
         return None;
     }
     let _lock = util::ExclusiveLock::try_acquire(&cache.join("gc.lock")).ok()??;
@@ -870,14 +1133,14 @@ mod tests {
         assert!(gone.exists(), "a dry run removes nothing");
         let done = collect(&c, None, &roomy, None, false, None).unwrap();
         assert_eq!(dry.removed.len(), done.removed.len());
-        let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
+        let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [gone.as_path(), c.join("downloads/abc.tar.xz.part").as_path()]);
         assert!(!gone.exists() && !gone.with_file_name("gone-1.json").exists());
         assert!(old.exists() && older.exists() && fresh.exists() && c.join("downloads/fresh.tar.xz.part").exists());
         // Over its size: the least recently used first, never what was used in the last minutes.
         let tight = Policy { max_bytes: 1, min_free: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
-        let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
+        let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [older.as_path(), old.as_path()]);
         assert!(fresh.exists() && done.skipped_in_use == 1);
         assert!(done.after < done.before);
@@ -983,7 +1246,7 @@ mod tests {
         let counted = scan(&c, util::now_wall_ns()).by_kind();
         assert!(counted.iter().any(|&(k, n, b)| k == Kind::Source && n == 2 && b >= 100_000), "{:?}", counted);
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
-        let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
+        let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [part.as_path(), stray.as_path(), old.as_path(), build.as_path()]);
         assert!(!old.exists() && !copy_lock(&old).exists());
         assert!(held.exists() && done.skipped_in_use == 1, "{:?}", done);
@@ -1012,14 +1275,14 @@ mod tests {
         let p = Policy { max_bytes: 1000, min_free: 100 };
         let now = util::now_wall_ns();
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now), "never counted");
-        util::write_json(&c.join(USAGE), &json!({ "format": 1, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000 })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000, "unseen_bytes": 0, "unmet": false })).unwrap();
         assert!(!due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now));
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now), "below the free space");
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 4_800 }, now), "200 bytes lost since the count: past the size");
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now + DAY_NS), "a day later");
         // A collection that could not get within the bounds is not repeated before what it left
         // can have become removable.
-        util::write_json(&c.join(USAGE), &json!({ "format": 1, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "unmet": true })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "unseen_bytes": 0, "unmet": true })).unwrap();
         assert!(!due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS - 1));
         assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS));
     }
@@ -1064,8 +1327,270 @@ mod tests {
         let used = util::now_wall_ns() - 3 * 3600 * 1_000_000_000;
         util::write_json(&d.with_file_name("w-1.json"), &json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(&ws), "created_ns": used, "last_used_ns": used })).unwrap();
         let done = collect(&c, None, &tight, None, false, None).unwrap();
-        let removed: Vec<&Path> = done.removed.iter().map(|r| r.1.as_path()).collect();
+        let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [c.join("artifacts/e/k1").as_path(), d.as_path()]);
-        assert!(done.removed[1].2 >= 64 * 1024 && !done.unmet, "{:?}", done);
+        assert!(done.removed[1].bytes >= 64 * 1024 && !done.unmet, "{:?}", done);
+    }
+
+    /// Six build directories of one workspace, used one to six hours ago, with what removing each
+    /// frees: the least recently used first.
+    fn six_builds(c: &Path) -> Vec<(PathBuf, u64)> {
+        let ws = workspace(c, "w");
+        let dirs: Vec<PathBuf> = (1..=6).rev().map(|h| build_dir(c, &format!("w-{}", h), &ws, h * 3600, 300_000)).collect();
+        let s = scan(c, util::now_wall_ns());
+        dirs.into_iter().map(|d| (d.clone(), s.units.iter().find(|u| u.path == d).unwrap().bytes())).collect()
+    }
+
+    /// A disk whose free space is `available` whatever is removed: a snapshot holds it all.
+    fn held_disk(available: &std::cell::Cell<u64>) -> impl Fn() -> io::Result<FsSpace> + '_ {
+        move || Ok(FsSpace { total: 1 << 40, available: available.get() })
+    }
+
+    fn paths(c: &Collected) -> Vec<PathBuf> {
+        c.removed.iter().map(|r| r.path.clone()).collect()
+    }
+
+    // TEST0291: Below the free space a collection removes its shortfall though the disk shows nothing freed
+    #[test]
+    fn test0291_below_the_free_space_a_collection_removes_its_shortfall_though_the_disk_shows_nothing_freed() {
+        let c = cache();
+        let b = six_builds(&c);
+        // The disk has as much free as the two least recently used directories and half the
+        // third; the floor's goal (a quarter above it) is that much more again.
+        let short = b[0].1 + b[1].1 + b[2].1 / 2;
+        let m = (2 * short).div_ceil(5);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let disk = std::cell::Cell::new(short);
+        let done = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        assert_eq!(paths(&done), [b[0].0.clone(), b[1].0.clone(), b[2].0.clone()], "not just the shortfall: {:?}", done);
+        assert!(b[3..].iter().all(|(d, _)| d.exists()) && !done.unmet);
+        // The disk did not show it: recorded, and counted as free, so nothing is due.
+        let freed = b[0].1 + b[1].1 + b[2].1;
+        assert_eq!((done.unseen, usage(&c).unwrap()["unseen_bytes"].as_u64()), (freed, Some(freed)));
+        let now = util::now_wall_ns();
+        assert_eq!(free(&c, &held_disk(&disk)().unwrap(), now), short + freed);
+        assert!(!due(&c, &policy, &held_disk(&disk)().unwrap(), now), "due again on the same disk");
+        // On a disk that shows what goes, nothing is left unseen.
+        let c = cache();
+        let b = six_builds(&c);
+        let shown = std::cell::Cell::new(short);
+        let showing = || {
+            let gone: u64 = b.iter().filter(|(d, _)| !d.exists()).map(|(_, n)| n).sum();
+            Ok(FsSpace { total: 1 << 40, available: shown.get() + gone })
+        };
+        let done = collect_on(&c, None, &policy, None, false, None, &showing).unwrap();
+        assert_eq!((paths(&done).len(), done.unseen), (3, 0), "{:?}", done);
+    }
+
+    // TEST0292: What a collection removed counts as free until the disk shows it and for a day at most
+    #[test]
+    fn test0292_what_a_collection_removed_counts_as_free_until_the_disk_shows_it_and_for_a_day_at_most() {
+        let c = cache();
+        let now = util::now_wall_ns();
+        let p = Policy { max_bytes: u64::MAX, min_free: 1000 };
+        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
+        let fs = |available| FsSpace { total: 1 << 40, available };
+        assert_eq!(free(&c, &fs(800), now), 1200);
+        assert!(!due(&c, &p, &fs(800), now));
+        // 300 written since: below the floor.
+        assert_eq!(free(&c, &fs(500), now), 900);
+        assert!(due(&c, &p, &fs(500), now));
+        // The disk shows half of it, then all of it and more: counted once.
+        assert_eq!(free(&c, &fs(1000), now), 1200);
+        assert_eq!(free(&c, &fs(1500), now), 1500);
+        // A day later the disk is taken at its word.
+        assert_eq!(free(&c, &fs(800), now + DAY_NS), 800);
+        // A count of another format is no count, whatever it says: the disk's own figure, and a
+        // collection is due to count again.
+        util::write_json(&c.join(USAGE), &json!({ "format": 1, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
+        assert_eq!((free(&c, &fs(800), now), usage(&c)), (800, None));
+        assert!(due(&c, &Policy { max_bytes: u64::MAX, min_free: 0 }, &fs(5000), now));
+        // So is one that lacks a field.
+        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unmet": false })).unwrap();
+        assert_eq!(usage(&c), None);
+    }
+
+    // TEST0293: A collection after one the disk did not show removes only what the disk lost since
+    #[test]
+    fn test0293_a_collection_after_one_the_disk_did_not_show_removes_only_what_the_disk_lost_since() {
+        let c = cache();
+        let b = six_builds(&c);
+        let short = b[0].1 + b[1].1 + b[2].1 / 2;
+        let m = (2 * short).div_ceil(5);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let disk = std::cell::Cell::new(short);
+        let first = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        assert_eq!(paths(&first).len(), 3);
+        // Builds then write enough that, with what the first removed, the disk is half the next
+        // directory below the floor; the snapshot still holds what the first removed.
+        disk.set((4 * m).checked_sub(first.unseen + b[3].1 / 2).expect("the disk cannot lose more than it has"));
+        let now = util::now_wall_ns();
+        assert!(due(&c, &policy, &held_disk(&disk)().unwrap(), now));
+        // The second gives back that, and the margin: two directories, not all that is left.
+        let second = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        assert_eq!(paths(&second), [b[3].0.clone(), b[4].0.clone()], "{:?}", second);
+        assert!(b[5].0.exists());
+        assert_eq!(second.unseen, first.unseen + b[3].1 + b[4].1);
+    }
+
+    // TEST0294: Cargo's clean waits for every QuickRust process that runs Cargo
+    #[test]
+    fn test0294_cargos_clean_waits_for_every_quickrust_process_that_runs_cargo() {
+        let c = cache();
+        let runs = CargoRuns { dir: c.parent().unwrap().join("cargo-runs") };
+        assert!(runs.idle().unwrap().is_ok(), "nobody runs Cargo");
+        // This process runs Cargo; one that has ended left its record behind.
+        let mine = runs.register(std::process::id(), || panic!("nothing holds the lock")).unwrap();
+        let gone = ended_process();
+        fs::write(runs.dir.join(gone.to_string()), b"").unwrap();
+        assert_eq!(runs.idle().unwrap().err(), Some(vec![std::process::id()]));
+        assert!(!runs.dir.join(gone.to_string()).exists(), "the record of a process that is gone stays");
+        fs::remove_file(&mine).unwrap();
+        // While Cargo's clean runs, a command that starts waits for it, and says so.
+        let clean = runs.idle().unwrap().expect("idle once this process's record is gone");
+        let waited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let starting = {
+            let (runs, waited) = (runs.clone(), waited.clone());
+            std::thread::spawn(move || runs.register(4_000_000_000, || waited.store(true, std::sync::atomic::Ordering::SeqCst)).unwrap())
+        };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !waited.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "the command did not wait for Cargo's clean");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!starting.is_finished() && !runs.dir.join("4000000000").exists(), "registered while Cargo's clean ran");
+        drop(clean);
+        assert!(starting.join().unwrap().exists());
+    }
+
+    // TEST0295: A collection leaves Cargo's downloads while a QuickRust command runs Cargo
+    #[cfg(unix)]
+    #[test]
+    fn test0295_a_collection_leaves_cargos_downloads_while_a_quickrust_command_runs_cargo() {
+        let c = cache();
+        let home = c.parent().unwrap();
+        // A download older than Cargo's own age, and a Cargo that says what it was asked.
+        let cargo_home = home.join("cargo");
+        let old = cargo_home.join("registry/cache/index-1/greet-1.0.0.crate");
+        file(&old, 10);
+        age(&old, 60 * 86_400);
+        let asked = home.join("cargo-asked");
+        let cargo = home.join("cargo-bin");
+        fs::write(&cargo, format!("#!/bin/sh\necho \"$@\" >> '{}'\necho '     Removed 0 files' >&2\n", asked.display())).unwrap();
+        fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let d = Downloads { cargo_home, cargo, runs: CargoRuns { dir: home.join("cargo-runs") } };
+        let mine = d.runs.register(std::process::id(), || {}).unwrap();
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
+        assert!(!asked.exists(), "Cargo's clean ran while a Cargo did: {:?}", fs::read_to_string(&asked));
+        assert!(done.cargo_left.as_deref().is_some_and(|l| l.contains(&std::process::id().to_string())), "{:?}", done);
+        assert!(recent(&c, 1)[0]["cargo_left"].is_string(), "{:?}", recent(&c, 1));
+        // Once that command's Cargo has ended, the next collection runs Cargo's clean.
+        fs::remove_file(mine).unwrap();
+        let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
+        assert!(fs::read_to_string(&asked).unwrap().contains("clean gc"));
+        assert!(done.cargo_left.is_none());
+    }
+
+    // TEST0298: A collection whose Cargo fails records what it removed all the same
+    #[cfg(unix)]
+    #[test]
+    fn test0298_a_collection_whose_cargo_fails_records_what_it_removed_all_the_same() {
+        let c = cache();
+        let home = c.parent().unwrap();
+        let b = six_builds(&c);
+        let gone = build_dir(&c, "gone-1", &home.join("nowhere"), 7 * 3600, 1000);
+        let cargo_home = home.join("cargo");
+        let old = cargo_home.join("registry/cache/index-1/greet-1.0.0.crate");
+        file(&old, 10);
+        age(&old, 60 * 86_400);
+        let cargo = home.join("cargo-bin");
+        fs::write(&cargo, "#!/bin/sh\necho 'error: the package cache is broken' >&2\nexit 101\n").unwrap();
+        fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let d = Downloads { cargo_home, cargo, runs: CargoRuns { dir: home.join("cargo-runs") } };
+        let short = b[0].1 + b[1].1 / 2;
+        let disk = std::cell::Cell::new(short);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
+        let done = collect_on(&c, Some(&d), &policy, None, false, None, &held_disk(&disk)).unwrap();
+        assert!(done.failed.as_deref().is_some_and(|e| e.contains("the package cache is broken")), "{:?}", done);
+        assert!(!gone.exists() && !b[0].0.exists() && b[5].0.exists());
+        // What it removed counts, though Cargo failed: the next check knows the disk will show it.
+        let u = usage(&c).unwrap();
+        assert_eq!(u["unseen_bytes"].as_u64(), Some(done.unseen));
+        assert!(done.unseen >= b[0].1 + b[1].1, "{:?}", done);
+        let line = &recent(&c, 1)[0];
+        assert!(line["failed"].as_str().is_some_and(|e| e.contains("broken")) && line["named"].as_array().unwrap().len() == 3, "{}", line);
+    }
+
+    // TEST0299: A removal that fails stops the collection and what it did is recorded
+    #[cfg(unix)]
+    #[test]
+    fn test0299_a_removal_that_fails_stops_the_collection_and_what_it_did_is_recorded() {
+        let c = cache();
+        let b = six_builds(&c);
+        // An unfinished download nothing can use goes first; then a build directory cannot be
+        // renamed away, as `tmp` is not a directory.
+        let part = c.join("downloads/abc.tar.xz.part");
+        file(&part, 50_000);
+        age(&part, 8 * 86_400);
+        file(&c.join("tmp"), 0);
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        assert!(done.failed.as_deref().is_some_and(|e| e.contains("tmp") || e.contains("exists")), "{:?}", done);
+        assert_eq!(paths(&done), [part]);
+        assert!(b.iter().all(|(d, _)| d.exists()));
+        let line = &recent(&c, 1)[0];
+        assert!(line["failed"].is_string() && line["removed"].as_array().unwrap().len() == 1, "{}", line);
+        assert_eq!(usage(&c).unwrap()["total_bytes"].as_u64(), Some(done.after));
+        // A collection that fails before it removes anything is logged too.
+        let again = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        assert!(again.failed.is_some() && again.removed.is_empty(), "{:?}", again);
+        let lines = recent(&c, 5);
+        assert!(lines.len() == 2 && lines[1]["failed"].is_string() && lines[1]["removed"] == json!([]), "{:?}", lines);
+    }
+
+    // TEST0300: A collection that cannot record its count fails and says so
+    #[test]
+    fn test0300_a_collection_that_cannot_record_its_count_fails_and_says_so() {
+        let c = cache();
+        let b = six_builds(&c);
+        // Where the count goes, a directory: what the disk does not show would be forgotten.
+        fs::create_dir_all(c.join(USAGE).join("x")).unwrap();
+        let short = b[0].1 / 2;
+        let disk = std::cell::Cell::new(short);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
+        let done = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        assert!(done.failed.as_deref().is_some_and(|e| e.contains("cannot record the count")), "{:?}", done);
+        assert!(!b[0].0.exists() && done.unseen > 0);
+        let line = &recent(&c, 1)[0];
+        assert!(line["failed"].as_str().is_some_and(|e| e.contains("cannot record the count")), "{}", line);
+    }
+
+    // TEST0296: The collection log counts what went by kind and names only build directories
+    #[test]
+    fn test0296_the_collection_log_counts_what_went_by_kind_and_names_only_build_directories() {
+        let c = cache();
+        let ws = workspace(&c, "w");
+        for i in 0..300 {
+            let e = c.join(format!("artifacts/e/k{:03}", i));
+            file(&e.join("libx.rlib"), 100);
+            util::write_json(&e.join("entry.json"), &json!({})).unwrap();
+            age(&e.join("entry.json"), 5 * 3600);
+        }
+        let d = build_dir(&c, "w-1", &ws, 3 * 3600, 1000);
+        // A line as collections wrote them before: every removal by path.
+        fs::write(c.join(LOG), "{\"at\":\"2026-10-21T09:26:39.766Z\",\"before\":1,\"after\":0,\"removed\":[{\"kind\":\"artifact cache\",\"path\":\"/x\",\"bytes\":1,\"why\":\"used least recently\"}]}\n").unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        assert_eq!(done.removed.len(), 301);
+        let text = fs::read_to_string(c.join(LOG)).unwrap();
+        assert_eq!(text.lines().count(), 1, "a line of the old format stayed: {}", text);
+        assert!(text.len() < 1500, "{} bytes for one collection: {}", text.len(), text);
+        let line = &recent(&c, 5)[0];
+        let group = |kind: &str| line["removed"].as_array().unwrap().iter().find(|g| g["kind"] == kind).cloned().unwrap_or_else(|| panic!("{}", line));
+        assert_eq!((group("artifact cache")["count"].as_u64(), group("artifact cache")["why"].as_str()), (Some(300), Some("used least recently")));
+        assert_eq!(group("build directories")["count"].as_u64(), Some(1));
+        let named = line["named"].as_array().unwrap();
+        assert_eq!((named.len(), named[0]["path"].as_str()), (1, Some(util::path_str(&d).as_str())));
+        assert_eq!((line["before"].as_u64(), line["after"].as_u64()), (Some(done.before), Some(done.after)));
     }
 }

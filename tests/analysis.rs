@@ -308,7 +308,7 @@ fn test0195_what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_b
     let cargo = linked.join("cargo");
     fs::hard_link(env!("CARGO_BIN_EXE_qrust"), &cargo).unwrap();
     // A cache last counted long ago: the build starts a collection.
-    sb.file("qrust-home/cache/usage.json", r#"{"format": 1, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0}"#);
+    sb.file("qrust-home/cache/usage.json", r#"{"format": 2, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0, "unseen_bytes": 0, "unmet": false}"#);
     ok(sb.with_shim(&cargo.display().to_string(), &p).arg("build"));
     // The collection counts the cache when it is done (a command only records that it never was).
     let usage = sb.home.join("cache/usage.json");
@@ -417,6 +417,67 @@ fn test0197_crates_download_into_quickrusts_cargo_home_and_cargo_collects_them_w
     ok(sb.cargo(&p).arg("clean"));
     assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "hello from the registry\n");
     assert_eq!(downloads(), 2);
+}
+
+// TEST0297: A collection leaves cargos downloads while a quickrust cargo runs and collects them after
+#[test]
+fn test0297_a_collection_leaves_cargos_downloads_while_a_quickrust_cargo_runs_and_collects_them_after() {
+    use std::io::BufRead;
+    let sb = Sandbox::new("registry-busy");
+    let reg = common::registry::Registry::start();
+    reg.publish(&common::registry::Crate::lib("greet", "1.0.0", "pub fn greet() -> &'static str {\n    \"hello from the registry\"\n}\n"));
+    reg.serve_crates_io_for(&sb.home);
+    let p = sb.package("p", "p");
+    sb.file("p/Cargo.toml", "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = \"1.0\"\n");
+    // A program that runs until its input ends, as a long Cargo command (a publish) would.
+    sb.file("p/src/main.rs", "use std::io::{BufRead, Write};\n\nfn main() {\n    println!(\"{}\", greet::greet());\n    std::io::stdout().flush().unwrap();\n    let _ = std::io::stdin().lock().lines().next();\n}\n");
+    sb.file("p/src/lib.rs", "");
+    ok(sb.cargo(&p).arg("build"));
+    let sources = |h: &std::path::Path| fs::read_dir(h.join("registry/src")).map(|d| d.flatten().flat_map(|i| fs::read_dir(i.path()).into_iter().flatten().flatten()).count()).unwrap_or(0);
+    // The downloads an hour old by Cargo's clock and by their files' times (see TEST0197).
+    let hour_later = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() + 3_600).to_string();
+    let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
+    for dir in ["registry/cache", "registry/src"] {
+        for group in fs::read_dir(sb.cargo_home().join(dir)).unwrap().flatten() {
+            for e in fs::read_dir(group.path()).unwrap().flatten() {
+                fs::File::open(e.path()).unwrap().set_modified(hour_ago).unwrap();
+            }
+        }
+    }
+    let collect = || json_out(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"]).env("__CARGO_TEST_LAST_USE_NOW", &hour_later));
+    let mut running = sb.cargo(&p).args(["run", "-q"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let mut out = std::io::BufReader::new(running.stdout.take().unwrap());
+    let mut first = String::new();
+    out.read_line(&mut first).unwrap();
+    assert_eq!(first, "hello from the registry\n");
+    // While it runs, Cargo's own clean does not: it would delete tracker rows that Cargo holds.
+    let busy = collect();
+    assert!(busy["cargo_left"].as_str().is_some_and(|l| l.contains("running Cargo")), "{}", busy);
+    assert!(busy["removed"].as_array().unwrap().iter().all(|r| r["kind"] != "crate and git downloads"), "{}", busy);
+    assert_eq!(sources(&sb.cargo_home()), 1);
+    drop(running.stdin.take());
+    assert!(running.wait().unwrap().success());
+    // Once it has ended, they go.
+    let after = collect();
+    assert!(after["cargo_left"].is_null(), "{}", after);
+    let by_cargo = after["removed"].as_array().unwrap().iter().find(|r| r["kind"] == "crate and git downloads").unwrap_or_else(|| panic!("{}", after));
+    assert!(by_cargo["why"].as_str().unwrap().starts_with("Cargo: Removed "), "{}", by_cargo);
+    assert_eq!(sources(&sb.cargo_home()), 0);
+    let status = stdout(&ok(sb.qrust(&p).args(["cache", "status"])));
+    assert!(status.lines().any(|l| l.trim_start().starts_with("collected") && l.contains("QuickRust command was running Cargo")), "{}", status);
+}
+
+// TEST0301: A command that cannot record that it runs cargo does not run it
+#[test]
+fn test0301_a_command_that_cannot_record_that_it_runs_cargo_does_not_run_it() {
+    let sb = Sandbox::new("unrecorded");
+    let p = sb.package("p", "p");
+    // A file where the record of the commands that run Cargo goes.
+    sb.file("qrust-home/cargo-runs", "");
+    let out = run(sb.cargo(&p).arg("build"));
+    assert!(!out.status.success(), "built though a collection could not know: {}", stderr(&out));
+    assert!(stderr(&out).contains("cannot record in") && stderr(&out).contains("that this command runs Cargo"), "{}", stderr(&out));
+    assert!(!sb.home.join("cache/builds").exists(), "Cargo ran");
 }
 
 // TEST0198: Every command speaks quickrusts language in a terminal
