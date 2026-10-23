@@ -2,7 +2,7 @@
 
 Every command the `qrust` binary accepts, the toolchain programs it stands in for, and the exit statuses it returns.
 
-`qrust help` prints the same list in short form. Options of QuickRust's own commands are strict: an option a command does not have is an error (`unexpected argument "..."; see `qrust help``), and `--format` takes only the values listed for the command. Everything after a literal `--` is passed to Cargo.
+`qrust help` prints the same list in short form. Options of QuickRust's own commands are strict: an option a command does not have is an error (`` unexpected argument "..."; see `qrust help` ``), and `--format` takes only the values listed for the command. Everything after a literal `--` is passed to Cargo.
 
 ## Entry points
 
