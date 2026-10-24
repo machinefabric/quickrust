@@ -17,6 +17,8 @@ pub const NOW: u64 = ISSUED_AT + 86_400;
 
 const CERTIFICATE_FORMAT: &str = "machinefabric-release-key-cert/1";
 const ENVELOPE_FORMAT: &str = "machinefabric-manifest-sig/1";
+const CHARTER_FORMAT: &str = "machinefabric-registry-charter/1";
+const CHARTER_ENVELOPE_FORMAT: &str = "machinefabric-charter-sig/1";
 
 /// An ed25519 key with a minisign key id.
 pub struct Key(SigningKey, [u8; 8]);
@@ -106,6 +108,43 @@ impl Line {
     /// [`Line::sign_for`] the `prod` environment.
     pub fn sign(&self, manifest: &[u8]) -> Vec<u8> {
         self.sign_for(manifest, "prod")
+    }
+
+    /// The charter of the `kind` registry at `anchor`, whose contents are signed under
+    /// `environment`: its manifest at `<anchor>/{app_id}/manifest`, valid from [`ISSUED_AT`] with no
+    /// end of its own.
+    pub fn charter(&self, anchor: &str, kind: &str, environment: &str) -> Vec<u8> {
+        json!({
+            "format": CHARTER_FORMAT,
+            "anchor": anchor,
+            "kind": kind,
+            "slug": "test-releases",
+            "environment": environment,
+            "locations": { "manifest": format!("{}/{{app_id}}/manifest", anchor) },
+            "issued_at": ISSUED_AT,
+            "not_after": null,
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// The signature file of `charter`: `certificate` signed by `signers`, the charter by `by`.
+    pub fn charter_envelope(charter: &[u8], certificate: &str, signers: &[&Key], by: &Key) -> Vec<u8> {
+        let root_signatures: Vec<_> = signers.iter().map(|root| json!({ "root_key_id": root.id(), "signature": root.sign(certificate.as_bytes()) })).collect();
+        json!({
+            "format": CHARTER_ENVELOPE_FORMAT,
+            "certificates": [{ "certificate": certificate, "root_signatures": root_signatures }],
+            "charter_signature": { "key_id": by.id(), "signature": by.sign(charter) },
+        })
+        .to_string()
+        .into_bytes()
+    }
+
+    /// `charter` signed as MachineFabric signs charters: the release key certified for `prod` by
+    /// roots A and B.
+    pub fn sign_charter(&self, charter: &[u8]) -> Vec<u8> {
+        let certificate = Line::certificate(&self.release, "prod", ISSUED_AT, NOT_AFTER);
+        Line::charter_envelope(charter, &certificate, &[&self.roots[0], &self.roots[1]], &self.release)
     }
 }
 

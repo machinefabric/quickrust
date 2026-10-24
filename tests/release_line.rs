@@ -1,10 +1,10 @@
 //! QuickRust's own release line, end to end: what a build is given, and what a QuickRust built
 //! with a release line will and will not update itself to.
 //!
-//! The QuickRust these tests update is built here, as a release build is: with a registry, a
-//! channel, a signing environment and three root keys baked in (`build.rs`). The roots are the
-//! test's own (`common::release_line`), so the test can publish what a release operator would,
-//! and what one never should.
+//! The QuickRust these tests update is built here, as a release build is: with a registry's anchor,
+//! a channel, a signing environment, three root keys and three charter root keys baked in
+//! (`build.rs`). The roots are the test's own (`common::release_line`), so the test can publish —
+//! and charter — what a release operator would, and what one never should.
 #![cfg(unix)]
 
 mod common;
@@ -47,7 +47,7 @@ fn build(inputs: &[(&str, &str)]) -> Output {
     cargo.args(["build", "--locked", "--bin", "qrust", "--bin", "qrust-rustc-wrapper", "--manifest-path"]);
     cargo.arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"));
     cargo.arg("--target-dir").arg(target_dir());
-    for name in ["MFR_RELEASES_BASE_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS"] {
+    for name in ["MFR_RELEASES_REGISTRY_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS", "MFR_CHARTER_ROOT_PUBKEYS"] {
         cargo.env_remove(name);
     }
     cargo.envs(inputs.iter().copied());
@@ -63,10 +63,13 @@ type Inputs = Vec<(&'static str, String)>;
 
 fn line_inputs(line: &Line) -> Inputs {
     vec![
-        ("MFR_RELEASES_BASE_URL", REGISTRY.to_string()),
+        ("MFR_RELEASES_REGISTRY_URL", REGISTRY.to_string()),
         ("MFR_RELEASE_CHANNEL", CHANNEL.to_string()),
         ("MFR_SIGNING_ENVIRONMENT", ENVIRONMENT.to_string()),
         ("MFR_CARTRIDGE_ROOT_PUBKEYS", line.root_keys().join(",")),
+        // MachineFabric's roots, which the registry's charter chains to: here the test line's
+        // own, as prod's and staging's content roots are MachineFabric's.
+        ("MFR_CHARTER_ROOT_PUBKEYS", line.root_keys().join(",")),
     ]
 }
 
@@ -148,17 +151,22 @@ fn test0279_a_release_build_is_given_its_release_line_whole_or_does_not_build() 
 
     // Where to look for releases, and no way to trust them.
     let said = refused(&|i| i.retain(|(k, _)| *k != "MFR_CARTRIDGE_ROOT_PUBKEYS"));
-    assert!(said.contains("(MFR_RELEASE_CHANNEL is set) is given MFR_RELEASES_BASE_URL, MFR_SIGNING_ENVIRONMENT, MFR_CARTRIDGE_ROOT_PUBKEYS with it; this one is not given MFR_CARTRIDGE_ROOT_PUBKEYS"), "{}", said);
+    assert!(said.contains("(MFR_RELEASE_CHANNEL is set) is given MFR_RELEASES_REGISTRY_URL, MFR_SIGNING_ENVIRONMENT, MFR_CARTRIDGE_ROOT_PUBKEYS, MFR_CHARTER_ROOT_PUBKEYS with it; this one is not given MFR_CARTRIDGE_ROOT_PUBKEYS"), "{}", said);
+    // A registry it could not tell was chartered.
+    let said = refused(&|i| i.retain(|(k, _)| *k != "MFR_CHARTER_ROOT_PUBKEYS"));
+    assert!(said.contains("this one is not given MFR_CHARTER_ROOT_PUBKEYS"), "{}", said);
     // Trust, and nowhere to look.
-    let said = refused(&|i| i.retain(|(k, _)| matches!(*k, "MFR_RELEASE_CHANNEL" | "MFR_CARTRIDGE_ROOT_PUBKEYS")));
-    assert!(said.contains("this one is not given MFR_RELEASES_BASE_URL, MFR_SIGNING_ENVIRONMENT"), "{}", said);
+    let said = refused(&|i| i.retain(|(k, _)| matches!(*k, "MFR_RELEASE_CHANNEL" | "MFR_CARTRIDGE_ROOT_PUBKEYS" | "MFR_CHARTER_ROOT_PUBKEYS")));
+    assert!(said.contains("this one is not given MFR_RELEASES_REGISTRY_URL, MFR_SIGNING_ENVIRONMENT"), "{}", said);
 
-    let said = refused(&|i| set(i, "MFR_RELEASES_BASE_URL", "http://releases.invalid".into()));
-    assert!(said.contains("MFR_RELEASES_BASE_URL must be an https URL with no trailing slash"), "{}", said);
+    let said = refused(&|i| set(i, "MFR_RELEASES_REGISTRY_URL", "http://releases.invalid".into()));
+    assert!(said.contains("MFR_RELEASES_REGISTRY_URL must be an https URL with no trailing slash"), "{}", said);
     let said = refused(&|i| set(i, "MFR_RELEASE_CHANNEL", "stable".into()));
     assert!(said.contains("MFR_RELEASE_CHANNEL must be `release` or `nightly`"), "{}", said);
     let said = refused(&|i| set(i, "MFR_SIGNING_ENVIRONMENT", "dev".into()));
-    assert!(said.contains("MFR_SIGNING_ENVIRONMENT must be `prod` or `staging` for a release build"), "{}", said);
+    assert!(said.contains("MFR_SIGNING_ENVIRONMENT must be `prod`, `staging` or `lab` for a release build"), "{}", said);
+    let said = refused(&|i| set(i, "MFR_CHARTER_ROOT_PUBKEYS", line.root_keys()[..2].join(",")));
+    assert!(said.contains("MFR_CHARTER_ROOT_PUBKEYS has 2 root(s); a certificate needs two of at least 3"), "{}", said);
     // Two of at least three roots sign a certificate: with two known, neither may be lost.
     let said = refused(&|i| set(i, "MFR_CARTRIDGE_ROOT_PUBKEYS", line.root_keys()[..2].join(",")));
     assert!(said.contains("has 2 root(s); a certificate needs two of at least 3"), "{}", said);
@@ -190,6 +198,15 @@ impl Published<'_> {
         let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
         gz.write_all(&b.into_inner().unwrap()).unwrap();
         gz.finish().unwrap()
+    }
+
+    /// Charters the registry at its anchor for this build's environment, signed as MachineFabric
+    /// signs charters.
+    fn charter(&self) {
+        let charter = self.line.charter(&self.server.url, "releases", ENVIRONMENT);
+        let certificate = Line::certificate(&self.line.release, "prod", now() - 3600, now() + 86_400);
+        self.server.put("/charter.json.sig", Line::charter_envelope(&charter, &certificate, &[&self.line.roots[0], &self.line.roots[1]], &self.line.release));
+        self.server.put("/charter.json", charter);
     }
 
     /// Puts `version` on `channel`: its archive, and a manifest that describes it (`sha256` and
@@ -237,13 +254,13 @@ fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed
     ok(&mut released(&["setup", "--toolchain", "none", "--no-modify-path"]));
     let installed = sb.home.join("bin/qrust");
     let doctor = stdout(&run(&mut released(&["doctor"])));
-    assert!(doctor.contains(&format!("release line       the {} channel of {} (3 signing roots, {})", CHANNEL, REGISTRY, ENVIRONMENT)), "{}", doctor);
+    assert!(doctor.contains(&format!("release line       the {} channel of {} (3 signing roots, {}; 3 charter roots)", CHANNEL, REGISTRY, ENVIRONMENT)), "{}", doctor);
 
     let server = common::registry::Registry::start();
     let line = Line::new();
     let published = Published { server: &server, line: &line };
-    // The registry it was built for does not exist; it is pointed at a copy, which it trusts
-    // exactly as far as its roots go.
+    // The registry it was built for does not exist; it is pointed at another, which it reads only
+    // once MachineFabric's roots charter it, and trusts exactly as far as its roots go.
     let update = || run(released(&["self", "update"]).env("QRUST_UPDATE_URL", &server.url));
     let refused = |why: &str| {
         let out = update();
@@ -253,6 +270,8 @@ fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed
     let current = env!("CARGO_PKG_VERSION");
     let before = fs::read(&installed).unwrap();
 
+    refused(&format!("{} has no charter ({}/charter.json is missing), so it is not a release registry MachineFabric chartered", server.url, server.url));
+    published.charter();
     refused(&format!("no QuickRust release is published at {} yet", server.url));
 
     // A manifest nobody signed says nothing, whatever it offers.

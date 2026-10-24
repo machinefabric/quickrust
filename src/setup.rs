@@ -416,22 +416,24 @@ pub struct Updated {
 }
 
 /// `qrust self update`: the latest release of this QuickRust's channel, from the release registry
-/// it was published in (or `mirror`, a copy of that registry: `self.update-url`).
+/// it was published in (or `other`, the anchor of another release registry MachineFabric
+/// chartered: `self.update-url`).
 ///
-/// The registry's manifest is trusted only through its signature (`crate::release`), the archive
+/// The registry is read only through its charter, and its manifest is trusted only through its
+/// signature (`crate::release`), the archive
 /// only as the file the manifest describes, and the binary in it only once it runs and says it is
 /// the version it was published as. Then it replaces the running one in QuickRust's `bin`.
-pub fn self_update(mirror: &str) -> Result<Updated, String> {
+pub fn self_update(other: &str) -> Result<Updated, String> {
     let identity = crate::release::identity().ok_or(
         "this QuickRust was built from source, so it has no release line to update from: build the newer source, or install a release",
     )?;
-    let registry = if mirror.is_empty() { identity.registry.as_str() } else { mirror };
+    let registry = if other.is_empty() { identity.registry.as_str() } else { other };
     let now = SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "the clock is before 1970, so no certificate's validity can be checked".to_string())?.as_secs();
-    self_update_from(registry, &identity.channel, &identity.trust, now)
+    self_update_from(registry, &identity.channel, &identity.trust, &identity.charter_roots, now)
 }
 
 /// [`self_update`] with everything a build bakes in passed explicitly.
-pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::Trust, now: u64) -> Result<Updated, String> {
+pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::Trust, charter_roots: &[String], now: u64) -> Result<Updated, String> {
     let bin = engine::bin_dir();
     let installed = util::exe_candidates(&bin, "qrust").remove(0);
     if !installed.is_file() {
@@ -440,7 +442,7 @@ pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::T
     let platform = crate::release::platform().ok_or("QuickRust publishes no release for this platform; build it from source")?;
     let client = crate::net::Client::new();
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let Some(release) = crate::release::fetch_latest(&client, registry, trust, channel, platform, now)? else {
+    let Some(release) = crate::release::fetch_latest(&client, registry, trust, charter_roots, channel, platform, now)? else {
         return Err(format!("no QuickRust release is published on the {} channel at {} yet", channel, registry));
     };
     let newer = match (semver::Version::parse(&release.version), semver::Version::parse(&current)) {

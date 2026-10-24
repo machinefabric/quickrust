@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "quickrust"
-version = "1.158.1639"
+version = "1.159.1644"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "quickrust-dist"
-version = "1.158.1639"
+version = "1.159.1644"
 dependencies = [
  "flate2",
  "quickrust",
