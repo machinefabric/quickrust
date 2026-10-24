@@ -1372,10 +1372,16 @@ fn test0221_setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     // every later build (with it) would miss.
     let sb = Sandbox::new("driver-setup");
     let p = sb.package("p", "p");
+    // `--toolchain` names the toolchain setup installs, not the one builds use: unpinned, `p`
+    // builds with stable, which is whatever the shared store last recorded (1.99.1 once a
+    // test fetched it), and the driver setup prepared was for a toolchain nothing built with.
+    // So `p` builds with the toolchain setup is given.
+    sb.file("p/rust-toolchain.toml", "[toolchain]\nchannel = \"1.99.0\"\n");
     let out = run(sb.qrust(&p).args(["setup", "--toolchain", "1.99.0", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("QRUST_EARLY_CUTOFF", "auto"));
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(stderr(&out).contains("Compiler driver for Rust 1.99.0 ready"), "{}", stderr(&out));
-    assert!(stdout(&ok(sb.qrust(&p).args(["driver", "status"]))).starts_with("built:"));
+    let status = stdout(&ok(sb.qrust(&p).args(["driver", "status"])));
+    assert!(status.starts_with("built:"), "{}", status);
     let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
     first.env("QRUST_EARLY_CUTOFF", "auto");
     let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
