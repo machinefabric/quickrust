@@ -35,8 +35,8 @@ pub const PLATFORMS: &[(&str, &str)] = &[
 const ROOT: &str = "quickrust";
 const PROGRAMS: [&str; 2] = ["qrust", "qrust-rustc-wrapper"];
 const DOCUMENTS: [&str; 3] = ["LICENSE-MIT", "LICENSE-APACHE", "README.md"];
-/// What a release build is given, and `build.rs` bakes: all four, or it is not a release build.
-const RELEASE_LINE: [&str; 4] = ["MFR_RELEASES_BASE_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS"];
+/// What a release build is given, and `build.rs` bakes: all five, or it is not a release build.
+const RELEASE_LINE: [&str; 5] = ["MFR_RELEASES_REGISTRY_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS", "MFR_CHARTER_ROOT_PUBKEYS"];
 /// The oldest macOS the programs run on: the oldest the Rust toolchains they install run on.
 const MACOS_DEPLOYMENT_TARGET: &str = "11.0";
 
@@ -135,8 +135,8 @@ fn release_line(get: &dyn Fn(&str) -> Option<String>) -> Result<String> {
             if missing.len() == 1 { "is" } else { "are" }
         ));
     }
-    let roots: Vec<&str> = given[3].1.split(',').map(str::trim).collect();
-    Ok(format!("{} {} {} {}", given[0].1, given[1].1, given[2].1, roots.join(",")))
+    let roots = |at: usize| given[at].1.split(',').map(str::trim).collect::<Vec<&str>>().join(",");
+    Ok(format!("{} {} {} {} {}", given[0].1, given[1].1, given[2].1, roots(3), roots(4)))
 }
 
 /// Whether the program in `bytes` has `line` baked in.
@@ -424,15 +424,16 @@ mod tests {
                     return None;
                 }
                 Some(match name {
-                    "MFR_RELEASES_BASE_URL" => " https://r.example ".to_string(),
+                    "MFR_RELEASES_REGISTRY_URL" => " https://r.example ".to_string(),
                     "MFR_RELEASE_CHANNEL" => "nightly".to_string(),
                     "MFR_SIGNING_ENVIRONMENT" => "staging".to_string(),
+                    "MFR_CHARTER_ROOT_PUBKEYS" => "charterA,charterB, charterC".to_string(),
                     _ => "rootA, rootB ,rootC".to_string(),
                 })
             }
         };
         let line = release_line(&given("")).unwrap();
-        assert_eq!(line, "https://r.example nightly staging rootA,rootB,rootC");
+        assert_eq!(line, "https://r.example nightly staging rootA,rootB,rootC charterA,charterB,charterC");
         for missing in RELEASE_LINE {
             let e = release_line(&given(missing)).unwrap_err();
             assert!(e.contains(&format!("and {missing} is not set")), "{e}");
@@ -441,7 +442,7 @@ mod tests {
 
         let program = [b"\x7fELF...".as_slice(), line.as_bytes(), b"...rest"].concat();
         assert!(carries(&program, &line));
-        assert!(!carries(&program, "https://r.example release staging rootA,rootB,rootC"), "another channel's line is not this one");
+        assert!(!carries(&program, "https://r.example release staging rootA,rootB,rootC charterA,charterB,charterC"), "another channel's line is not this one");
         assert!(!carries(b"\x7fELF built from source", &line));
         assert!(!carries(&program, ""));
     }

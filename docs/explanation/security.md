@@ -43,10 +43,20 @@ directory, and the build's output is stored next to them.
 `qrust self update` replaces the program that sits in front of every build, so what it
 will install is the narrowest thing on this page.
 
-A released QuickRust is built with four things about its own release line: the release
-registry it is published in, its channel, a signing environment, and the public halves of
-three **root keys**. It reads none of them at run time, and a QuickRust built from source
+A released QuickRust is built with five things about its own release line: the address
+its release registry is named by (its **anchor**), its channel, a signing environment, the
+public halves of three **root keys**, and the public halves of MachineFabric's three
+**charter roots**. It reads none of them at run time, and a QuickRust built from source
 has none: it has no release line, and updates nothing.
+
+A registry is read only through its **charter**: a document at `<anchor>/charter.json`
+that says it is a release registry, which environment its contents are signed under, and
+where each product's manifest is, with a signature beside it signed by MachineFabric's
+prod release key. QuickRust reads nothing else from the registry until the charter's
+signature chains, two roots of three, to the charter roots it was built with, and the
+charter is the one of the anchor it asked, for this build's environment, and inside its
+own validity. Where the manifest is comes from the charter, never from the shape of the
+registry's address.
 
 A release is described by a manifest in the registry, published with a signature beside
 it. The signature file carries a **release-key certificate**: the public half of the key
@@ -62,9 +72,10 @@ update goes ahead only when all of this holds:
 - the archive is the one the manifest describes, by SHA-256 and size;
 - the binary in it runs, and says it is the version it was published as.
 
-So the registry's host, the CDN in front of it and a mirror named in `self.update-url` are
-all untrusted: whoever controls them can withhold an update, and cannot make QuickRust
-install anything the release key did not sign. A release key that leaks is contained by
+So the registry's host, the CDN in front of it and another registry named in
+`self.update-url` are all untrusted: whoever controls them can withhold an update, and
+cannot make QuickRust read a registry MachineFabric did not charter, or install anything
+the release key did not sign. A release key that leaks is contained by
 its certificate's expiry and environment, and replaced by certifying another.
 
 What this does not protect against: a manifest that is genuine and old. Someone who

@@ -25,7 +25,9 @@ Il wrapper scrive un file di evento per ogni invocazione nella directory privata
 
 `qrust self update` sostituisce il programma che sta davanti a ogni build, quindi ciò che installerà è la cosa più ristretta di questa pagina.
 
-Una release di QuickRust viene compilata con quattro informazioni sulla propria linea di release: il registro delle release in cui è pubblicata, il suo canale, un ambiente di firma e le metà pubbliche di tre **chiavi radice**. Non ne legge nessuna in fase di esecuzione, e un QuickRust compilato dai sorgenti non ne ha alcuna: non ha una linea di release e non aggiorna nulla.
+Una release di QuickRust viene compilata con cinque informazioni sulla propria linea di release: l'indirizzo con cui è nominato il suo registro delle release (la sua **ancora**), il suo canale, un ambiente di firma, le metà pubbliche di tre **chiavi radice** e le metà pubbliche delle tre **radici dei charter** di MachineFabric. Non ne legge nessuna in fase di esecuzione, e un QuickRust compilato dai sorgenti non ne ha alcuna: non ha una linea di release e non aggiorna nulla.
+
+Un registro viene letto solo attraverso il suo **charter**: un documento in `<anchor>/charter.json` che dice che si tratta di un registro delle release, sotto quale ambiente sono firmati i suoi contenuti e dove si trova il manifest di ciascun prodotto, con accanto una firma della chiave di release di prod di MachineFabric. QuickRust non legge nient'altro dal registro finché la firma del charter non risale, due radici su tre, alle radici dei charter con cui è stato compilato, e il charter non è quello dell'ancora richiesta, per l'ambiente di questa build ed entro la sua validità. Dove si trova il manifest lo dice il charter, mai la forma dell'indirizzo del registro.
 
 Una release è descritta da un manifest nel registro, pubblicato con una firma accanto. Il file della firma contiene un **certificato della chiave di release**: la metà pubblica della chiave che firma i manifest, l'ambiente a cui è destinata e l'intervallo di tempo in cui è valida. Un aggiornamento procede solo quando vale tutto quanto segue:
 
@@ -36,7 +38,7 @@ Una release è descritta da un manifest nel registro, pubblicato con una firma a
 - l'archivio è quello descritto dal manifest, per SHA-256 e dimensione;
 - il binario che contiene si avvia e dichiara di essere la versione con cui è stato pubblicato.
 
-Così l'host del registro, la CDN davanti a esso e un mirror indicato in `self.update-url` sono tutti non fidati: chi li controlla può trattenere un aggiornamento, ma non può far installare a QuickRust nulla che la chiave di release non abbia firmato. Una chiave di release che trapela è contenuta dalla scadenza e dall'ambiente del suo certificato, e viene sostituita certificandone un'altra.
+Così l'host del registro, la CDN davanti a esso e un altro registro indicato in `self.update-url` sono tutti non fidati: chi li controlla può trattenere un aggiornamento, ma non può far leggere a QuickRust un registro che MachineFabric non abbia istituito con un charter, né fargli installare nulla che la chiave di release non abbia firmato. Una chiave di release che trapela è contenuta dalla scadenza e dall'ambiente del suo certificato, e viene sostituita certificandone un'altra.
 
 Ciò da cui questo non protegge: un manifest autentico ma vecchio. Chi controlla il registro può servire un manifest firmato precedente, e QuickRust allora non vede alcuna release più recente. Non ne installa mai una più vecchia di sé.
 

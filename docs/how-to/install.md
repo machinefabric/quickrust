@@ -130,11 +130,11 @@ qrust self update
 
 It installs the latest release of the channel this QuickRust was published on (`release` or `nightly`; `qrust doctor` says which, on its `release line`), in place of the running one in `~/.qrust/bin`. If you are already on the latest release, it says so and changes nothing.
 
-Nothing is installed on trust. QuickRust reads the release manifest and the signature published beside it, and accepts the manifest only if its signature chains to the root keys this QuickRust was built with: a release key certified by two of those roots, for the right environment, inside its validity, must have signed the manifest's exact bytes. The archive must then be the one the manifest describes (SHA-256 and size), and the binary in it must run and report the version it was published as. If any of these fails, the update stops with the reason and replaces nothing. See [Security and privacy](../explanation/security.md#updates).
+Nothing is installed on trust. QuickRust first reads the registry's charter, which must be signed by MachineFabric and say where the release manifest is; then the release manifest and the signature published beside it, and accepts the manifest only if its signature chains to the root keys this QuickRust was built with: a release key certified by two of those roots, for the right environment, inside its validity, must have signed the manifest's exact bytes. The archive must then be the one the manifest describes (SHA-256 and size), and the binary in it must run and report the version it was published as. If any of these fails, the update stops with the reason and replaces nothing. See [Security and privacy](../explanation/security.md#updates).
 
 A QuickRust built from source has no root keys, and so no release it could check: `qrust self update` says so. Update it by building the newer source.
 
-If your releases come from a mirror of the registry, set `self.update-url` (or `QRUST_UPDATE_URL`) to it: the mirror serves `<url>/quickrust/manifest` and `<url>/quickrust/manifest.sig` as the registry does. A mirror is trusted exactly as the registry is: by the signature, not by where it is.
+If your releases come from another release registry, set `self.update-url` (or `QRUST_UPDATE_URL`) to its anchor. It is read exactly as the registry this QuickRust was published in: only once MachineFabric has chartered it (its charter is at `<url>/charter.json`, for this QuickRust's environment), and then by the signature, not by where it is.
 
 A copy installed with a package manager is updated by that manager (`brew upgrade quickrust`, `sudo apt upgrade quickrust`, `sudo dnf upgrade quickrust`); it is the copy `qrust setup` was started from, not the one that runs. Run `qrust self update` to update the one that runs.
 

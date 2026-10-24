@@ -85,7 +85,7 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 | `ci.budget-policy` | string | `.qrust/budgets.toml` | `QRUST_CI_BUDGET_POLICY` | the budget file, relative to the workspace root ([Budgets](budgets.md)) |
 | `ci.baseline` | string | `main` | `QRUST_CI_BASELINE` | the baseline budgets are evaluated against |
 | `ci.enforce-on-build` | bool | `false` | `QRUST_CI_ENFORCE_ON_BUILD` | evaluate budgets after every successful build command; a blocking failure exits 3 |
-| `self.update-url` | string | empty | `QRUST_UPDATE_URL` | a mirror of the release registry `qrust self update` reads QuickRust's releases from: it serves `<url>/quickrust/manifest` and its `.sig`, signed as the registry's are. Empty: the registry this QuickRust was published in (`qrust doctor`, `release line`) |
+| `self.update-url` | string | empty | `QRUST_UPDATE_URL` | the anchor of another release registry `qrust self update` reads QuickRust's releases from: one MachineFabric chartered, whose charter it serves at `<url>/charter.json`. Empty: the registry this QuickRust was published in (`qrust doctor`, `release line`) |
 | `toolchain.auto-update` | `background`, `off` | `background` | `QRUST_TOOLCHAIN_AUTO_UPDATE` | once a day after a build, check in the background whether the channel the build used has a newer release, and install it for the next build; never in CI |
 | `toolchain.dist-server` | string | `https://static.rust-lang.org` | `QRUST_DIST_SERVER` | where Rust releases are downloaded from |
 | `security.persist-environment` | `allowlist`, `none` | `allowlist` | `QRUST_SECURITY_PERSIST_ENVIRONMENT` | which environment values run records keep: build-relevant variables only, or none |
