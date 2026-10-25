@@ -1,0 +1,10 @@
+{
+  "name": "quickrust",
+  "alias": "quickrust",
+  "templates_root": "..",
+  "version": {
+    "major": 1,
+    "file": "version.txt",
+    "detect_manifests": true
+  }
+}
