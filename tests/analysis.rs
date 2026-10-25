@@ -480,6 +480,44 @@ fn test0301_a_command_that_cannot_record_that_it_runs_cargo_does_not_run_it() {
     assert!(!sb.home.join("cache/builds").exists(), "Cargo ran");
 }
 
+// TEST0313: A toolchain program run through a proxy does not hold back cargos clean
+#[cfg(unix)]
+#[test]
+fn test0313_a_toolchain_program_run_through_a_proxy_does_not_hold_back_cargos_clean() {
+    use std::io::{Read, Write};
+    let sb = Sandbox::new("proxy-runs");
+    let p = sb.package("p", "p");
+    let bin = sb.dir.join("proxies");
+    fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_qrust"), bin.join("rustfmt")).unwrap();
+    // rustfmt formatting its input runs until the input ends, as an editor's rust-analyzer runs
+    // until the editor closes.
+    let mut rustfmt = sb.with_shim(&bin.join("rustfmt").display().to_string(), &p).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let pid = rustfmt.id().to_string();
+    let toolchains = sb.home.join("toolchains").display().to_string();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        let args = stdout(&run(std::process::Command::new("ps").args(["-o", "args=", "-p", &pid])));
+        if args.trim_start().starts_with(&toolchains) {
+            break;
+        }
+        assert!(rustfmt.try_wait().unwrap().is_none(), "the proxy ended before it ran the toolchain's rustfmt");
+        assert!(std::time::Instant::now() < deadline, "the proxy did not run the toolchain's rustfmt: {}", args);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // It runs no Cargo, and a collection meanwhile runs Cargo's clean.
+    assert!(!sb.home.join("cargo-runs").join(&pid).exists(), "rustfmt is recorded as running Cargo");
+    let collected = json_out(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"]));
+    assert!(collected["cargo_left"].is_null(), "{}", collected);
+    let mut input = rustfmt.stdin.take().unwrap();
+    input.write_all(b"pub fn add(x:u32,y:u32)->u32{x+y}\n").unwrap();
+    drop(input);
+    let mut formatted = String::new();
+    rustfmt.stdout.take().unwrap().read_to_string(&mut formatted).unwrap();
+    assert!(rustfmt.wait().unwrap().success());
+    assert_eq!(formatted, "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n");
+}
+
 // TEST0312: One qrust per machine a package installed and setup links to
 #[cfg(unix)]
 #[test]

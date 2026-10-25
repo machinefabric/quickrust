@@ -144,6 +144,9 @@ pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine,
     let dir = inv.chdir.as_ref().map(|c| cwd.join(c)).unwrap_or_else(|| cwd.to_path_buf());
     let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).map(|t| toolchain::spec::rust_target(t).to_string()).collect();
     let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)?;
+    // The Cargo this engine runs uses QuickRust's Cargo home: Cargo's own clean waits for it (see
+    // `space::CargoRuns`). Unrecorded, a collection could run Cargo's clean under it.
+    crate::space::running_cargo()?;
     let root = crate::builddir::workspace_root(&engine, &crate::builddir::start_dir(inv, cwd))?;
     let variant = crate::builddir::variant(cfg)?;
     let target = crate::builddir::choose(inv, cwd, root.as_deref(), variant.as_deref());
@@ -156,7 +159,10 @@ pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine,
 }
 
 /// The engine for a toolchain program run through QuickRust's proxy (`rustc`, `rustfmt`, …), with the
-/// component that provides it.
+/// component that provides it. The program is not recorded as running Cargo: a Cargo it runs is
+/// QuickRust's `cargo`, first on its `PATH`, which records itself, and a record would last the
+/// program's whole life (an editor's rust-analyzer runs for days) and keep Cargo's clean from
+/// running all that time.
 pub fn for_tool(tool: &str, plus: Option<&str>, cwd: &Path, cfg: &Config) -> Result<Engine, String> {
     let component = match tool {
         "rustfmt" | "cargo-fmt" => Some("rustfmt"),
@@ -182,9 +188,6 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     };
     progress.finish(&tc);
     toolchain::mark_used(&tc);
-    // What runs with this engine uses QuickRust's Cargo home: Cargo's own clean waits for it (see
-    // `space::CargoRuns`). Unrecorded, a collection could run Cargo's clean under it.
-    crate::space::running_cargo()?;
     let program = toolchain::engine_program(&tc).map_err(|e| format!("toolchain {}: {}", tc.id, e))?;
     let mut env = environment(&tc);
     if program != tc.cargo() {

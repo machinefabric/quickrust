@@ -305,8 +305,9 @@ pub fn downloads() -> Option<Downloads> {
 
 /// The QuickRust processes that may be running a Cargo with QuickRust's Cargo home: one empty file
 /// per process, named by its id, in `$QRUST_HOME/cargo-runs`, written and read under the lock
-/// beside them. A process registers before it starts the first (`engine::start`); an exec'd Cargo
-/// keeps its process id, and so its record. A record whose process is gone holds nothing, and
+/// beside them. A process registers before it starts the first (`engine::for_command`); an exec'd
+/// Cargo keeps its process id, and so its record. A toolchain program run through a proxy does not
+/// register (see `engine::for_tool`). A record whose process is gone holds nothing, and
 /// whoever next registers or reads removes it.
 ///
 /// Cargo's own clean (`cargo -Zgc clean gc`) runs only while it holds the lock and no process
