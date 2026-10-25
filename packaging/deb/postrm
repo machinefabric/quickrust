@@ -1,6 +1,8 @@
 #!/bin/sh
 set -e
 if [ "$1" = remove ] || [ "$1" = purge ]; then
+    rm -f @{prefix}/qrust-installed-by.json
+    rmdir @{prefix} 2>/dev/null || true
     if command -v update-alternatives >/dev/null 2>&1; then
         update-alternatives --remove qrust @{prefix}/qrust || rm -f @{link}
     else

@@ -1362,13 +1362,39 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
         Some(line) => println!("  release line       the {} channel of {} ({} signing roots, {}; {} charter roots)", line.channel, line.registry, line.trust.roots.len(), line.trust.environment, line.charter_roots.len()),
         None => println!("  release line       none: built from source, so `qrust self update` has nothing to update from"),
     }
-    let (setup, first) = crate::setup::status();
-    match &setup {
-        Some(r) => println!("  set up             {} (QuickRust {}); its bin is {} on PATH", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"), if first { "first" } else { "NOT first" }),
-        None => println!("  set up             no (`qrust setup` installs QuickRust for this user); `qrust <command>` works without it"),
+    match crate::package::of(&exe) {
+        Ok(Some(p)) => println!("  installed by       {} ({}); `{}` updates it", p.manager, p.program.display(), p.update),
+        Ok(None) => println!("  installed by       itself; `qrust self update` updates it"),
+        Err(e) => problem(e),
     }
-    if setup.is_some() && !first {
-        problem(format!("`cargo` on PATH is not {}: open a new shell, or check the PATH set up by `qrust setup`", crate::engine::bin_dir().join("cargo").display()));
+    let bin = crate::engine::bin_dir();
+    match crate::setup::record() {
+        Some(r) => {
+            println!("  set up             {} (QuickRust {})", r["bin"].as_str().unwrap_or("?"), r["version"].as_str().unwrap_or("?"));
+            let home = util::home_dir();
+            let shell = std::env::var("SHELL").unwrap_or_default();
+            let startup = home.as_deref().map(|h| crate::setup::startup_files(&shell, h, Path::new("/etc"))).unwrap_or_default();
+            let on = crate::setup::on_path(&std::env::var_os("PATH").unwrap_or_default(), &util::exe_candidates(&bin, "qrust").remove(0), &startup, home.as_deref());
+            for s in &on.shadows {
+                let what = match &s.package {
+                    Some(manager) => format!("the QuickRust {} installed ({}); `qrust setup` run from it makes {} link to it", manager, s.is.display(), util::tilde(&bin)),
+                    None => s.is.display().to_string(),
+                };
+                let from = match &s.origin {
+                    Some(o) => {
+                        let sourced: String = o.sourced_from.iter().rev().map(|(f, l)| format!(", sourced from {}:{}", util::tilde(f), l)).collect();
+                        let others = if o.others > 0 { format!(" (and {} earlier line{})", o.others, if o.others == 1 { "" } else { "s" }) } else { String::new() };
+                        format!("its directory is put there by {}:{}{}{}", util::tilde(&o.file), o.line, sourced, others)
+                    }
+                    None => format!("no startup file of {} names its directory; the program that started this shell may put it there", if shell.is_empty() { "this shell" } else { shell.as_str() }),
+                };
+                problem(format!("{} comes before QuickRust's on PATH and is {}; {}", s.program.display(), what, from));
+            }
+            if !on.cargo {
+                problem(format!("no `cargo` on PATH is QuickRust's ({}): open a new shell, or put {} first on PATH", util::exe_candidates(&bin, "cargo").remove(0).display(), bin.display()));
+            }
+        }
+        None => println!("  set up             no (`qrust setup` installs QuickRust for this user); `qrust <command>` works without it"),
     }
     let wrapper = exe.parent().map(|d| d.join(if cfg!(windows) { "qrust-rustc-wrapper.exe" } else { "qrust-rustc-wrapper" }));
     match wrapper.filter(|w| util::is_executable(w)) {
@@ -1470,8 +1496,17 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     let opts = crate::setup::Options { modify_path, toolchain: (toolchain != "none").then_some(toolchain) };
     let phase = crate::ui::Phase::start();
     let done = crate::setup::setup(&opts)?;
-    phase.finish(true, &format!("QuickRust {} installed in {}: cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4)));
     let i = crate::ui::INDENT;
+    match &done.package {
+        Some(p) => {
+            phase.finish(true, &format!("QuickRust {} set up in {}, linked to the {} install: cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), p.manager, done.proxies.saturating_sub(4)));
+            eprintln!("{}{} is QuickRust, and `{}` keeps it current", i, p.program.display(), p.update);
+        }
+        None => phase.finish(true, &format!("QuickRust {} installed in {}: cargo, rustc, rustfmt, cargo-clippy and {} more", done.version, util::tilde(&done.bin), done.proxies.saturating_sub(4))),
+    }
+    if let Some(copy) = &done.replaced_copy {
+        eprintln!("{}replaced the copy of QuickRust at {} with a link to it", i, util::tilde(copy));
+    }
     match (&done.path_edits[..], modify_path) {
         (_, false) => eprintln!("{}PATH left alone (--no-modify-path): put {} first on PATH yourself", i, util::tilde(&done.bin)),
         ([], true) => eprintln!("{}PATH: already set up", i),
@@ -1524,6 +1559,11 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
     let action = a.positional();
     let yes = a.flag("--yes");
     a.finish()?;
+    match action.as_deref() {
+        Some("update") => crate::setup::refuse_for_package(crate::setup::OwnAction::Update)?,
+        Some("uninstall") => crate::setup::refuse_for_package(crate::setup::OwnAction::Uninstall)?,
+        _ => {}
+    }
     match action.as_deref() {
         Some("update") => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;

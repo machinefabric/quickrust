@@ -69,7 +69,12 @@ Expand-Archive qrust.zip -DestinationPath .          # unpacks quickrust\
 .\quickrust\qrust.exe setup
 ```
 
-`qrust setup` copies `qrust` and `qrust-rustc-wrapper` into `~/.qrust/bin` and installs stable Rust, so the unpacked directory can be deleted afterwards, and a copy installed by a package manager is only where setup was started from. Arguments choose what setup does ([below](#choose-what-setup-does)):
+`qrust setup` makes `~/.qrust/bin` QuickRust's and installs stable Rust. How depends on what installed the `qrust` you run it from:
+
+- **A package manager** (Homebrew, apt, dnf): setup copies nothing. `~/.qrust/bin/qrust`, `qrust-rustc-wrapper`, `cargo` and the other toolchain programs are links to the package's `qrust`, by the path that stays the same across its versions (Homebrew's `opt/quickrust`). There is one `qrust` on the machine, and the package manager's upgrade upgrades the one that runs. A copy an earlier setup put in `~/.qrust/bin` is replaced by the link, and setup says so.
+- **An archive or a source build**: setup copies `qrust` and `qrust-rustc-wrapper` into `~/.qrust/bin`, and that copy is your installation, so the unpacked directory or the checkout can be deleted afterwards. It does not set up over a package's installation: remove the package first.
+
+Arguments choose what setup does ([below](#choose-what-setup-does)):
 
 ```bash
 qrust setup --no-modify-path
@@ -118,9 +123,9 @@ If setup stops because an entry in `~/.qrust/bin` "exists and is not QuickRust",
 qrust doctor
 ```
 
-`doctor` prints which QuickRust runs, the toolchain the current directory uses and what selected it, the Cargo and rustc behind it, the relevant environment variables and the workspace's target directory. It ends with `OK`, or with `FAIL` and the number of problems (exit status 1), each problem on its own `FAIL` line above.
+`doctor` prints which QuickRust runs and what installed it, the toolchain the current directory uses and what selected it, the Cargo and rustc behind it, the relevant environment variables and the workspace's target directory. It ends with `OK`, or with `FAIL` and the number of problems (exit status 1), each problem on its own `FAIL` line above.
 
-If it reports that `cargo` on `PATH` is not QuickRust's, open a new shell; if that does not help, another directory (often `~/.cargo/bin`) comes before `~/.qrust/bin` in your startup files.
+It names every `qrust` or `cargo` that comes before QuickRust's on `PATH` and is another program, and the line of your shell's startup files that puts its directory there (following the files they source). Common ones are `~/.cargo/bin` (rustup's `cargo`), and Homebrew's `bin` from a `brew shellenv` line that runs after `~/.qrust/env`: its `cargo` if Homebrew's `rust` formula is installed, and its `qrust` if `~/.qrust/bin` still holds a copy of QuickRust from before (run `qrust setup` from the Homebrew installation, and the copy becomes a link to it). Move the line that sources `~/.qrust/env` after the one it names, or remove what it names. If `doctor` says no `cargo` on `PATH` is QuickRust's, open a new shell.
 
 ## Update QuickRust
 
@@ -130,13 +135,13 @@ qrust self update
 
 It installs the latest release of the channel this QuickRust was published on (`release` or `nightly`; `qrust doctor` says which, on its `release line`), in place of the running one in `~/.qrust/bin`. If you are already on the latest release, it says so and changes nothing.
 
+A QuickRust a package manager installed is updated by that manager, and `qrust self update` changes nothing and names the command: `brew upgrade quickrust`, `sudo apt install --only-upgrade quickrust` or `sudo dnf upgrade quickrust`. Since `~/.qrust/bin` links to the package's `qrust`, that upgrade updates the QuickRust that runs.
+
 Nothing is installed on trust. QuickRust first reads the registry's charter, which must be signed by MachineFabric and say where the release manifest is; then the release manifest and the signature published beside it, and accepts the manifest only if its signature chains to the root keys this QuickRust was built with: a release key certified by two of those roots, for the right environment, inside its validity, must have signed the manifest's exact bytes. The archive must then be the one the manifest describes (SHA-256 and size), and the binary in it must run and report the version it was published as. If any of these fails, the update stops with the reason and replaces nothing. See [Security and privacy](../explanation/security.md#updates).
 
 A QuickRust built from source has no root keys, and so no release it could check: `qrust self update` says so. Update it by building the newer source.
 
 If your releases come from another release registry, set `self.update-url` (or `QRUST_UPDATE_URL`) to its anchor. It is read exactly as the registry this QuickRust was published in: only once MachineFabric has chartered it (its charter is at `<url>/charter.json`, for this QuickRust's environment), and then by the signature, not by where it is.
-
-A copy installed with a package manager is updated by that manager (`brew upgrade quickrust`, `sudo apt upgrade quickrust`, `sudo dnf upgrade quickrust`); it is the copy `qrust setup` was started from, not the one that runs. Run `qrust self update` to update the one that runs.
 
 Toolchains are updated separately: see [How to choose and manage toolchains](choose-a-toolchain.md#keep-toolchains-current).
 
@@ -147,6 +152,8 @@ qrust self uninstall --yes
 ```
 
 This removes `~/.qrust` with everything in it (toolchains, programs installed with `qrust install`, caches, run records) and the lines setup added to your shell startup files (on Windows, the user `PATH` entry). Without `--yes` it only tells you what it would remove.
+
+A QuickRust a package manager installed is removed by that manager (`brew uninstall quickrust`, `sudo apt remove quickrust`, `sudo dnf remove quickrust`), and `qrust self uninstall` changes nothing and names the command. The package manager removes the program only: delete `~/.qrust` and the lines marked `# Added by `qrust setup`` in your shell startup files yourself.
 
 Files QuickRust wrote into a repository at your request stay where they are: `.qrust/config.toml`, `.qrust/budgets.toml`, `.qrust/baselines/` and any report paths you configured. Delete them yourself if you no longer want them.
 

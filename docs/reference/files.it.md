@@ -8,9 +8,9 @@ QuickRust crea le sue directory con modalità 0700. I percorsi qui sotto usano l
 
 | Percorso | Contenuto | Se lo cancelli |
 |---|---|---|
-| `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`); `cargo` e i programmi della toolchain come link a `qrust` ([Comandi](commands.md#toolchain-programs)); i programmi installati da `qrust install` | i link vengono ricreati dal comando successivo; i programmi installati vanno persi |
+| `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`): link all'installazione di un gestore di pacchetti, oppure copie proprie di QuickRust quando l'ha installato un archivio o una build dal sorgente; `cargo` e i programmi della toolchain come link a `qrust` ([Comandi](commands.md#toolchain-programs)); i programmi installati da `qrust install` | i link vengono ricreati dal comando successivo; i programmi installati vanno persi |
 | `~/.qrust/config.toml` | la configurazione di QuickRust dell'utente ([Configurazione](configuration.md)) | è tua |
-| `~/.qrust/setup.json` | ciò che ha fatto `qrust setup`: dove ha installato, quali file della shell ha modificato, che cosa ha importato, e il digest di ogni binario di QuickRust che esso o `qrust self update` ha installato (così un aggiornamento riconosce i proxy creati da una release precedente, che su Windows ne sono copie); letto da `qrust doctor`, `qrust self update` e `qrust self uninstall` | `qrust setup` lo riscrive |
+| `~/.qrust/setup.json` | ciò che ha fatto `qrust setup`: dove ha installato, l'installazione del gestore di pacchetti a cui è collegato (`installed_by`), quali file della shell ha modificato, che cosa ha importato, e il digest di ogni binario di QuickRust che esso o `qrust self update` ha installato (così un aggiornamento riconosce i proxy creati da una release precedente, che su Windows ne sono copie); letto da `qrust doctor`, `qrust self update` e `qrust self uninstall` | `qrust setup` lo riscrive |
 | `~/.qrust/env`, `~/.qrust/env.fish` | gli script che i file di avvio della shell caricano per mettere `~/.qrust/bin` al primo posto nel `PATH` | `qrust setup` li riscrive |
 | `~/.qrust/installs.json` | ciò che `qrust install` ha installato, per radice e pacchetto (`qrust install --list`) | usa invece `qrust uninstall` |
 | `~/.qrust/toolchains/` | le toolchain Rust installate da QuickRust (`qrust toolchain list`); `channels.json` indica quale release corrisponde a ciascun canale, quella predefinita e le toolchain collegate | usa `qrust toolchain remove`; una toolchain cancellata viene installata di nuovo al suo uso successivo |
@@ -101,13 +101,17 @@ In un progetto non viene creata alcuna directory `target/`.
 
 `qrust setup` scrive:
 
-- `~/.qrust/bin/` con `qrust`, `qrust-rustc-wrapper` e i link ai programmi; si rifiuta di sostituire lì un file che non sia di QuickRust;
+- `~/.qrust/bin/` con `qrust`, `qrust-rustc-wrapper` e i link ai programmi; si rifiuta di sostituire lì un file che non sia di QuickRust. Avviato dall'installazione di un gestore di pacchetti, `qrust` e `qrust-rustc-wrapper` sono link a quelli del pacchetto, tramite il percorso indicato dal suo marcatore; avviato da qualsiasi altra cosa, sono copie;
 - `~/.qrust/env` e `~/.qrust/env.fish`;
 - una riga contrassegnata `# Added by `qrust setup`: QuickRust's bin first on PATH` in `~/.profile`, e in `~/.bash_profile`, `~/.bashrc` e `~/.zshenv` dove esistono (`~/.zshenv` anche quando `zsh` è nel `PATH`); `~/.config/fish/conf.d/qrust.fish` quando esiste `~/.config/fish`; su Windows, il `PATH` dell'utente tramite PowerShell (niente di tutto questo con `--no-modify-path`);
 - una sola volta, da `$CARGO_HOME` o da `~/.cargo`: `credentials.toml` e le tabelle `[registries]`, `[registry]`, `[source]`, `[net]` e `[http]` di `config.toml`, in `~/.qrust/cargo/` (le tabelle che non ha importato vengono elencate);
 - `~/.qrust/setup.json`.
 
 `qrust self uninstall --yes` rimuove `~/.qrust` e le righe e i file elencati sopra che `qrust setup` ha aggiunto. rustup e `~/.cargo` non vengono mai modificati.
+
+### L'installazione di un pacchetto {#a-packages-installation}
+
+La formula di Homebrew, il deb e l'rpm mettono `qrust-installed-by.json` accanto al `qrust` che installano (Homebrew: `$(brew --prefix)/opt/quickrust/libexec/`; deb e rpm: `/opt/quickrust/`). Indica il gestore di pacchetti, il percorso del `qrust` del pacchetto che resta lo stesso tra le sue versioni, e i comandi che lo aggiornano e lo rimuovono. QuickRust lo legge accanto al file a cui si risolve `qrust`: `qrust setup` crea allora i link a quel percorso, e `qrust self update` e `qrust self uninstall` indicano il comando del gestore e non cambiano nulla. Un marcatore che non si può leggere, o che indica un altro binario, è un errore, e non viene mai preso per un'installazione senza marcatore.
 
 ## Conservazione {#retention}
 

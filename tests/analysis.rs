@@ -480,6 +480,72 @@ fn test0301_a_command_that_cannot_record_that_it_runs_cargo_does_not_run_it() {
     assert!(!sb.home.join("cache/builds").exists(), "Cargo ran");
 }
 
+// TEST0312: One qrust per machine a package installed and setup links to
+#[cfg(unix)]
+#[test]
+fn test0312_one_qrust_per_machine_a_package_installed_and_setup_links_to() {
+    let sb = Sandbox::new("packaged");
+    let user = sb.dir.join("user");
+    fs::create_dir_all(&user).unwrap();
+    let bin = sb.home.join("bin");
+    let in_home = |c: &mut std::process::Command| {
+        c.env("HOME", &user);
+    };
+    // Homebrew installs QuickRust: versioned in its Cellar, reached through opt, with its marker.
+    let libexec = sb.dir.join("brew/Cellar/quickrust/1.0/libexec");
+    fs::create_dir_all(&libexec).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_qrust"), libexec.join("qrust")).unwrap();
+    fs::copy(env!("CARGO_BIN_EXE_qrust-rustc-wrapper"), libexec.join("qrust-rustc-wrapper")).unwrap();
+    fs::create_dir_all(sb.dir.join("brew/opt")).unwrap();
+    std::os::unix::fs::symlink(sb.dir.join("brew/Cellar/quickrust/1.0"), sb.dir.join("brew/opt/quickrust")).unwrap();
+    let program = sb.dir.join("brew/opt/quickrust/libexec/qrust");
+    fs::write(libexec.join("qrust-installed-by.json"), json!({ "format": 1, "manager": "Homebrew", "program": program.display().to_string(), "update": "brew upgrade quickrust", "uninstall": "brew uninstall quickrust" }).to_string()).unwrap();
+    let running = |qrust: &std::path::Path, args: &[&str]| {
+        let mut c = sb.with_shim(&qrust.display().to_string(), &sb.dir);
+        c.args(args).env("HOME", &user);
+        c
+    };
+    let packaged = |args: &[&str]| running(&program, args);
+    // Before any setup, the package's QuickRust makes the proxies it needs: by the path that
+    // outlives its version, not the Cellar's.
+    run(&mut packaged(&["doctor"]));
+    assert_eq!(fs::read_link(bin.join("cargo")).unwrap(), program);
+    // An archive's QuickRust sets the machine up: its copy is the install.
+    let mut first = sb.qrust(&sb.dir);
+    in_home(first.args(["setup", "--no-modify-path", "--toolchain", "none"]));
+    ok(&mut first);
+    assert!(fs::symlink_metadata(bin.join("qrust")).unwrap().is_file());
+    assert_eq!(fs::read_link(bin.join("cargo")).unwrap(), std::path::Path::new("qrust"), "the copy's setup took over the proxies");
+    // Its setup links to it and copies nothing; the archive's copy goes, and it says so.
+    let out = ok(&mut packaged(&["setup", "--no-modify-path", "--toolchain", "none"]));
+    assert!(stderr(&out).contains("linked to the Homebrew install") && stderr(&out).contains("replaced the copy of QuickRust"), "{}", stderr(&out));
+    assert_eq!(fs::read_link(bin.join("qrust")).unwrap(), program);
+    let resolved = fs::canonicalize(libexec.join("qrust")).unwrap();
+    assert_eq!(fs::canonicalize(bin.join("cargo")).unwrap(), resolved, "cargo is not the package's qrust");
+    // QuickRust leaves updating and removing it to Homebrew, from whichever qrust runs.
+    for qrust in [program.clone(), bin.join("qrust")] {
+        let refused = run(&mut running(&qrust, &["self", "update"]));
+        assert!(!refused.status.success() && stderr(&refused).contains("`brew upgrade quickrust`"), "{}", stderr(&refused));
+    }
+    let refused = run(&mut packaged(&["self", "uninstall", "--yes"]));
+    assert!(!refused.status.success() && stderr(&refused).contains("`brew uninstall quickrust`"), "{}", stderr(&refused));
+    assert!(sb.home.join("setup.json").is_file() && fs::read_link(bin.join("qrust")).is_ok(), "uninstalling removed something");
+    // The archive's QuickRust does not set up over the package's.
+    let mut over = sb.qrust(&sb.dir);
+    in_home(over.args(["setup", "--no-modify-path", "--toolchain", "none"]));
+    let refused = run(&mut over);
+    assert!(!refused.status.success() && stderr(&refused).contains("links to the QuickRust Homebrew installed"), "{}", stderr(&refused));
+    assert_eq!(fs::read_link(bin.join("qrust")).unwrap(), program);
+    // Doctor says how it was installed, and names a cargo ahead of QuickRust's that is not QuickRust.
+    let path = std::env::join_paths([sb.shim_dir.clone(), bin.clone(), "/usr/bin".into(), "/bin".into()]).unwrap();
+    let doctor = run(packaged(&["doctor"]).env("PATH", &path).env("SHELL", "/bin/sh"));
+    let text = stdout(&doctor);
+    assert!(text.contains("installed by       Homebrew"), "{}", text);
+    assert!(text.lines().any(|l| l.starts_with("FAIL") && l.contains(&sb.shim_dir.join("cargo").display().to_string()) && l.contains("comes before QuickRust's on PATH")), "{}", text);
+    let clean = run(packaged(&["doctor"]).env("PATH", std::env::join_paths([bin.clone(), "/usr/bin".into(), "/bin".into()]).unwrap()));
+    assert!(!stdout(&clean).contains("comes before QuickRust's on PATH"), "{}", stdout(&clean));
+}
+
 // TEST0198: Every command speaks quickrusts language in a terminal
 #[test]
 fn test0198_every_command_speaks_quickrusts_language_in_a_terminal() {
@@ -893,10 +959,13 @@ fn test0208_doctor_setup_and_uninstall() {
     // QuickRust as cargo, through the installed proxy.
     let via = run(std::process::Command::new(bin.join("cargo")).current_dir(&p).arg("--version").env("QRUST_HOME", &sb.home).env("PATH", &path));
     assert!(stdout(&via).starts_with("cargo 1."), "{}", stderr(&via));
-    // Doctor sees the setup, and that its bin is not first on this test's PATH.
+    // Doctor sees the setup, and that this test's PATH reaches another `cargo` (the shim's, the
+    // binary the suite built) and never QuickRust's.
     let doctor = run(sb.qrust(&p).arg("doctor"));
     assert_eq!(doctor.status.code(), Some(1));
-    assert!(stdout(&doctor).contains("its bin is NOT first on PATH"), "{}", stdout(&doctor));
+    let said = stdout(&doctor);
+    assert!(said.lines().any(|l| l.starts_with("FAIL") && l.contains(&format!("{} comes before QuickRust's on PATH", sb.shim_dir.join("cargo").display()))), "{}", said);
+    assert!(said.contains(&format!("no `cargo` on PATH is QuickRust's ({})", bin.join("cargo").display())), "{}", said);
     // Again: repairs, never imports twice or edits a file twice.
     fs::write(home.join(".cargo/credentials.toml"), "changed").unwrap();
     fs::remove_file(bin.join("rustc")).unwrap();

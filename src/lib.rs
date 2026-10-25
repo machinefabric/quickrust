@@ -21,6 +21,7 @@ pub mod fast;
 pub mod install;
 pub mod inventory;
 pub mod net;
+pub mod package;
 pub mod prebuilt;
 pub mod proc;
 pub mod recommend;

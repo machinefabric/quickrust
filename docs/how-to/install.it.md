@@ -69,7 +69,12 @@ Expand-Archive qrust.zip -DestinationPath .          # estrae quickrust\
 .\quickrust\qrust.exe setup
 ```
 
-`qrust setup` copia `qrust` e `qrust-rustc-wrapper` in `~/.qrust/bin` e installa Rust stable, quindi la directory estratta può essere eliminata in seguito, e una copia installata da un gestore di pacchetti è soltanto il punto da cui è stato avviato setup. Gli argomenti scelgono che cosa fa setup ([più sotto](#choose-what-setup-does)):
+`qrust setup` rende `~/.qrust/bin` di QuickRust e installa Rust stable. Il modo dipende da che cosa ha installato il `qrust` da cui lo avvii:
+
+- **Un gestore di pacchetti** (Homebrew, apt, dnf): setup non copia nulla. `~/.qrust/bin/qrust`, `qrust-rustc-wrapper`, `cargo` e gli altri programmi della toolchain sono link al `qrust` del pacchetto, tramite il percorso che resta lo stesso tra le sue versioni (`opt/quickrust` di Homebrew). Sulla macchina c'è un solo `qrust`, e l'aggiornamento del gestore di pacchetti aggiorna quello in esecuzione. Una copia che un setup precedente ha messo in `~/.qrust/bin` viene sostituita dal link, e setup lo dice.
+- **Un archivio o una build dal sorgente**: setup copia `qrust` e `qrust-rustc-wrapper` in `~/.qrust/bin`, e quella copia è la tua installazione, quindi la directory estratta o il checkout possono essere eliminati in seguito. Non si installa sopra l'installazione di un pacchetto: rimuovi prima il pacchetto.
+
+Gli argomenti scelgono che cosa fa setup ([più sotto](#choose-what-setup-does)):
 
 ```bash
 qrust setup --no-modify-path
@@ -118,9 +123,9 @@ Se setup si ferma perché una voce in `~/.qrust/bin` "esiste e non è QuickRust"
 qrust doctor
 ```
 
-`doctor` stampa quale QuickRust è in esecuzione, la toolchain che usa la directory corrente e che cosa l'ha selezionata, il Cargo e il rustc che stanno dietro, le variabili d'ambiente rilevanti e la directory target del workspace. Termina con `OK`, oppure con `FAIL` e il numero di problemi (exit status 1), ciascun problema sulla propria riga `FAIL` più sopra.
+`doctor` stampa quale QuickRust è in esecuzione e che cosa l'ha installato, la toolchain che usa la directory corrente e che cosa l'ha selezionata, il Cargo e il rustc che stanno dietro, le variabili d'ambiente rilevanti e la directory target del workspace. Termina con `OK`, oppure con `FAIL` e il numero di problemi (exit status 1), ciascun problema sulla propria riga `FAIL` più sopra.
 
-Se riporta che il `cargo` in `PATH` non è quello di QuickRust, apri una nuova shell; se non basta, un'altra directory (spesso `~/.cargo/bin`) viene prima di `~/.qrust/bin` nei tuoi file di avvio.
+Indica ogni `qrust` o `cargo` che in `PATH` viene prima di quello di QuickRust ed è un altro programma, e la riga dei file di avvio della tua shell che vi mette la sua directory (seguendo i file che questi includono). I casi comuni sono `~/.cargo/bin` (il `cargo` di rustup) e il `bin` di Homebrew, da una riga `brew shellenv` eseguita dopo `~/.qrust/env`: il suo `cargo` se è installata la formula `rust` di Homebrew, e il suo `qrust` se `~/.qrust/bin` contiene ancora una copia di QuickRust di prima (esegui `qrust setup` dall'installazione di Homebrew, e la copia diventa un link a essa). Sposta la riga che include `~/.qrust/env` dopo quella indicata, oppure rimuovi ciò che indica. Se `doctor` dice che nessun `cargo` in `PATH` è quello di QuickRust, apri una nuova shell.
 
 ## Aggiorna QuickRust {#update-quickrust}
 
@@ -130,13 +135,13 @@ qrust self update
 
 Installa l'ultima release del canale su cui è stato pubblicato questo QuickRust (`release` o `nightly`; `qrust doctor` dice quale, nella sua `release line`), al posto di quello in esecuzione in `~/.qrust/bin`. Se sei già all'ultima release, lo dice e non cambia nulla.
 
+Un QuickRust installato da un gestore di pacchetti viene aggiornato da quel gestore, e `qrust self update` non cambia nulla e indica il comando: `brew upgrade quickrust`, `sudo apt install --only-upgrade quickrust` o `sudo dnf upgrade quickrust`. Poiché `~/.qrust/bin` è un link al `qrust` del pacchetto, quell'aggiornamento aggiorna il QuickRust in esecuzione.
+
 Nulla viene installato sulla fiducia. QuickRust legge prima il charter del registro, che deve essere firmato da MachineFabric e dire dove si trova il manifest delle release; poi il manifest delle release e la firma pubblicata accanto a esso, e accetta il manifest solo se la sua firma risale alle chiavi radice con cui questo QuickRust è stato compilato: una chiave di release certificata da due di quelle radici, per l'ambiente giusto, entro il suo periodo di validità, deve aver firmato esattamente i byte del manifest. L'archivio deve poi essere quello descritto dal manifest (SHA-256 e dimensione), e il binario al suo interno deve avviarsi e riportare la versione con cui è stato pubblicato. Se uno qualsiasi di questi controlli fallisce, l'aggiornamento si ferma indicando il motivo e non sostituisce nulla. Vedi [Sicurezza e privacy](../explanation/security.md#updates).
 
 Un QuickRust compilato dal sorgente non ha chiavi radice, e quindi nessuna release che possa verificare: `qrust self update` lo dice. Aggiornalo compilando il sorgente più recente.
 
 Se le tue release provengono da un altro registro delle release, imposta `self.update-url` (o `QRUST_UPDATE_URL`) sulla sua ancora. Viene letto esattamente come il registro in cui è stato pubblicato questo QuickRust: solo dopo che MachineFabric gli ha dato un charter (il suo charter si trova in `<url>/charter.json`, per l'ambiente di questo QuickRust), e poi in base alla firma, non a dove si trova.
-
-Una copia installata con un gestore di pacchetti viene aggiornata da quel gestore (`brew upgrade quickrust`, `sudo apt upgrade quickrust`, `sudo dnf upgrade quickrust`); è la copia da cui è stato avviato `qrust setup`, non quella in esecuzione. Esegui `qrust self update` per aggiornare quella in esecuzione.
 
 Le toolchain vengono aggiornate separatamente: vedi [Come scegliere e gestire le toolchain](choose-a-toolchain.md#keep-toolchains-current).
 
@@ -147,6 +152,8 @@ qrust self uninstall --yes
 ```
 
 Questo rimuove `~/.qrust` con tutto il suo contenuto (toolchain, programmi installati con `qrust install`, cache, registrazioni delle esecuzioni) e le righe che setup ha aggiunto ai file di avvio della tua shell (su Windows, la voce nel `PATH` dell'utente). Senza `--yes` si limita a dirti che cosa rimuoverebbe.
+
+Un QuickRust installato da un gestore di pacchetti viene rimosso da quel gestore (`brew uninstall quickrust`, `sudo apt remove quickrust`, `sudo dnf remove quickrust`), e `qrust self uninstall` non cambia nulla e indica il comando. Il gestore di pacchetti rimuove solo il programma: elimina tu stesso `~/.qrust` e le righe marcate `# Added by `qrust setup`` nei file di avvio della tua shell.
 
 I file che QuickRust ha scritto in un repository su tua richiesta restano dove sono: `.qrust/config.toml`, `.qrust/budgets.toml`, `.qrust/baselines/` e gli eventuali percorsi dei report che hai configurato. Eliminali tu stesso se non ti servono più.
 

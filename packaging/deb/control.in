@@ -8,4 +8,4 @@ Homepage: https://github.com/machinefabric/quickrust
 Description: @{package} — Cargo, faster
  Every Cargo command, with Rust toolchains, a shared build cache and build output that
  QuickRust manages. Installs the qrust program under @{prefix} with a @{link} launcher;
- run `qrust setup` to make it your cargo.
+ run `qrust setup` to make it your cargo. apt keeps it current.

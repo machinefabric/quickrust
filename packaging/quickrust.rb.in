@@ -24,15 +24,22 @@ class Quickrust < Formula
   def install
     # The archive extracts to @{bundle_dir}/{qrust,qrust-rustc-wrapper,LICENSE-*,README.md}, and
     # Homebrew runs this from inside that single top-level directory. The two programs stay
-    # together: `qrust setup` copies both from where `qrust` is.
+    # together: `qrust setup` links ~/.qrust/bin to both.
     libexec.install Dir["*"]
+    # Says that Homebrew installed this QuickRust, by the path that outlives each version (opt, not
+    # the Cellar): `qrust setup` links to it instead of copying, and `qrust self update` and
+    # `qrust self uninstall` leave it to Homebrew.
+    (libexec/"qrust-installed-by.json").write <<~QRUST_INSTALLED_BY
+      {"format": 1, "manager": "Homebrew", "program": "#{opt_libexec}/qrust", "update": "brew upgrade quickrust", "uninstall": "brew uninstall quickrust"}
+    QRUST_INSTALLED_BY
     bin.install_symlink libexec/"qrust"
   end
 
   def caveats
     <<~EOS
-      Run `qrust setup` to make QuickRust your cargo: it installs itself and stable Rust
-      under ~/.qrust and puts ~/.qrust/bin on your PATH.
+      Run `qrust setup` to make QuickRust your cargo: it links ~/.qrust/bin to this QuickRust,
+      installs stable Rust under ~/.qrust and puts ~/.qrust/bin on your PATH.
+      `brew upgrade quickrust` keeps it current.
     EOS
   end
 

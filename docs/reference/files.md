@@ -8,9 +8,9 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 
 | Path | Content | Deleting it |
 |---|---|---|
-| `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`); `cargo` and the toolchain programs as links to `qrust` ([Commands](commands.md#toolchain-programs)); programs `qrust install` installed | the links are recreated by the next command; installed programs are lost |
+| `~/.qrust/bin/` | QuickRust (`qrust`, `qrust-rustc-wrapper`): links to a package manager's installation, or QuickRust's own copies when an archive or a source build set it up; `cargo` and the toolchain programs as links to `qrust` ([Commands](commands.md#toolchain-programs)); programs `qrust install` installed | the links are recreated by the next command; installed programs are lost |
 | `~/.qrust/config.toml` | the user's QuickRust configuration ([Configuration](configuration.md)) | yours |
-| `~/.qrust/setup.json` | what `qrust setup` did: where it installed, which shell files it changed, what it imported, and the digest of every QuickRust binary it or `qrust self update` installed (so an update recognises the proxies an earlier release made, which on Windows are copies of it); read by `qrust doctor`, `qrust self update` and `qrust self uninstall` | `qrust setup` writes it again |
+| `~/.qrust/setup.json` | what `qrust setup` did: where it installed, the package manager's installation it links to (`installed_by`), which shell files it changed, what it imported, and the digest of every QuickRust binary it or `qrust self update` installed (so an update recognises the proxies an earlier release made, which on Windows are copies of it); read by `qrust doctor`, `qrust self update` and `qrust self uninstall` | `qrust setup` writes it again |
 | `~/.qrust/env`, `~/.qrust/env.fish` | the scripts the shell startup files source to put `~/.qrust/bin` first on `PATH` | `qrust setup` writes them again |
 | `~/.qrust/installs.json` | what `qrust install` installed, by root and package (`qrust install --list`) | use `qrust uninstall` instead |
 | `~/.qrust/toolchains/` | the Rust toolchains QuickRust installed (`qrust toolchain list`); `channels.json` says which release each channel names, the default, and the linked toolchains | use `qrust toolchain remove`; a deleted toolchain is installed again on its next use |
@@ -101,13 +101,17 @@ No `target/` directory is created in a project.
 
 `qrust setup` writes:
 
-- `~/.qrust/bin/` with `qrust`, `qrust-rustc-wrapper` and the program links; it refuses to replace a file there that is not QuickRust's;
+- `~/.qrust/bin/` with `qrust`, `qrust-rustc-wrapper` and the program links; it refuses to replace a file there that is not QuickRust's. Run from a package manager's installation, `qrust` and `qrust-rustc-wrapper` are links to the package's, by the path its marker names; run from anything else, they are copies;
 - `~/.qrust/env` and `~/.qrust/env.fish`;
 - one line marked `# Added by `qrust setup`: QuickRust's bin first on PATH` in `~/.profile`, and in `~/.bash_profile`, `~/.bashrc` and `~/.zshenv` where they exist (`~/.zshenv` also when `zsh` is on `PATH`); `~/.config/fish/conf.d/qrust.fish` when `~/.config/fish` exists; on Windows, the user's `PATH` through PowerShell (none of this with `--no-modify-path`);
 - once, from `$CARGO_HOME` or `~/.cargo`: `credentials.toml`, and the `[registries]`, `[registry]`, `[source]`, `[net]` and `[http]` tables of `config.toml`, into `~/.qrust/cargo/` (the tables it did not import are listed);
 - `~/.qrust/setup.json`.
 
 `qrust self uninstall --yes` removes `~/.qrust` and the lines and files above that `qrust setup` added. rustup and `~/.cargo` are never changed.
+
+### A package's installation
+
+The Homebrew formula, the deb and the rpm put `qrust-installed-by.json` beside the `qrust` they install (Homebrew: `$(brew --prefix)/opt/quickrust/libexec/`; deb and rpm: `/opt/quickrust/`). It names the package manager, the path of the package's `qrust` that stays the same across its versions, and the commands that update and remove it. QuickRust reads it from beside the file `qrust` resolves to: `qrust setup` then links to that path, and `qrust self update` and `qrust self uninstall` name the manager's command and change nothing. A marker that cannot be read, or that names another binary, is an error, never taken for an installation without one.
 
 ## Retention
 

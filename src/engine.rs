@@ -286,6 +286,13 @@ fn ensure_proxies() {
         return;
     }
     let (me, _) = crate::resolve::self_identity();
+    // A package's QuickRust by the path that stays across its versions (see `package`); with a
+    // marker that cannot be read, none: setup and doctor say what is wrong with it.
+    let me = match crate::package::of(&me) {
+        Ok(Some(p)) => p.program,
+        Ok(None) => me,
+        Err(_) => return,
+    };
     if util::create_private_dir(&bin).is_err() {
         return;
     }
