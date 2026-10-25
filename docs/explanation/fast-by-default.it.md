@@ -1,0 +1,61 @@
+# Perché QuickRust è veloce per impostazione predefinita
+
+QuickRust cambia il modo in cui il tuo progetto viene compilato senza che glielo si chieda, e i cambiamenti vanno oltre quelli che ci si aspetterebbe da uno strumento che si limita a eseguire Cargo. Questa pagina spiega perché li fa, quali limiti si impone, come un cambiamento si guadagna il posto di impostazione predefinita e quanto costa ciascuno.
+
+## La tesi {#the-thesis}
+
+QuickRust è nato come osservatore: un Cargo che registra e spiega le build, alla pari con la velocità di Cargo. L'11 ottobre 2026 l'obiettivo è cambiato. Bun ha mostrato che cosa succede quando un runtime e gestore di pacchetti JavaScript è semplicemente più veloce degli strumenti che sostituisce, senza alcuna configurazione: le persone passano a usarlo e sentono la differenza fin dal primo comando. QuickRust punta allo stesso risultato per Rust. Sostituisci `cargo` con QuickRust in qualsiasi progetto e le build dovrebbero essere sensibilmente più veloci di quelle di Cargo, senza nulla da configurare.
+
+Gran parte di quella velocità era disponibile da sempre. La guida di Cargo sulle prestazioni delle build raccomanda informazioni di debug più leggere; rustc ha un frontend parallelo; esistono linker più veloci; le dipendenze compilate potrebbero essere condivise tra checkout diversi. Pochi progetti usano una qualsiasi di queste cose, perché ogni leva richiede di leggere documentazione, modificare la configurazione e convincersi che il cambiamento sia innocuo. Un'impostazione predefinita è l'unico modo in cui la maggior parte delle build ne beneficerà mai.
+
+## La regola: il programma deve comportarsi in modo identico {#the-rule-the-program-must-behave-identically}
+
+La libertà che QuickRust si prende è ristretta. Può cambiare qualsiasi cosa del modo in cui un programma viene compilato, purché il programma che compila si comporti allo stesso modo: lo stesso output per lo stesso input, gli stessi panic, gli stessi file e numeri di riga nei backtrace, gli stessi risultati dai suoi test. Non può cambiare ciò che il programma fa, e non può cambiare il sorgente, il manifest, il lockfile o qualsiasi altra cosa nel repository.
+
+Entro questa regola, la fast mode attualmente fa cinque cose:
+
+- **Informazioni di debug più leggere.** Le build di sviluppo mantengono le tabelle delle righe (`profile.dev.debug = "line-tables-only"`), così backtrace, esecuzione passo passo e breakpoint per riga continuano a funzionare, e le dipendenze non ricevono alcuna informazione di debug, come raccomanda la guida di Cargo. Generare, linkare e memorizzare le informazioni complete su variabili e tipi è buona parte di ciò che rende le build di debug lente e voluminose.
+- **Il frontend parallelo di rustc** per le unità compilate da zero: dipendenze, build di release e di CI, e la prima compilazione di un crate del workspace in una directory target.
+- **Il linker wild**, quando è installato, per le build per l'host su Linux con glibc. Il nuovo linking dopo una modifica è risultato, nelle misurazioni, nettamente più veloce che con l'LLD fornito con rustc: del 22% per ripgrep e del 34% per un piccolo binario.
+- **Una cache degli artefatti globale**: un'unità compilata una volta viene ripristinata invece di essere compilata di nuovo ([cache degli artefatti](artifact-cache.md)).
+- **Early cut-off**: dopo una modifica che i dipendenti non possono osservare, le loro compilazioni vengono saltate ([early cut-off](early-cutoff.md)).
+
+Il [riferimento della fast mode](../reference/fast-mode.md) indica le condizioni esatte e gli interruttori di ciascuna.
+
+## Le tue impostazioni vincono sempre {#your-settings-always-win}
+
+Un'impostazione predefinita è un'ipotesi su ciò che vuole la maggior parte delle persone. Chiunque abbia preso una decisione su un'impostazione ne ha presa una migliore per il proprio progetto, quindi QuickRust non la scavalca mai. Se il manifest radice, un file di configurazione di Cargo, una variabile `CARGO_PROFILE_*` o un argomento `--config` imposta una chiave del profilo, QuickRust lascia stare quella chiave e le chiavi che ne dipendono. Se hai configurato un wrapper di rustc, la cache di QuickRust e le sue leve `-Z` si fanno da parte dietro di esso. Se imposti tu stesso `RUSTC_BOOTSTRAP`, QuickRust non usa alcuna leva che ne abbia bisogno. Se hai scelto un linker, wild non viene usato.
+
+Le impostazioni del profilo arrivano a Cargo solo come argomenti `--config` dei comandi di build integrati. Non vengono scritte in alcun file né messe nell'ambiente, quindi non possono trapelare negli script di build, nei programmi eseguiti da `cargo run` o in invocazioni annidate di Cargo che non le hanno chieste. Ogni esecuzione registra che cosa la fast mode ha applicato, che cosa ha lasciato stare e perché (`policy.fast` nel [report dell'esecuzione](../reference/report-schema.md)), così la domanda "che cosa ha fatto QuickRust alla mia build?" ha sempre una risposta scritta.
+
+## Vie d'uscita {#escape-hatches}
+
+Esistono due vie d'uscita, a profondità diverse. `mode = "compat"` (o `QRUST_MODE=compat`) fa sì che QuickRust compili esattamente ciò che compila il Cargo della toolchain, continuando però a registrare e analizzare: è la modalità in cui girano i test di compatibilità, byte per byte, con Cargo come oracolo. `qrust upstream <args>` esegue il Cargo della toolchain così com'è, senza nessuna delle impostazioni, del wrapper o della registrazione di QuickRust (usa comunque la toolchain, la Cargo home e la directory di build di QuickRust). Entrambe esistono perché alla domanda "la causa è QuickRust?" si possa sempre rispondere con un solo comando. [Come compilare esattamente come fa Cargo](../how-to/build-exactly-like-cargo.md) mostra come usarle e come disattivare una leva alla volta.
+
+## Come una leva diventa un'impostazione predefinita {#how-a-lever-becomes-a-default}
+
+"Più veloce" è un'affermazione che richiede un numero, e "si comporta in modo identico" è un'affermazione che richiede prove. Ogni leva deve superare tre controlli prima di diventare un'impostazione predefinita:
+
+- **Lo speed index.** `qrust-bench` misura lo stesso ciclo di sviluppo (build a freddo, build senza modifiche, modifiche in un crate foglia e in un crate centrale, check, build dei test, ricompilazione dopo un clean, un secondo checkout) tramite QuickRust e tramite Cargo puro, su tre carichi di lavoro reali: il primo commit di QuickRust stesso, ripgrep e un servizio axum. L'indice è la media geometrica del tempo di Cargo diviso per quello di QuickRust. Una variante chiamata `cargo-tuned` applica le impostazioni che qualsiasi utente potrebbe mettere nella propria configurazione, così l'indice mostra anche quanto QuickRust aggiunge oltre ciò che la sola configurazione potrebbe fare. I checkpoint sono registrati in [`benchmarks/PROGRESS.md`](../../benchmarks/PROGRESS.md): al checkpoint 2 (13 ottobre 2026) l'indice era 2,158 rispetto a Cargo, mentre `cargo-tuned` arrivava a 1,066. Il metodo è descritto in [`benchmarks/README.md`](../../benchmarks/README.md).
+- **Il controllo di correttezza** (`qrust-bench verify`). La suite di test di ciascun carico di lavoro viene compilata ed eseguita dal Cargo upstream e da QuickRust, partendo da checkout nuovi, due volte per QuickRust (la seconda volta con una cache degli artefatti già calda, così i test girano anche su binari compilati da unità ripristinate). Un test il cui esito differisce in modo sistematico tra Cargo e QuickRust fa fallire il controllo.
+- **Il controllo del cut-off** (`qrust-bench cutoff`), per l'early cut-off: dopo modifiche casuali all'interno dei corpi delle funzioni, ciò che il ciclo di sviluppo ha ripristinato e linkato di nuovo deve essere byte per byte ciò che produce la compilazione da zero del sorgente modificato.
+
+Una misurazione può anche eliminare una leva o restringerla. Il frontend parallelo all'inizio veniva applicato a ogni unità, e il checkpoint 1 ha mostrato che rallentava la modifica al crate centrale di ripgrep a 0,58 volte la velocità di Cargo: nelle piccole ricompilazioni incrementali il suo avvio costa più di quanto faccia risparmiare. Ora viene applicato solo alle compilazioni da zero, e al checkpoint 2 quella modifica gira a 4,60 volte la velocità di Cargo.
+
+## Quanto costano le leve {#what-the-levers-cost}
+
+La regola dice che il comportamento del programma è identico; non dice che lo sia ogni byte. Ogni leva ha una differenza visibile, e le differenze sono dichiarate qui invece di essere scoperte più tardi.
+
+**Solo tabelle delle righe.** Un debugger che esegue passo passo una build di sviluppo vede file e righe ma non le variabili locali né i loro tipi. È lo scopo stesso dell'impostazione, ed è anche la differenza che ha più probabilità di essere notata. Chi ha bisogno delle informazioni di debug complete imposta `[profile.dev] debug = true` come farebbe con Cargo, e QuickRust a quel punto lascia stare le impostazioni di debug.
+
+**`RUSTC_BOOTSTRAP` e `-Zallow-features=`.** Il frontend parallelo e la scelta del linker stanno dietro flag `-Z`, che un compilatore stabile accetta solo con `RUSTC_BOOTSTRAP=1`. Quella variabile permetterebbe al compilatore di accettare anche gli attributi `#![feature]`, il che trasformerebbe silenziosamente una build stabile in una nightly. Per questo QuickRust la imposta solo per i processi del compilatore delle unità pianificate da Cargo, sempre insieme a `-Zallow-features=`, un elenco vuoto di feature consentite, così un crate che abilita una feature nightly viene comunque rifiutato (con l'errore di rustc "not in the list of allowed features" invece della formulazione del canale stabile). Gli script di build, e le sonde del compilatore che eseguono per rilevare le feature, non la vedono mai, quindi i crate non passano a percorsi di codice nightly. La variabile fa anche parte dell'identità di una sessione incrementale, perciò QuickRust la imposta per ogni compilazione di un'unità di questo tipo, comprese le ricompilazioni incrementali che non ricevono flag `-Z`, per conservarne le sessioni.
+
+**Un `OUT_DIR` estraneo.** La maggior parte dei crate ripristinati dalla cache degli artefatti è esattamente ciò che produrrebbe compilarli qui. Un tipo non lo è del tutto: una dipendenza che include con `include!` codice generato dal suo script di build, come fa serde, e che è stata compilata la prima volta in un'altra directory target. I suoi messaggi di panic e le informazioni di debug per il codice generato nominano quell'altra directory. Il comportamento non ne risente. QuickRust lo segnala la prima volta che succede (una volta per ogni home di QuickRust), e il report dell'esecuzione conta queste unità (`cache.artifacts.restored_with_foreign_out_dir`).
+
+**Hash dei crate diversi.** Con l'early cut-off, le librerie sono compilate dal driver di QuickRust, il cui hash del crate copre solo ciò che i dipendenti possono osservare. I metadati e le rlib delle librerie differiscono quindi da quelli di rustc in quell'hash, che è un identificatore che nulla confronta tra compilatori diversi ([early cut-off](early-cutoff.md)).
+
+**Artefatti separati.** Poiché le impostazioni del profilo sono diverse, Cargo dà agli artefatti della fast mode nomi diversi da quelli del Cargo puro. Se entrambi condividono una directory target, ciascuno mantiene il proprio insieme, e alternare tra i due non ricompila nulla.
+
+## Dove si traccia il confine {#where-the-line-is-drawn}
+
+Tutto ciò che cambia quello che un programma fa è escluso, per quanto sia veloce: abbassare i livelli di ottimizzazione o cambiare la strategia di panic di un profilo farebbe di una build di sviluppo un programma diverso. Le idee che rispettano la regola devono comunque superare i controlli, e alcune non ci riescono. Inizializzare la directory di build di un nuovo worktree con una copia di quella di un worktree fratello è stato misurato e scartato: la copia non può evitare di compilare i crate del workspace stesso, i cui output nominano il proprio checkout, e una copia i cui sorgenti sembrano più vecchi degli output del fratello potrebbe essere scambiata per aggiornata a torto ([`benchmarks/README.md`](../../benchmarks/README.md)). Le impostazioni predefinite sono ciò che i benchmark hanno dimostrato essere sia sicuro sia più veloce, e nient'altro.
