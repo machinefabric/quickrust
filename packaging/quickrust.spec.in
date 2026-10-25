@@ -23,18 +23,24 @@ URL:            https://github.com/machinefabric/quickrust
 %description
 QuickRust runs every Cargo command, with Rust toolchains, a shared build cache and build output
 that it manages. Installs the qrust program under /opt/quickrust with a /usr/bin/qrust launcher;
-run `qrust setup` to make it your cargo.
+run `qrust setup` to make it your cargo. dnf keeps it current.
 
 %install
 rm -rf %{buildroot}
 mkdir -p %{buildroot}
 # An undefined macro makes rpmbuild fail, which is intended.
 cp -a %{quickrust_payload}/. %{buildroot}/
+# Says that the package manager installed this QuickRust: `qrust setup` links to it instead of
+# copying, and `qrust self update` and `qrust self uninstall` leave it to the package manager.
+cat > %{buildroot}/opt/quickrust/qrust-installed-by.json <<'QRUST_INSTALLED_BY'
+{"format": 1, "manager": "dnf", "program": "/opt/quickrust/qrust", "update": "sudo dnf upgrade quickrust", "uninstall": "sudo dnf remove quickrust"}
+QRUST_INSTALLED_BY
 
 %files
 %dir /opt/quickrust
 /opt/quickrust/qrust
 /opt/quickrust/qrust-rustc-wrapper
+/opt/quickrust/qrust-installed-by.json
 
 %post
 if command -v update-alternatives >/dev/null 2>&1; then

@@ -1,5 +1,11 @@
 #!/bin/sh
 set -e
+# Says that the package manager installed this QuickRust: `qrust setup` links to it instead of
+# copying, and `qrust self update` and `qrust self uninstall` leave it to the package manager.
+# Written here, as the package carries the release archive's files only; removed by postrm.
+cat > @{prefix}/qrust-installed-by.json <<'QRUST_INSTALLED_BY'
+{"format": 1, "manager": "apt", "program": "@{prefix}/qrust", "update": "sudo apt install --only-upgrade quickrust", "uninstall": "sudo apt remove quickrust"}
+QRUST_INSTALLED_BY
 if command -v update-alternatives >/dev/null 2>&1; then
     update-alternatives --install @{link} qrust @{prefix}/qrust 100 \
         || ln -sf @{prefix}/qrust @{link}

@@ -7,8 +7,18 @@
 //! configuration — and installs the default toolchain. Running it again repairs what is missing
 //! and never imports again. `setup.json` in QuickRust's home records what it did, for `doctor` and
 //! for uninstalling.
+//!
+//! There is one `qrust` per machine. Started from a package manager's install (see `package`), setup
+//! copies nothing: `~/.qrust/bin`'s `qrust` and rustc wrapper are links to the package's, by the path
+//! that stays across its versions, so every `qrust` on `PATH` is that one program and the package
+//! manager's upgrade upgrades what runs; a copy an earlier setup made there is replaced by the link.
+//! Started from anything else (an archive, a source build), setup copies the binary into
+//! `~/.qrust/bin`, and that copy is the install: `qrust self update` keeps it current and `qrust self
+//! uninstall` removes it. A copy does not set up over a package's install, and a package's install
+//! is updated and removed by its manager, never by QuickRust.
 
 use crate::engine;
+use crate::package::Package;
 use crate::util;
 use serde_json::{json, Value};
 use std::fs;
@@ -50,6 +60,10 @@ pub struct Done {
     pub path_edits: Vec<PathBuf>,
     /// When this run imported from Cargo's home.
     pub import: Option<Imported>,
+    /// The package manager's install `bin` links to; `None`: `bin` holds QuickRust's own copy.
+    pub package: Option<Package>,
+    /// A copy of QuickRust in `bin` that this run replaced with the link to the package's.
+    pub replaced_copy: Option<PathBuf>,
 }
 
 /// An import from Cargo's home: from where, what was imported, what was not (and why).
@@ -59,7 +73,15 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
     let bin = engine::bin_dir();
     util::create_private_dir(&bin).map_err(|e| format!("cannot create {}: {}", bin.display(), e))?;
     let previous = util::read_json(&record_path());
-    let installed = install_binaries(&bin)?;
+    let (me, _) = crate::resolve::self_identity();
+    let package = crate::package::of(&me)?;
+    let (installed, replaced_copy) = match &package {
+        Some(p) => link_package(&bin, p)?,
+        None => {
+            refuse_over_package(&bin)?;
+            (install_from(&bin, &me)?, None)
+        }
+    };
     let proxies = link_proxies(&bin, &installed.qrust, &known_binaries(previous.as_ref(), &installed), PROXIES)?;
     let path_edits = if opts.modify_path { put_on_path(&bin)? } else { vec![] };
     let import = match previous.as_ref().and_then(|r| r.get("imported_from")).filter(|v| !v.is_null()) {
@@ -70,6 +92,10 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
     remember_binary(&mut record, &installed.qrust)?;
     record["version"] = json!(env!("CARGO_PKG_VERSION"));
     record["bin"] = json!(util::path_str(&bin));
+    record["installed_by"] = match &package {
+        Some(p) => json!({ "manager": p.manager, "program": util::path_str(&p.program) }),
+        None => Value::Null,
+    };
     record["set_up_at"] = json!(util::iso8601(util::now_wall_ns()));
     let mut edits: Vec<Value> = record["path_edits"].as_array().cloned().unwrap_or_default();
     for e in &path_edits {
@@ -86,20 +112,118 @@ pub fn setup(opts: &Options) -> Result<Done, String> {
         record["imported_from"] = Value::Null;
     }
     util::write_json(&record_path(), &record).map_err(|e| format!("cannot write {}: {}", record_path().display(), e))?;
-    Ok(Done { version: env!("CARGO_PKG_VERSION").to_string(), bin, proxies, path_edits, import })
+    Ok(Done { version: env!("CARGO_PKG_VERSION").to_string(), bin, proxies, path_edits, import, package, replaced_copy })
 }
 
 /// What an install put in `bin`: `bin/qrust`, and the digest of the `qrust` it replaced, if it
 /// replaced one.
+#[derive(Debug)]
 struct Installed {
     qrust: PathBuf,
     replaced: Option<String>,
 }
 
-/// Copies the running QuickRust and its rustc wrapper into `bin` (unless they run from there).
-fn install_binaries(bin: &Path) -> Result<Installed, String> {
+/// Makes `bin`'s `qrust` and rustc wrapper links to the package's, by the path that stays across
+/// the package's versions. A copy of QuickRust there (an earlier setup's, from an archive or a
+/// package before setup linked) is replaced, and returned; anything else is refused.
+#[cfg(unix)]
+fn link_package(bin: &Path, package: &Package) -> Result<(Installed, Option<PathBuf>), String> {
+    let wrapper = package.wrapper();
+    if !util::is_executable(&wrapper) {
+        return Err(format!("qrust-rustc-wrapper is not at {}, where {} installs it beside qrust; reinstall the package", wrapper.display(), package.manager));
+    }
+    let qrust = util::exe_candidates(bin, "qrust").remove(0);
+    let mut replaced = None;
+    for (link, to) in [(qrust.clone(), package.program.clone()), (util::exe_candidates(bin, "qrust-rustc-wrapper").remove(0), wrapper)] {
+        match fs::symlink_metadata(&link) {
+            Ok(md) if md.file_type().is_symlink() => {}
+            Ok(md) if md.is_file() => {
+                if link == qrust {
+                    replaced = Some(link.clone());
+                }
+            }
+            Ok(_) => return Err(format!("{} exists and is not QuickRust; move it away and run `qrust setup` again", link.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("cannot read {}: {}", link.display(), e)),
+        }
+        let staged = bin.join(format!(".{}.{}", link.file_name().map(util::lossy).unwrap_or_default(), std::process::id()));
+        let _ = fs::remove_file(&staged);
+        std::os::unix::fs::symlink(&to, &staged).and_then(|_| fs::rename(&staged, &link)).map_err(|e| {
+            let _ = fs::remove_file(&staged);
+            format!("cannot link {} to {}: {}", link.display(), to.display(), e)
+        })?;
+    }
+    Ok((Installed { qrust, replaced: None }, replaced))
+}
+
+/// No package manager installs QuickRust where proxies are copies (`package::of` refuses a marker
+/// there).
+#[cfg(not(unix))]
+fn link_package(_bin: &Path, package: &Package) -> Result<(Installed, Option<PathBuf>), String> {
+    Err(format!("{} cannot install QuickRust on this platform; install it from its archive", package.manager))
+}
+
+/// A QuickRust that installs itself does not set up over a package manager's: `bin` links to the
+/// package's `qrust` while that package is installed. A link the package left behind (it was
+/// removed) is replaced.
+fn refuse_over_package(bin: &Path) -> Result<(), String> {
+    let qrust = util::exe_candidates(bin, "qrust").remove(0);
+    if !fs::symlink_metadata(&qrust).is_ok_and(|m| m.file_type().is_symlink()) || !qrust.exists() {
+        return Ok(());
+    }
+    match crate::package::of(&qrust)? {
+        Some(p) => Err(format!(
+            "{} links to the QuickRust {} installed ({}), and `{}` keeps it current; to set up this QuickRust instead, remove that one first (`{}`)",
+            qrust.display(),
+            p.manager,
+            p.program.display(),
+            p.update,
+            p.uninstall
+        )),
+        None => Ok(()),
+    }
+}
+
+/// What only a QuickRust that installed itself does to itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OwnAction {
+    Update,
+    Uninstall,
+}
+
+/// The package manager's install this QuickRust is, if it is one: the running binary's, or the one
+/// `bin` links to.
+fn package_install(bin: &Path, me: &Path) -> Result<Option<Package>, String> {
+    if let Some(p) = crate::package::of(me)? {
+        return Ok(Some(p));
+    }
+    let qrust = util::exe_candidates(bin, "qrust").remove(0);
+    if qrust.exists() {
+        crate::package::of(&qrust)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Refuses `action` when a package manager installed QuickRust here, naming the manager's command:
+/// the package is its manager's to update and remove.
+pub fn refuse_for_package(action: OwnAction) -> Result<(), String> {
     let (me, _) = crate::resolve::self_identity();
-    install_from(bin, &me)
+    refuse_for_package_in(&engine::bin_dir(), &me, action)
+}
+
+fn refuse_for_package_in(bin: &Path, me: &Path, action: OwnAction) -> Result<(), String> {
+    let Some(p) = package_install(bin, me)? else { return Ok(()) };
+    Err(match action {
+        OwnAction::Update => format!("QuickRust was installed with {}, which updates it: `{}`", p.manager, p.update),
+        OwnAction::Uninstall => format!(
+            "QuickRust was installed with {}, which removes it: `{}`; QuickRust's home ({}: toolchains, installed programs, caches, records) and the lines marked `{}` in your shell startup files stay, for you to delete",
+            p.manager,
+            p.uninstall,
+            util::qrust_home().display(),
+            MARK
+        ),
+    })
 }
 
 /// Copies the QuickRust binary `qrust` and the rustc wrapper next to it into `bin` (unless they are
@@ -357,6 +481,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Removes what setup added to shell startup files and QuickRust's home with everything in it:
 /// installed toolchains and programs, caches, records. Returns what was removed.
 pub fn uninstall() -> Result<Vec<String>, String> {
+    refuse_for_package(OwnAction::Uninstall)?;
     let mut removed = vec![];
     let record = util::read_json(&record_path());
     for f in record.iter().flat_map(|r| r["path_edits"].as_array().cloned().unwrap_or_default()).filter_map(|v| v.as_str().map(PathBuf::from)) {
@@ -434,6 +559,7 @@ pub fn self_update(other: &str) -> Result<Updated, String> {
 
 /// [`self_update`] with everything a build bakes in passed explicitly.
 pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::Trust, charter_roots: &[String], now: u64) -> Result<Updated, String> {
+    refuse_for_package(OwnAction::Update)?;
     let bin = engine::bin_dir();
     let installed = util::exe_candidates(&bin, "qrust").remove(0);
     if !installed.is_file() {
@@ -488,11 +614,163 @@ pub fn self_update_from(registry: &str, channel: &str, trust: &crate::release::T
     out
 }
 
-/// What `doctor` reports: whether QuickRust is set up, and whether its `bin` comes first on `PATH`.
-pub fn status() -> (Option<Value>, bool) {
-    let record = util::read_json(&record_path());
-    let first = util::which("cargo").map(|c| c.parent() == Some(engine::bin_dir().as_path())).unwrap_or(false);
-    (record, first)
+/// What setup recorded (`setup.json`), if QuickRust is set up.
+pub fn record() -> Option<Value> {
+    util::read_json(&record_path())
+}
+
+/// A `qrust` or `cargo` that comes before QuickRust's on `PATH` and is another program.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shadow {
+    /// The entry on `PATH`.
+    pub program: PathBuf,
+    /// The file it is.
+    pub is: PathBuf,
+    /// The package manager that installed it, when it is a package's QuickRust.
+    pub package: Option<String>,
+    /// What puts its directory on `PATH` (see `origin`).
+    pub origin: Option<Origin>,
+}
+
+/// The line of a shell startup file that names a directory on `PATH`, and the startup files that
+/// source the file it is in, outermost first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Origin {
+    pub file: PathBuf,
+    pub line: usize,
+    pub sourced_from: Vec<(PathBuf, usize)>,
+    /// How many other lines name it too, earlier in the order the shell reads them.
+    pub others: usize,
+}
+
+/// What `PATH` makes of QuickRust: whether a `cargo` on it is QuickRust's, and what comes before
+/// QuickRust's `qrust` and `cargo` under those names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OnPath {
+    pub cargo: bool,
+    pub shadows: Vec<Shadow>,
+}
+
+/// Looks along `path` for `qrust` and `cargo`, which are QuickRust's when they are the program
+/// `qrust` (the one setup installed) is: the same file once links are followed or, where proxies are
+/// copies, the same content. `startup` are the shell's startup files, in the order it reads them,
+/// for what puts each directory on `PATH` (`home`: how they name the home directory).
+pub fn on_path(path: &std::ffi::OsStr, qrust: &Path, startup: &[PathBuf], home: Option<&Path>) -> OnPath {
+    let ours = util::canon(qrust);
+    let digest = (PROXIES == Proxies::Copies).then(|| util::blake3_file(qrust).ok()).flatten();
+    let same = |p: &Path| util::canon(p) == ours || digest.as_ref().is_some_and(|d| util::blake3_file(p).ok().as_ref() == Some(d));
+    let mut found = [false, false];
+    let mut shadows = vec![];
+    for dir in std::env::split_paths(path).filter(|d| !d.as_os_str().is_empty()) {
+        for (i, name) in ["qrust", "cargo"].iter().enumerate() {
+            if found[i] {
+                continue;
+            }
+            let Some(entry) = util::exe_candidates(&dir, name).into_iter().find(|c| util::is_executable(c)) else { continue };
+            if same(&entry) {
+                found[i] = true;
+            } else {
+                let package = crate::package::of(&entry).ok().flatten().map(|p| p.manager);
+                shadows.push(Shadow { is: util::canon(&entry), program: entry, package, origin: origin(&dir, startup, home) });
+            }
+        }
+        if found == [true, true] {
+            break;
+        }
+    }
+    OnPath { cargo: found[1], shadows }
+}
+
+/// The shell's startup files, in the order it reads them at login: those of `shell` (zsh, bash,
+/// fish, or a POSIX shell's) in `home` and in `etc`, after the directories macOS's `path_helper`
+/// reads (`/etc/paths`, `/etc/paths.d`).
+pub fn startup_files(shell: &str, home: &Path, etc: &Path) -> Vec<PathBuf> {
+    let mut files = vec![etc.join("paths")];
+    let mut extra: Vec<PathBuf> = fs::read_dir(etc.join("paths.d")).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    extra.sort();
+    files.extend(extra);
+    let name = Path::new(shell).file_name().map(util::lossy).unwrap_or_default();
+    match name.as_str() {
+        "zsh" => files.extend([etc.join("zshenv"), home.join(".zshenv"), etc.join("zprofile"), home.join(".zprofile"), etc.join("zshrc"), home.join(".zshrc"), etc.join("zlogin"), home.join(".zlogin")]),
+        "bash" => {
+            files.push(etc.join("profile"));
+            // bash reads the first of these that exists.
+            files.extend([".bash_profile", ".bash_login", ".profile"].iter().map(|f| home.join(f)).find(|f| f.is_file()));
+            files.extend([etc.join("bash.bashrc"), home.join(".bashrc")]);
+        }
+        "fish" => {
+            let mut conf: Vec<PathBuf> = fs::read_dir(home.join(".config/fish/conf.d")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "fish")).collect();
+            conf.sort();
+            files.extend(conf);
+            files.push(home.join(".config/fish/config.fish"));
+        }
+        _ => files.extend([etc.join("profile"), home.join(".profile")]),
+    }
+    files
+}
+
+/// The last line, in the order the shell reads `startup` (and what they source), that names `dir`:
+/// literally, through `$HOME`, `${HOME}` or `~` (`home`), as a line of `/etc/paths`, or as the
+/// Homebrew prefix `brew shellenv` adds. The last is the one that put it where it is.
+fn origin(dir: &Path, startup: &[PathBuf], home: Option<&Path>) -> Option<Origin> {
+    let mut forms = vec![util::path_str(dir)];
+    if let Some(rel) = home.and_then(|h| dir.strip_prefix(h).ok()) {
+        let rel = util::path_str(rel);
+        forms.extend([format!("$HOME/{rel}"), format!("${{HOME}}/{rel}"), format!("~/{rel}")]);
+    }
+    let homebrew = util::is_executable(&dir.join("brew"));
+    let names = |line: &str, whole_lines: bool| {
+        if whole_lines {
+            return forms.iter().any(|f| line == f);
+        }
+        (homebrew && line.contains("brew shellenv"))
+            || forms.iter().any(|f| line.match_indices(f.as_str()).any(|(i, _)| line[i + f.len()..].chars().next().map_or(true, |c| !(c.is_alphanumeric() || c == '_' || c == '-' || c == '.'))))
+    };
+    let mut hits: Vec<Origin> = vec![];
+    let mut seen = std::collections::HashSet::new();
+    for file in startup {
+        scan(file, &[], &names, home, &mut seen, &mut hits);
+    }
+    let others = hits.len().saturating_sub(1);
+    hits.pop().map(|o| Origin { others, ..o })
+}
+
+/// Collects the lines of `file` that `names` (and of the files it sources, in order) into `hits`.
+fn scan(file: &Path, chain: &[(PathBuf, usize)], names: &dyn Fn(&str, bool) -> bool, home: Option<&Path>, seen: &mut std::collections::HashSet<PathBuf>, hits: &mut Vec<Origin>) {
+    if chain.len() > 8 || !seen.insert(util::canon(file)) {
+        return;
+    }
+    let Ok(text) = fs::read_to_string(file) else { return };
+    // `/etc/paths` and `/etc/paths.d/*` list directories, one per line.
+    let whole_lines = file.parent().is_some_and(|d| d.file_name().is_some_and(|n| n == "paths.d")) || file.file_name().is_some_and(|n| n == "paths");
+    for (i, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if names(line, whole_lines) {
+            hits.push(Origin { file: file.to_path_buf(), line: i + 1, sourced_from: chain.to_vec(), others: 0 });
+        }
+        if let Some(sourced) = sourced_file(line, file, home) {
+            let mut deeper = chain.to_vec();
+            deeper.push((file.to_path_buf(), i + 1));
+            scan(&sourced, &deeper, names, home, seen, hits);
+        }
+    }
+}
+
+/// The file a `source FILE` or `. FILE` line reads, when it names one plainly (a path, through
+/// `$HOME`, `${HOME}` or `~`, relative to the sourcing file's directory otherwise).
+fn sourced_file(line: &str, from: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let rest = line.strip_prefix("source ").or_else(|| line.strip_prefix(". "))?;
+    let word = rest.split_whitespace().next()?.trim_matches(|c| c == '"' || c == '\'');
+    let expanded = match (word.strip_prefix("$HOME/").or_else(|| word.strip_prefix("${HOME}/")).or_else(|| word.strip_prefix("~/")), home) {
+        (Some(rel), Some(h)) => h.join(rel),
+        (Some(_), None) => return None,
+        (None, _) if word.contains('$') => return None,
+        (None, _) => from.parent().unwrap_or(Path::new("/")).join(word),
+    };
+    expanded.is_file().then_some(expanded)
 }
 
 #[cfg(test)]
@@ -601,5 +879,200 @@ mod tests {
         assert!(refused.contains("is not QuickRust"), "{refused}");
         assert_eq!(fs::read_to_string(&cargo).unwrap(), "somebody else's cargo");
         let _ = fs::remove_dir_all(&dir);
+    }
+    /// A package's QuickRust as Homebrew lays it out: `qrust` and its wrapper in the versioned
+    /// `Cellar/quickrust/<version>/libexec` of `dir`, reached by `opt/quickrust` (which the upgrade
+    /// moves), with the marker. Returns the `qrust` by its stable path.
+    #[cfg(unix)]
+    fn packaged(dir: &Path, version: &str) -> PathBuf {
+        let libexec = dir.join("Cellar/quickrust").join(version).join("libexec");
+        release(&libexec, &format!("QuickRust {version}"));
+        let opt = dir.join("opt/quickrust");
+        fs::create_dir_all(opt.parent().unwrap()).unwrap();
+        let _ = fs::remove_file(&opt);
+        std::os::unix::fs::symlink(libexec.parent().unwrap(), &opt).unwrap();
+        let program = opt.join("libexec/qrust");
+        let marker = json!({ "format": 1, "manager": "Homebrew", "program": util::path_str(&program), "update": "brew upgrade quickrust", "uninstall": "brew uninstall quickrust" });
+        fs::write(libexec.join(crate::package::MARKER), marker.to_string()).unwrap();
+        program
+    }
+
+    // TEST0307: Setup from a package links to it by its stable path and replaces a copy
+    #[cfg(unix)]
+    #[test]
+    fn test0307_setup_from_a_package_links_to_it_by_its_stable_path_and_replaces_a_copy() {
+        let dir = std::env::temp_dir().join(format!("qrust-setup-{}", util::new_id()));
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        // A machine an archive set up first: QuickRust's own copy in `bin`, proxies linking to it.
+        let copy = install_from(&bin, &release(&dir.join("archive"), "QuickRust archive")).unwrap();
+        link_proxies(&bin, &copy.qrust, &[], Proxies::Links).unwrap();
+        assert!(fs::symlink_metadata(bin.join("qrust")).unwrap().is_file());
+        // Then a package's setup: the copy goes, a link to the package by its stable path stays.
+        let program = packaged(&dir, "1.0");
+        let package = crate::package::of(&program).unwrap().expect("the package's marker");
+        let (linked, replaced) = link_package(&bin, &package).unwrap();
+        link_proxies(&bin, &linked.qrust, &[], Proxies::Links).unwrap();
+        assert_eq!(replaced.as_deref(), Some(bin.join("qrust").as_path()), "a copy was replaced without saying so");
+        assert_eq!(fs::read_link(bin.join("qrust")).unwrap(), program, "not linked by the stable path");
+        assert_eq!(fs::read_link(bin.join("qrust-rustc-wrapper")).unwrap(), dir.join("opt/quickrust/libexec/qrust-rustc-wrapper"));
+        // `cargo` and every proxy are the package's program; nothing in `bin` is a copy.
+        for name in std::iter::once("cargo").chain(engine::PROXIES.iter().copied()) {
+            assert_eq!(fs::read_to_string(bin.join(name)).unwrap(), "QuickRust 1.0", "{name}");
+        }
+        assert!(fs::read_dir(&bin).unwrap().flatten().all(|e| e.file_type().unwrap().is_symlink()), "a copy is left in bin");
+        // The package manager's upgrade moves `opt`: what runs is the new version, untouched by setup.
+        packaged(&dir, "2.0");
+        assert_eq!(fs::read_to_string(bin.join("cargo")).unwrap(), "QuickRust 2.0");
+        // Setup again from the package changes nothing, and replaces no copy.
+        let package = crate::package::of(&bin.join("qrust")).unwrap().unwrap();
+        assert_eq!(link_package(&bin, &package).unwrap().1, None);
+        // A package without its rustc wrapper, or something else at `qrust`, is refused.
+        fs::remove_file(bin.join("qrust")).unwrap();
+        fs::create_dir(bin.join("qrust")).unwrap();
+        assert!(link_package(&bin, &package).unwrap_err().contains("is not QuickRust"));
+        fs::remove_dir(bin.join("qrust")).unwrap();
+        fs::remove_file(dir.join("Cellar/quickrust/2.0/libexec/qrust-rustc-wrapper")).unwrap();
+        assert!(link_package(&bin, &package).unwrap_err().contains("qrust-rustc-wrapper is not at"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // TEST0308: A package's QuickRust is updated and removed by its manager, never by itself
+    #[cfg(unix)]
+    #[test]
+    fn test0308_a_packages_quickrust_is_updated_and_removed_by_its_manager_never_by_itself() {
+        let dir = std::env::temp_dir().join(format!("qrust-setup-{}", util::new_id()));
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let standalone = release(&dir.join("archive"), "QuickRust archive");
+        // A QuickRust that installed itself does both.
+        let copy = install_from(&bin, &standalone).unwrap();
+        assert!(refuse_for_package_in(&bin, &copy.qrust, OwnAction::Update).is_ok());
+        assert!(refuse_for_package_in(&bin, &copy.qrust, OwnAction::Uninstall).is_ok());
+        // Once `bin` links to a package, whichever QuickRust runs: the package's manager.
+        let program = packaged(&dir, "1.0");
+        link_package(&bin, &crate::package::of(&program).unwrap().unwrap()).unwrap();
+        for me in [&program, &bin.join("qrust"), &standalone] {
+            let update = refuse_for_package_in(&bin, me, OwnAction::Update).unwrap_err();
+            assert!(update.contains("installed with Homebrew") && update.contains("`brew upgrade quickrust`"), "{update}");
+            let uninstall = refuse_for_package_in(&bin, me, OwnAction::Uninstall).unwrap_err();
+            assert!(uninstall.contains("`brew uninstall quickrust`") && uninstall.contains(MARK), "{uninstall}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // TEST0309: A copy does not set up over a package install but over one that was removed
+    #[cfg(unix)]
+    #[test]
+    fn test0309_a_copy_does_not_set_up_over_a_package_install_but_over_one_that_was_removed() {
+        let dir = std::env::temp_dir().join(format!("qrust-setup-{}", util::new_id()));
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        assert!(refuse_over_package(&bin).is_ok(), "nothing set up");
+        let program = packaged(&dir, "1.0");
+        link_package(&bin, &crate::package::of(&program).unwrap().unwrap()).unwrap();
+        let refused = refuse_over_package(&bin).unwrap_err();
+        assert!(refused.contains("Homebrew") && refused.contains("`brew uninstall quickrust`"), "{refused}");
+        // `brew uninstall` took the package; the link it left leads nowhere, and a copy may go there.
+        fs::remove_dir_all(dir.join("Cellar")).unwrap();
+        assert!(refuse_over_package(&bin).is_ok());
+        let copy = install_from(&bin, &release(&dir.join("archive"), "QuickRust archive")).unwrap();
+        assert!(fs::symlink_metadata(&copy.qrust).unwrap().is_file());
+        assert_eq!(fs::read_to_string(&copy.qrust).unwrap(), "QuickRust archive");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // TEST0310: Doctor names what comes before QuickRust on PATH and the startup line that put it there
+    #[cfg(unix)]
+    #[test]
+    fn test0310_doctor_names_what_comes_before_quickrust_on_path_and_the_line_that_put_it_there() {
+        let dir = std::env::temp_dir().join(format!("qrust-setup-{}", util::new_id()));
+        let (home, etc) = (dir.join("home"), dir.join("etc"));
+        let bin = home.join(".qrust/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let program = packaged(&dir.join("homebrew"), "1.0");
+        // Homebrew's bin: its `brew`, its link to the package's `qrust`, and Homebrew's own Rust `cargo`.
+        let brew_bin = dir.join("homebrew/bin");
+        fs::create_dir_all(&brew_bin).unwrap();
+        release(&dir.join("homebrew/rust"), "cargo from Homebrew's rust");
+        fs::rename(dir.join("homebrew/rust/qrust"), brew_bin.join("cargo")).unwrap();
+        fs::write(brew_bin.join("brew"), "brew").unwrap();
+        fs::set_permissions(brew_bin.join("brew"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        std::os::unix::fs::symlink(&program, brew_bin.join("qrust")).unwrap();
+        // ~/.zprofile runs `brew shellenv` and puts QuickRust's bin first; then ~/.zshrc sources a
+        // toolset's profile, which runs `brew shellenv` again. A stray directory with another
+        // `qrust` comes from ~/.zprofile.
+        let stray = home.join("tools/bin");
+        release(&stray, "some other qrust");
+        fs::create_dir_all(home.join("toolset")).unwrap();
+        fs::write(home.join(".zprofile"), "eval \"$(brew shellenv)\"\nexport PATH=\"$HOME/tools/bin:$PATH\"\n. \"$HOME/.qrust/env\"\n").unwrap();
+        fs::write(home.join(".zshrc"), "# toolset\nsource ~/toolset/profile.zsh\n").unwrap();
+        fs::write(home.join("toolset/profile.zsh"), format!("export A=1\neval \"$({}/brew shellenv)\"\n", brew_bin.display())).unwrap();
+        let startup = startup_files("/bin/zsh", &home, &etc);
+        let path = std::env::join_paths([&stray, &brew_bin, &bin]).unwrap();
+        let qrust = bin.join("qrust");
+        // `bin` still holds an archive's copy: Homebrew's `qrust` is another QuickRust, and says so.
+        let copy = install_from(&bin, &release(&dir.join("archive"), "QuickRust archive")).unwrap();
+        link_proxies(&bin, &copy.qrust, &[], Proxies::Links).unwrap();
+        let on = on_path(&path, &qrust, &startup, Some(&home));
+        let shadow = |p: &Path| on.shadows.iter().find(|s| s.program == p).cloned().unwrap_or_else(|| panic!("{} not named: {:?}", p.display(), on.shadows));
+        assert_eq!(on.shadows.len(), 3, "{:?}", on.shadows);
+        let stray_qrust = shadow(&stray.join("qrust"));
+        let o = stray_qrust.origin.expect("the line that puts it there");
+        assert_eq!((o.file, o.line, o.sourced_from.len(), o.others), (home.join(".zprofile"), 2, 0, 0));
+        let brew_qrust = shadow(&brew_bin.join("qrust"));
+        assert_eq!(brew_qrust.package.as_deref(), Some("Homebrew"));
+        // The line that put it ahead is the last of the two that name it.
+        let o = brew_qrust.origin.expect("brew shellenv puts it there");
+        assert_eq!((o.file, o.line, o.sourced_from, o.others), (home.join("toolset/profile.zsh"), 2, vec![(home.join(".zshrc"), 2)], 1));
+        assert!(shadow(&brew_bin.join("cargo")).package.is_none());
+        assert!(on.cargo, "QuickRust's cargo is on PATH, after the others");
+        // Once setup links `bin` to the package, Homebrew's `qrust` is QuickRust's: only the stray
+        // `qrust` and Homebrew's Rust `cargo` are left.
+        link_package(&bin, &crate::package::of(&program).unwrap().unwrap()).unwrap();
+        let on = on_path(&path, &qrust, &startup, Some(&home));
+        let named: Vec<&Path> = on.shadows.iter().map(|s| s.program.as_path()).collect();
+        assert_eq!(named, [stray.join("qrust").as_path(), brew_bin.join("cargo").as_path()]);
+        // Without QuickRust's bin on PATH there is no QuickRust `cargo`, and a directory no startup
+        // file names has no origin.
+        let elsewhere = dir.join("elsewhere");
+        release(&elsewhere, "yet another");
+        let on = on_path(&std::env::join_paths([&elsewhere]).unwrap(), &qrust, &startup, Some(&home));
+        assert!(!on.cargo && on.shadows.len() == 1 && on.shadows[0].origin.is_none(), "{:?}", on);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // TEST0311: Every package's marker is one QuickRust reads, naming its manager's commands
+    #[cfg(unix)]
+    #[test]
+    fn test0311_every_packages_marker_is_one_quickrust_reads_naming_its_managers_commands() {
+        let packaging = Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        // The marker each package writes, between the lines that open and close its here-document.
+        let marker = |file: &str| -> String {
+            let text = fs::read_to_string(packaging.join(file)).unwrap();
+            let lines: Vec<&str> = text.lines().collect();
+            let open = lines.iter().position(|l| l.contains("<<") && l.contains("QRUST_INSTALLED_BY")).unwrap_or_else(|| panic!("{file} writes no marker"));
+            let close = lines[open + 1..].iter().position(|l| l.trim() == "QRUST_INSTALLED_BY").unwrap_or_else(|| panic!("{file}'s marker is not closed")) + open + 1;
+            lines[open + 1..close].iter().map(|l| l.trim()).collect::<Vec<_>>().join("\n")
+        };
+        for (file, manager, prefix_var, update, uninstall) in [
+            ("quickrust.rb.in", "Homebrew", "#{opt_libexec}", "brew upgrade quickrust", "brew uninstall quickrust"),
+            ("quickrust.spec.in", "dnf", "/opt/quickrust", "sudo dnf upgrade quickrust", "sudo dnf remove quickrust"),
+            ("deb/postinst", "apt", "@{prefix}", "sudo apt install --only-upgrade quickrust", "sudo apt remove quickrust"),
+        ] {
+            let dir = std::env::temp_dir().join(format!("qrust-marker-{}", util::new_id()));
+            let qrust = release(&dir, "QuickRust");
+            let text = marker(file).replace(prefix_var, &util::path_str(&dir));
+            fs::write(dir.join(crate::package::MARKER), text).unwrap();
+            let p = crate::package::of(&qrust).unwrap_or_else(|e| panic!("{file}: {e}")).unwrap_or_else(|| panic!("{file}: no package"));
+            assert_eq!((p.manager.as_str(), p.update.as_str(), p.uninstall.as_str(), p.program.as_path()), (manager, update, uninstall, qrust.as_path()), "{file}");
+            let _ = fs::remove_dir_all(&dir);
+        }
+        // What the formula substitutes is where it installs the programs.
+        let formula = fs::read_to_string(packaging.join("quickrust.rb.in")).unwrap();
+        assert!(formula.contains("libexec.install Dir[\"*\"]") && formula.contains("(libexec/\"qrust-installed-by.json\").write"));
+        // The rpm owns its marker; the deb removes the one its postinst wrote.
+        assert!(fs::read_to_string(packaging.join("quickrust.spec.in")).unwrap().contains("\n/opt/quickrust/qrust-installed-by.json\n"));
+        assert!(fs::read_to_string(packaging.join("deb/postrm")).unwrap().contains("rm -f @{prefix}/qrust-installed-by.json"));
     }
 }
