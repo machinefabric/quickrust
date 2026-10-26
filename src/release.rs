@@ -36,7 +36,7 @@ use std::fmt;
 /// The product's name in the release registry.
 pub const APP_ID: &str = "quickrust";
 /// The one directory every release archive unpacks to, holding `qrust`, `qrust-rustc-wrapper`,
-/// the licences and the README.
+/// the licence and the README.
 pub const ARCHIVE_ROOT: &str = "quickrust";
 const CERTIFICATE_FORMAT: &str = "machinefabric-release-key-cert/1";
 const ENVELOPE_FORMAT: &str = "machinefabric-manifest-sig/1";

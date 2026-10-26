@@ -32,9 +32,10 @@ Con dnf (Fedora, RHEL):
 sudo tee /etc/yum.repos.d/machinefabric.repo <<'REPO'
 [machinefabric]
 name=MachineFabric
-baseurl=https://release.machinefabric.com/packages/rpm
+baseurl=https://release.machinefabric.com/packages/rpm/$basearch
 enabled=1
 gpgcheck=1
+repo_gpgcheck=1
 gpgkey=https://release.machinefabric.com/packages/keys/repo-signing-prod.asc
 REPO
 sudo dnf install quickrust

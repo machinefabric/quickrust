@@ -3,7 +3,7 @@ class Quickrust < Formula
   desc "Cargo, faster: every Cargo command, with managed toolchains and a shared build cache"
   homepage "https://github.com/machinefabric/quickrust"
   version "@{version}"
-  license any_of: ["MIT", "Apache-2.0"]
+  license "Apache-2.0"
 
   on_macos do
     if Hardware::CPU.arm?
@@ -22,7 +22,7 @@ class Quickrust < Formula
   end
 
   def install
-    # The archive extracts to @{bundle_dir}/{qrust,qrust-rustc-wrapper,LICENSE-*,README.md}, and
+    # The archive extracts to @{bundle_dir}/{qrust,qrust-rustc-wrapper,LICENSE,README.md}, and
     # Homebrew runs this from inside that single top-level directory. The two programs stay
     # together: `qrust setup` links ~/.qrust/bin to both.
     libexec.install Dir["*"]

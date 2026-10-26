@@ -17,7 +17,7 @@ Name:           quickrust
 Version:        @VERSION@
 Release:        1%{?dist}
 Summary:        Cargo, faster: every Cargo command, with managed toolchains and a shared build cache
-License:        MIT OR Apache-2.0
+License:        Apache-2.0
 URL:            https://github.com/machinefabric/quickrust
 
 %description

@@ -12,7 +12,7 @@ Dove QuickRust funziona e viene testato, che cosa differisce tra le piattaforme 
 | macOS x86_64 | `darwin-x86_64` | compilato per ogni release; le suite di test non vengono eseguite |
 | Windows x86_64 | `windows-x86_64` | un'esecuzione configura QuickRust da zero (Rust stable dal server di distribuzione, il driver del compilatore), poi crea, compila, esegue e testa un progetto; le suite di integrazione sono solo per Unix |
 
-Un archivio si chiama `qrust-<version>-<platform>.tar.gz` (`.zip` per Windows) e si estrae in un'unica directory, `quickrust/`, che contiene `qrust`, `qrust-rustc-wrapper`, le licenze e il README. Il manifest delle release (`https://release.machinefabric.com/quickrust/manifest`) elenca, per ogni release, le piattaforme per cui è stata compilata: una piattaforma che non vi compare non ha una build di quella release.
+Un archivio si chiama `qrust-<version>-<platform>.tar.gz` (`.zip` per Windows) e si estrae in un'unica directory, `quickrust/`, che contiene `qrust`, `qrust-rustc-wrapper`, la licenza e il README. Il manifest delle release (`https://release.machinefabric.com/quickrust/manifest`) elenca, per ogni release, le piattaforme per cui è stata compilata: una piattaforma che non vi compare non ha una build di quella release.
 
 QuickRust si compila con Rust 1.80 o più recente. Le toolchain che installa sono per l'host su cui gira; su Linux, `-gnu` o `-musl` a seconda della libreria C del sistema, quella con cui è stato compilato QuickRust stesso.
 

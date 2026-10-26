@@ -4,7 +4,7 @@ version = "{{ project.version }}"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 default-run = "qrust"
 
 # The benchmark harness is a separate member so its code never ships in QuickRust.

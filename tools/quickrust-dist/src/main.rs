@@ -2,7 +2,7 @@
 //!
 //! An archive is `qrust-<version>-<platform>.tar.gz` (`.zip` for Windows) and unpacks to one
 //! directory, `quickrust/`, holding the two programs of that platform (`qrust` and
-//! `qrust-rustc-wrapper`), the licences and the README. The programs are built with their release
+//! `qrust-rustc-wrapper`), the licence and the README. The programs are built with their release
 //! line baked in (`build.rs`): the registry they are published in, their channel, and the keys a
 //! release must be signed under. An archive without one would install a QuickRust that can never
 //! update itself, so none is built without one.
@@ -34,7 +34,7 @@ pub const PLATFORMS: &[(&str, &str)] = &[
 /// The directory every archive unpacks to.
 const ROOT: &str = "quickrust";
 const PROGRAMS: [&str; 2] = ["qrust", "qrust-rustc-wrapper"];
-const DOCUMENTS: [&str; 3] = ["LICENSE-MIT", "LICENSE-APACHE", "README.md"];
+const DOCUMENTS: [&str; 2] = ["LICENSE", "README.md"];
 /// What a release build is given, and `build.rs` bakes: all five, or it is not a release build.
 const RELEASE_LINE: [&str; 5] = ["MFR_RELEASES_REGISTRY_URL", "MFR_RELEASE_CHANNEL", "MFR_SIGNING_ENVIRONMENT", "MFR_CARTRIDGE_ROOT_PUBKEYS", "MFR_CHARTER_ROOT_PUBKEYS"];
 /// The oldest macOS the programs run on: the oldest the Rust toolchains they install run on.
@@ -343,7 +343,7 @@ mod tests {
     /// what is executable in the archive is what the archive says is a program.
     fn staged(dir: &Path, exe: &str) -> Vec<Entry> {
         let mut entries = Vec::new();
-        for (name, body, program) in [("qrust", "the program", true), ("qrust-rustc-wrapper", "the wrapper", true), ("LICENSE-MIT", "mit", false), ("LICENSE-APACHE", "apache", false), ("README.md", "read me", false)] {
+        for (name, body, program) in [("qrust", "the program", true), ("qrust-rustc-wrapper", "the wrapper", true), ("LICENSE", "licence", false), ("README.md", "read me", false)] {
             let name = if program { format!("{name}{exe}") } else { name.to_string() };
             let from = dir.join(format!("staged-{name}"));
             fs::write(&from, body).unwrap();
@@ -359,6 +359,14 @@ mod tests {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
+    // TEST0318: Every document an archive carries is in the repository
+    #[test]
+    fn test0318_every_document_an_archive_carries_is_in_the_repository() {
+        for d in DOCUMENTS {
+            assert!(repo().join(d).is_file(), "{d} is not in the repository: no release archive could be made");
+        }
+    }
+
     // TEST0287: A tarball is what quickrust unpacks and is the same bytes every time
     #[test]
     fn test0287_a_tarball_is_what_quickrust_unpacks_and_is_the_same_bytes_every_time() {
@@ -371,9 +379,9 @@ mod tests {
 
         let unpacked = dir.join("unpacked");
         let held = quickrust::archive::unpack_file(&first, quickrust::archive::Compression::Gz, quickrust::release::ARCHIVE_ROOT, &unpacked, 1 << 20).unwrap();
-        assert_eq!(held.files, 5);
+        assert_eq!(held.files, 4);
         assert_eq!(fs::read_to_string(unpacked.join("qrust")).unwrap(), "the program");
-        assert_eq!(fs::read_to_string(unpacked.join("LICENSE-APACHE")).unwrap(), "apache");
+        assert_eq!(fs::read_to_string(unpacked.join("LICENSE")).unwrap(), "licence");
         #[cfg(unix)]
         {
             assert_eq!((mode(&unpacked.join("qrust")), mode(&unpacked.join("qrust-rustc-wrapper"))), (0o755, 0o755));
@@ -393,11 +401,11 @@ mod tests {
 
         let unpacked = dir.join("unpacked");
         let held = quickrust::archive::unpack_zip_file(&first, quickrust::release::ARCHIVE_ROOT, &unpacked, 1 << 20).unwrap();
-        assert_eq!(held.files, 5);
+        assert_eq!(held.files, 4);
         assert_eq!(fs::read_to_string(unpacked.join("qrust.exe")).unwrap(), "the program");
         assert_eq!(fs::read_to_string(unpacked.join("qrust-rustc-wrapper.exe")).unwrap(), "the wrapper");
         #[cfg(unix)]
-        assert_eq!((mode(&unpacked.join("qrust.exe")), mode(&unpacked.join("LICENSE-MIT"))), (0o755, 0o644));
+        assert_eq!((mode(&unpacked.join("qrust.exe")), mode(&unpacked.join("LICENSE"))), (0o755, 0o644));
     }
 
     // TEST0289: Every platform is archived in the form quickrust updates from

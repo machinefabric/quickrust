@@ -4,8 +4,8 @@ version.workspace = true
 edition = "2021"
 rust-version = "1.80"
 publish = false
-description = "Builds QuickRust's release archives: the two programs of a platform, with the licences and the README"
-license = "MIT OR Apache-2.0"
+description = "Builds QuickRust's release archives: the two programs of a platform, with the licence and the README"
+license = "Apache-2.0"
 
 [dependencies]
 flate2 = "1"
