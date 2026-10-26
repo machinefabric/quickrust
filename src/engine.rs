@@ -83,6 +83,10 @@ pub struct Engine {
     pub workspace_root: Option<PathBuf>,
     /// Its target directory (see `builddir`), for a Cargo command in a workspace.
     pub target: Option<crate::builddir::Target>,
+    /// The part of Cargo's configuration QuickRust reads, as Cargo finds it for a Cargo command.
+    pub cargo_config: crate::resolve::CargoConfigSubset,
+    /// What a Cargo command builds for (`resolve::build_targets`); empty: the host.
+    pub targets: Vec<String>,
     /// What runs as Cargo (`toolchain::engine_program`).
     pub program: PathBuf,
     pub env: Vec<(String, String)>,
@@ -138,12 +142,17 @@ impl Engine {
 }
 
 /// The engine for a Cargo command run in `cwd`: its toolchain (see `toolchain`), installed with
-/// the standard library of every `--target` it builds for, and its workspace's target directory
-/// (see `builddir`).
+/// the standard library of every target it builds for (its `--target`, or `build.target` in
+/// Cargo's configuration), and its workspace's target directory (see `builddir`).
 pub fn for_command(inv: &Invocation, cwd: &Path, cfg: &Config) -> Result<Engine, String> {
     let dir = inv.chdir.as_ref().map(|c| cwd.join(c)).unwrap_or_else(|| cwd.to_path_buf());
-    let targets = inv.targets.iter().filter(|t| toolchain::spec::is_triple(t)).map(|t| toolchain::spec::rust_target(t).to_string()).collect();
-    let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets, ..Default::default() }, cfg)?;
+    // Cargo finds its configuration from the directory it runs in, whatever `--manifest-path` says.
+    let cargo_config = crate::resolve::cargo_config_subset(&dir, &inv.configs);
+    let targets = crate::resolve::build_targets(inv, &cargo_config);
+    let needs = targets.iter().filter(|t| toolchain::spec::is_triple(t)).map(|t| toolchain::spec::rust_target(t).to_string()).collect();
+    let mut engine = start(&dir, inv.toolchain.as_deref(), &Needs { targets: needs, ..Default::default() }, cfg)?;
+    engine.cargo_config = cargo_config;
+    engine.targets = targets;
     // The Cargo this engine runs uses QuickRust's Cargo home: Cargo's own clean waits for it (see
     // `space::CargoRuns`). Unrecorded, a collection could run Cargo's clean under it.
     crate::space::running_cargo()?;
@@ -193,7 +202,7 @@ fn start(dir: &Path, plus: Option<&str>, needs: &Needs, cfg: &Config) -> Result<
     if program != tc.cargo() {
         env.push(("CARGO".to_string(), util::path_str(&qrust_cargo())));
     }
-    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, program, env })
+    Ok(Engine { channel: toolchain::floating_key(&sel.spec), toolchain: tc, selected_by: sel.source, workspace_root: None, target: None, cargo_config: Default::default(), targets: Vec::new(), program, env })
 }
 
 /// The variable the toolchain's programs find their shared libraries by: the dynamic library

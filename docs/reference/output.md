@@ -40,7 +40,7 @@ Otherwise Cargo's output reaches the terminal, pipe or file unchanged. Per comma
 | Commands | Presentation |
 |---|---|
 | `build`, `check`, `clippy`, `doc` (and their aliases `b`, `c`, `d`, `rustdoc`), `test --no-run`, `bench --no-run` | the build is rendered: status line, errors in full, warnings counted, summary |
-| `run` (no `--target`, or one target triple) | the build is rendered, then `cargo run` runs the program with the terminal as it is |
+| `run` (for the host, or for one target triple, from `--target` or `build.target`) | the build is rendered, then `cargo run` runs the program with the terminal as it is |
 | `test`, `bench` | the build is rendered, then the tests or benchmarks run in a terminal QuickRust relays (Unix) |
 | `test --doc`, `bench --doc` | Cargo's output |
 | `update`, `fetch`, `add`, `remove` (`rm`), `new`, `init`, `generate-lockfile`, `package`, `publish`, `vendor`, `clean` | Cargo's status lines are rendered from its stderr; stdout and stdin stay the terminal's |

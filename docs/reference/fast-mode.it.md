@@ -54,7 +54,7 @@ Il frontend parallelo, il linker e la ripetizione del link richiedono flag `-Z`.
 |---|---|
 | Chiave | `fast.linker`: `auto`, `off` |
 | Si applica quando | l'host è Linux con glibc e `wild` si trova in `~/.qrust/bin` o nel `PATH` |
-| Si applica a | build per l'host (senza `--target`) delle unità che eseguono il link: binari, test, proc-macro, librerie dinamiche |
+| Si applica a | unità compilate per l'host che eseguono il link: binari, test, proc-macro, librerie dinamiche; in una build per un altro target (`--target`, `build.target`), i suoi build script e proc-macro |
 | Non si applica a | unità per cui l'utente ha scelto un linker: `-C linker`, argomenti di link che selezionano un linker o feature del linker, dalla configurazione di Cargo o da `RUSTFLAGS` |
 | Collegamento | `~/.qrust/linker/ld` punta al `wild` in uso |
 

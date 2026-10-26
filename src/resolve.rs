@@ -189,13 +189,19 @@ pub fn classify(args: &[OsString]) -> Invocation {
 
 /// The small part of Cargo's configuration QuickRust must know to stay transparent:
 /// a configured rustc wrapper (which our `RUSTC_WRAPPER` would otherwise mask,
-/// FR-100.4) and aliases (to classify commands). Parsed for analysis and
-/// wrapper preservation only; Cargo remains the execution truth (COMP-052).
+/// FR-100.4), aliases (to classify commands), the targets a build is for and the form of each
+/// target's runner. Parsed for analysis and wrapper preservation only; Cargo remains the
+/// execution truth (COMP-052).
 #[derive(Debug, Default, Clone)]
 pub struct CargoConfigSubset {
     pub rustc_wrapper: Option<(String, String)>,
     pub aliases: Vec<(String, String)>,
     pub target_dir: Option<PathBuf>,
+    /// `build.target`: what Cargo builds for when the command names no `--target`, a JSON target
+    /// specification by its path (relative to the directory holding `.cargo`, as Cargo reads it).
+    pub build_target: Option<Vec<String>>,
+    /// The targets (`target.<triple>`) whose `runner` is set as one string, not as a list.
+    pub string_runners: Vec<String>,
     /// Profile settings the user made in configuration, as `(path below [profile], origin)`,
     /// e.g. `("dev.package.*.debug", "cargo config /w/.cargo/config.toml")`.
     pub profile_keys: Vec<(String, String)>,
@@ -270,6 +276,18 @@ fn config_relative(value: &str, config_file: &Path) -> String {
     value.to_string()
 }
 
+/// `build.target` as Cargo takes it: one target or a list, a JSON target specification relative
+/// to `root` (the directory holding the `.cargo` that set it; the current one for `--config`
+/// values and the environment).
+fn build_target(v: &toml::Value, root: &Path) -> Option<Vec<String>> {
+    let resolve = |t: &str| if t.ends_with(".json") { util::path_str(&root.join(t)) } else { t.to_string() };
+    match v {
+        toml::Value::String(s) => Some(vec![resolve(s)]),
+        toml::Value::Array(a) => a.iter().map(|x| x.as_str().map(resolve)).collect(),
+        _ => None,
+    }
+}
+
 fn alias_string(v: &toml::Value) -> Option<String> {
     match v {
         toml::Value::String(s) => Some(s.clone()),
@@ -290,6 +308,18 @@ pub fn cargo_config_subset(cwd: &Path, cli_configs: &[String]) -> CargoConfigSub
             if out.target_dir.is_none() {
                 if let Some(t) = build.get("target-dir").and_then(|v| v.as_str()) {
                     out.target_dir = Some(PathBuf::from(config_relative(&format!("./{}", t), origin)));
+                }
+            }
+            if out.build_target.is_none() {
+                let origin = cwd.join(origin);
+                let root = origin.parent().and_then(Path::parent).unwrap_or(cwd);
+                out.build_target = build.get("target").and_then(|t| build_target(t, root));
+            }
+        }
+        if let Some(targets) = doc.get("target").and_then(|t| t.as_table()) {
+            for (key, t) in targets {
+                if t.get("runner").is_some_and(toml::Value::is_str) && !out.string_runners.contains(key) {
+                    out.string_runners.push(key.clone());
                 }
             }
         }
@@ -326,6 +356,13 @@ pub fn cargo_config_subset(cwd: &Path, cli_configs: &[String]) -> CargoConfigSub
             out.rustc_wrapper = Some((w, "env CARGO_BUILD_RUSTC_WRAPPER".into()));
         }
     }
+    if out.build_target.is_none() {
+        // One target, or a list written as a TOML array (`["a", "b"]`).
+        if let Ok(t) = std::env::var("CARGO_BUILD_TARGET") {
+            let value = if t.starts_with('[') { format!("v = {}", t).parse::<toml::Table>().ok().and_then(|d| d.get("v").cloned()) } else { Some(toml::Value::String(t)) };
+            out.build_target = value.and_then(|v| build_target(&v, cwd));
+        }
+    }
     for (name, value) in std::env::vars() {
         if let Some(alias) = name.strip_prefix("CARGO_ALIAS_") {
             out.aliases.push((alias.to_ascii_lowercase().replace('_', "-"), value));
@@ -357,6 +394,16 @@ pub fn apply_aliases(inv: &mut Invocation, subset: &CargoConfigSubset) {
             return;
         }
         name = first.to_string();
+    }
+}
+
+/// The targets a command builds for, as Cargo decides them: its `--target` arguments, otherwise
+/// `build.target`. None: the host.
+pub fn build_targets(inv: &Invocation, subset: &CargoConfigSubset) -> Vec<String> {
+    if inv.targets.is_empty() {
+        subset.build_target.clone().unwrap_or_default()
+    } else {
+        inv.targets.clone()
     }
 }
 
@@ -468,5 +515,28 @@ mod tests {
         apply_aliases(&mut inv, &subset);
         assert_eq!(inv.family, Family::Build);
         assert!(inv.release);
+    }
+
+    // TEST0314: The configured build target is read as Cargo reads it, and `--target` overrides it
+    #[test]
+    fn test0314_the_configured_build_target_is_read_as_cargo_reads_it() {
+        let ws = std::env::temp_dir().join(format!("qrust-build-target-{}", std::process::id()));
+        let sub = ws.join("sub");
+        std::fs::create_dir_all(ws.join(".cargo")).unwrap();
+        std::fs::create_dir_all(sub.join(".cargo")).unwrap();
+        std::fs::write(ws.join(".cargo/config.toml"), "[build]\ntarget = [\"wasm32-unknown-unknown\", \"specs/board.json\"]\n").unwrap();
+        // A list, its JSON specification relative to the directory holding `.cargo`.
+        assert_eq!(cargo_config_subset(&ws, &[]).build_target, Some(vec!["wasm32-unknown-unknown".to_string(), util::path_str(&ws.join("specs/board.json"))]));
+        // The nearest file decides.
+        std::fs::write(sub.join(".cargo/config.toml"), "[build]\ntarget = \"thumbv7em-none-eabihf\"\n").unwrap();
+        let files = cargo_config_subset(&sub, &[]);
+        assert_eq!(files.build_target, Some(vec!["thumbv7em-none-eabihf".to_string()]));
+        // `--config` before any file, relative to the current directory.
+        assert_eq!(cargo_config_subset(&sub, &["build.target=\"x.json\"".into()]).build_target, Some(vec![util::path_str(&sub.join("x.json"))]));
+        // The command's `--target` before any configuration.
+        assert_eq!(build_targets(&classify(&os(&["run", "--target", "aarch64-unknown-linux-gnu"])), &files), vec!["aarch64-unknown-linux-gnu"]);
+        assert_eq!(build_targets(&classify(&os(&["run"])), &files), vec!["thumbv7em-none-eabihf"]);
+        assert!(build_targets(&classify(&os(&["run"])), &CargoConfigSubset::default()).is_empty());
+        std::fs::remove_dir_all(&ws).unwrap();
     }
 }

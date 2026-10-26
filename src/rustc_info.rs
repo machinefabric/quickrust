@@ -30,6 +30,27 @@ pub fn sysroot(memo_dir: &Path, rustc: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// What the compiler adds to a binary's name for `target` (the host's when `None`): `.exe`,
+/// `.wasm`, or nothing. Asked as Cargo asks (`--print file-names`), so it holds for any target,
+/// a JSON specification included.
+pub fn binary_suffix(rustc: &Path, target: Option<&str>) -> Result<String, String> {
+    let mut cmd = crate::engine::toolchain_program(rustc);
+    cmd.args(["-", "--crate-name", "___", "--crate-type", "bin", "--print", "file-names"]);
+    if let Some(t) = target {
+        cmd.args(["--target", t]);
+        // As Cargo passes a JSON specification: unstable, refused by a stable compiler.
+        if t.ends_with(".json") {
+            cmd.arg("-Zunstable-options");
+        }
+    }
+    let out = cmd.stdin(std::process::Stdio::null()).output().map_err(|e| format!("cannot run {}: {}", rustc.display(), e))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        return Err(format!("{} cannot name a binary for {}: {}", rustc.display(), target.unwrap_or("the host"), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    text.lines().next().and_then(|l| l.strip_prefix("___")).map(str::to_string).ok_or_else(|| format!("{} named a binary `{}`, not after its crate", rustc.display(), text.trim()))
+}
+
 fn ask(memo_dir: &Path, rustc: &str, arg: &str) -> Result<String, String> {
     let path = if rustc.contains(std::path::MAIN_SEPARATOR) || rustc.contains('/') { PathBuf::from(rustc) } else { util::which(rustc).ok_or_else(|| format!("{} is not on PATH", rustc))? };
     let md = fs::metadata(&path).map_err(|e| format!("cannot inspect {}: {}", path.display(), e))?;

@@ -40,7 +40,7 @@ Altrimenti l'output di Cargo raggiunge il terminale, la pipe o il file senza mod
 | Comandi | Presentazione |
 |---|---|
 | `build`, `check`, `clippy`, `doc` (e i loro alias `b`, `c`, `d`, `rustdoc`), `test --no-run`, `bench --no-run` | la build viene resa: riga di stato, errori per intero, warning contati, riepilogo |
-| `run` (senza `--target`, o con una sola target triple) | la build viene resa, poi `cargo run` esegue il programma con il terminale così com'è |
+| `run` (per l'host, o per una sola target triple, da `--target` o `build.target`) | la build viene resa, poi `cargo run` esegue il programma con il terminale così com'è |
 | `test`, `bench` | la build viene resa, poi i test o i benchmark vengono eseguiti in un terminale che QuickRust inoltra (Unix) |
 | `test --doc`, `bench --doc` | l'output di Cargo |
 | `update`, `fetch`, `add`, `remove` (`rm`), `new`, `init`, `generate-lockfile`, `package`, `publish`, `vendor`, `clean` | le righe di stato di Cargo vengono rese a partire dal suo stderr; stdout e stdin restano quelli del terminale |

@@ -1191,3 +1191,64 @@ fn test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds() 
     let differ: Vec<&String> = stock.iter().filter(|(k, v)| ours[*k] != **v).map(|(k, _)| k).collect();
     assert!(differ.is_empty(), "outputs that differ from rustc's: {:?}", differ);
 }
+
+// TEST0315: A build is for the target Cargo's configuration names when the command names none
+#[test]
+fn test0315_a_build_is_for_the_target_cargos_configuration_names_when_the_command_names_none() {
+    let sb = Sandbox::new("configured-target");
+    let p = sb.package("p", "p");
+    // The suite's toolchain, linked: QuickRust installs nothing into it, and names the standard
+    // library it would need.
+    ok(sb.qrust(&p).args(["toolchain", "link", "mine"]).arg(sb.toolchain_dir(&p)));
+    let lacks = |out: &std::process::Output, target: &str| !out.status.success() && stderr(out).contains(&format!("toolchain mine has no standard library for {}", target));
+    sb.file("p/.cargo/config.toml", "[build]\ntarget = \"riscv32imac-unknown-none-elf\"\n");
+    let out = run(sb.cargo(&p).args(["+mine", "build"]));
+    assert!(lacks(&out, "riscv32imac-unknown-none-elf"), "build.target in a configuration file: {}", stderr(&out));
+    // Cargo reads its configuration from where it runs, not from the manifest's directory.
+    ok(sb.cargo(&sb.dir).args(["+mine", "build", "--manifest-path", "p/Cargo.toml"]));
+    fs::remove_file(p.join(".cargo/config.toml")).unwrap();
+    let out = run(sb.cargo(&p).args(["+mine", "build"]).env("CARGO_BUILD_TARGET", "riscv32imac-unknown-none-elf"));
+    assert!(lacks(&out, "riscv32imac-unknown-none-elf"), "CARGO_BUILD_TARGET: {}", stderr(&out));
+    // The command's own `--target` comes first.
+    let out = run(sb.cargo(&p).args(["+mine", "build", "--target", "riscv64gc-unknown-none-elf"]).env("CARGO_BUILD_TARGET", "riscv32imac-unknown-none-elf"));
+    assert!(lacks(&out, "riscv64gc-unknown-none-elf"), "--target over CARGO_BUILD_TARGET: {}", stderr(&out));
+
+    // `qrust path bin` names a binary as the compiler names it for the target.
+    let dir = sb.target_dir(&p);
+    for (target, file) in [("wasm32-unknown-unknown", "p.wasm"), ("x86_64-pc-windows-gnu", "p.exe"), ("aarch64-unknown-linux-gnu", "p")] {
+        let path = stdout(&ok(sb.qrust(&p).args(["path", "bin", "p", "--target", target])));
+        assert_eq!(path.trim(), dir.join(target).join("debug").join(file).display().to_string());
+    }
+}
+
+// TEST0316: `cargo run` for the target Cargo's configuration names runs the program once, with that target's runner
+#[test]
+#[cfg(target_os = "linux")]
+fn test0316_cargo_run_for_the_configured_target_runs_the_program_once_with_its_runner() {
+    let sb = Sandbox::new("configured-run");
+    let p = sb.package("p", "p");
+    // A musl binary runs on any Linux of its architecture; the target's runner counts its runs.
+    let musl = format!("{}-unknown-linux-musl", std::env::consts::ARCH);
+    let runs = sb.dir.join("runs");
+    let runner = sb.file("runner", &format!("#!/bin/sh\necho \"$1\" >> '{}'\nexec \"$@\"\n", runs.display()));
+    make_executable(&runner);
+    // The runner as one string, then as a list: Cargo merges neither with the other form.
+    for (n, runner) in [format!("\"{}\"", runner.display()), format!("[\"{}\"]", runner.display())].iter().enumerate() {
+        sb.file("p/.cargo/config.toml", &format!("[build]\ntarget = \"{musl}\"\n\n[target.{musl}]\nrunner = {runner}\n"));
+        let Some(mut cmd) = sb.cargo_in_terminal(&p, "run") else {
+            eprintln!("skipped: no util-linux `script` for a pseudo-terminal");
+            return;
+        };
+        let out = run(&mut cmd);
+        let screen = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert!(out.status.success(), "runner = {}: {}", runner, screen);
+        assert!(screen.lines().any(|l| l.trim() == "3"), "the program's output: {}", screen);
+        let ran: Vec<String> = fs::read_to_string(&runs).unwrap().lines().map(str::to_string).collect();
+        assert_eq!(ran.len(), n + 1, "runner = {}: the program ran once, through the target's runner: {:?}", runner, ran);
+        assert!(ran[n].ends_with(&format!("{}/debug/p", musl)), "{:?}", ran);
+    }
+    let bin = sb.target_dir(&p).join(&musl).join("debug/p");
+    assert!(bin.is_file());
+    // `qrust path bin` names it too.
+    assert_eq!(stdout(&ok(sb.qrust(&p).args(["path", "bin", "p"]))).trim(), bin.display().to_string());
+}

@@ -143,7 +143,7 @@ profile = "minimal"                    # minimal | default | complete
 | `targets` | target triples whose standard library is installed with the toolchain |
 | `profile` | the profile a new install of the toolchain gets |
 
-Any other key or table is an error. The toolchain, its components and targets, and the standard library of every `--target` a command builds for are installed on first use.
+Any other key or table is an error. The toolchain, its components and targets, and the standard library of every target a command builds for (its `--target`, or `build.target` in Cargo's configuration) are installed on first use.
 
 ### Toolchain profiles
 

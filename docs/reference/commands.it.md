@@ -157,7 +157,7 @@ Le dimensioni sono un numero con un'unità facoltativa `B`, `K`/`KB`/`KiB`, `M`/
 | Comando | Stampa |
 |---|---|
 | `qrust path` | la directory target di questo workspace (quella della variante di build in vigore, `build.variant`) |
-| `qrust path bin <NAME> [--release \| --profile P] [--target T]` | il percorso in cui `cargo build` colloca il binario `NAME` (con `.exe` aggiunto per i target Windows) |
+| `qrust path bin <NAME> [--release \| --profile P] [--target T]` | il percorso in cui `cargo build` colloca il binario `NAME`, per `--target T`, altrimenti per il `build.target` della configurazione di Cargo, altrimenti per l'host; con il nome che il compilatore dà a un binario per quel target (`NAME.exe`, `NAME.wasm`) |
 | `qrust path [bin …] --hold-for <PID>` | la stessa risposta, e la directory di build viene prenotata finché il processo `PID` è in esecuzione: la cache di QuickRust non la rimuove, per quanto a lungo sia rimasta inutilizzata ([Come trovare gli output di build](../how-to/find-build-outputs.md#use-a-builds-outputs-for-longer-than-the-build)). La prenotazione termina con il processo. `PID` deve essere in esecuzione. Una directory target scelta da te non viene mai rimossa, e prenotarla non ha alcun effetto |
 
 I profili `dev` e `test` corrispondono a `debug`, `release` e `bench` a `release`, qualsiasi altro profilo al proprio nome. `--release` e `--profile` si escludono a vicenda.

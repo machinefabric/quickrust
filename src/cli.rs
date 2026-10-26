@@ -535,12 +535,12 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     let engine = crate::engine::for_command(&resolve::classify(&[]), &cwd, &cfg)?;
-    let chosen = engine.target.ok_or("not inside a Cargo workspace: there is no target directory here")?;
+    let chosen = engine.target.as_ref().ok_or("not inside a Cargo workspace: there is no target directory here")?;
     // A directory the user chose is never collected: there is nothing to hold.
     if let (Some(pid), true) = (holder, chosen.managed) {
         crate::builddir::hold(&chosen.dir, pid)?;
     }
-    let dir = chosen.dir;
+    let dir = chosen.dir.clone();
     match (what.as_deref(), name) {
         (None, None) => println!("{}", dir.display()),
         (Some("bin"), Some(name)) => {
@@ -549,12 +549,20 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
                 "release" | "bench" => "release",
                 other => other,
             };
+            // What `cargo build` builds for: `--target`, else the configured `build.target`.
+            let target = match (target, engine.targets.as_slice()) {
+                (Some(t), _) => Some(t),
+                (None, []) => None,
+                (None, [t]) => Some(t.clone()),
+                (None, many) => return Err(format!("build.target names {} targets ({}): `--target` says which", many.len(), many.join(", "))),
+            };
             let mut p = dir;
             if let Some(t) = &target {
-                p = p.join(t);
+                // Cargo names a JSON specification's directory after its file.
+                p = p.join(if t.ends_with(".json") { Path::new(t).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default() } else { t.clone() });
             }
-            let exe = if target.as_deref().unwrap_or(&crate::toolchain::host()).contains("windows") { format!("{}.exe", name) } else { name };
-            println!("{}", p.join(profile_dir).join(exe).display());
+            let suffix = crate::rustc_info::binary_suffix(&engine.rustc(), target.as_deref())?;
+            println!("{}", p.join(profile_dir).join(format!("{}{}", name, suffix)).display());
         }
         (Some("bin"), None) => return Err("`qrust path bin` needs the binary's name".into()),
         (Some(other), _) => return Err(format!("unknown `qrust path` item `{}` (bin)", other)),

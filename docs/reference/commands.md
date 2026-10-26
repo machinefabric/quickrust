@@ -157,7 +157,7 @@ Sizes are a number with an optional unit `B`, `K`/`KB`/`KiB`, `M`/`MB`/`MiB`, `G
 | Command | Prints |
 |---|---|
 | `qrust path` | this workspace's target directory (that of the build variant in effect, `build.variant`) |
-| `qrust path bin <NAME> [--release \| --profile P] [--target T]` | the path where `cargo build` puts binary `NAME` (`.exe` added for Windows targets) |
+| `qrust path bin <NAME> [--release \| --profile P] [--target T]` | the path where `cargo build` puts binary `NAME`, for `--target T`, else the `build.target` in Cargo's configuration, else the host; named as the compiler names a binary for that target (`NAME.exe`, `NAME.wasm`) |
 | `qrust path [bin …] --hold-for <PID>` | the same answer, and the build directory is held while process `PID` runs: QuickRust's cache does not collect it, however long it has been idle ([How to find build outputs](../how-to/find-build-outputs.md#use-a-builds-outputs-for-longer-than-the-build)). The hold ends when the process does. `PID` must be running. A target directory you chose is never collected, and holding it does nothing |
 
 Profiles `dev` and `test` map to `debug`, `release` and `bench` to `release`, any other profile to its own name. `--release` and `--profile` exclude each other.

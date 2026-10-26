@@ -54,7 +54,7 @@ The parallel frontend, the linker and relinking need `-Z` flags. On a stable or 
 |---|---|
 | Key | `fast.linker`: `auto`, `off` |
 | Applies when | the host is Linux with glibc and `wild` is in `~/.qrust/bin` or on `PATH` |
-| Applies to | host builds (no `--target`) of units that link: binaries, tests, proc-macros, dynamic libraries |
+| Applies to | units built for the host that link: binaries, tests, proc-macros, dynamic libraries; in a build for another target (`--target`, `build.target`), its build scripts and proc-macros |
 | Does not apply to | units where the user chose a linker: `-C linker`, link arguments selecting a linker, or linker features, from Cargo's configuration or `RUSTFLAGS` |
 | Link | `~/.qrust/linker/ld` points to the `wild` in use |
 

@@ -427,10 +427,10 @@ pub fn fail(msg: &str) -> ! {
     std::process::exit(crate::EXIT_QRUST_ERROR)
 }
 
-/// Runs one Cargo invocation. `Err` means QuickRust could not delegate at all.
-/// The triple a `cargo run` builds for: its `--target`, or the host of the compiler.
-fn target_triple(inv: &Invocation, engine: &crate::engine::Engine) -> Option<String> {
-    if let Some(t) = inv.targets.first() {
+/// The triple a `cargo run` builds for: its `--target` or the configured `build.target`, or the
+/// host of the compiler.
+fn target_triple(engine: &crate::engine::Engine) -> Option<String> {
+    if let Some(t) = engine.targets.first() {
         return Some(t.clone());
     }
     let rustc = engine.env.iter().find(|(k, _)| k == "RUSTC").map(|(_, v)| v.clone()).or_else(|| std::env::var("RUSTC").ok().filter(|r| !r.is_empty())).unwrap_or_else(|| path_str(&engine.rustc()));
@@ -438,6 +438,7 @@ fn target_triple(inv: &Invocation, engine: &crate::engine::Engine) -> Option<Str
     vv.lines().find_map(|l| l.strip_prefix("host: ")).map(str::to_string)
 }
 
+/// Runs one Cargo invocation. `Err` means QuickRust could not delegate at all.
 pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let preflight = Instant::now();
     let cwd = match &spec.cwd {
@@ -467,7 +468,6 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let parent = std::env::var(crate::ENV_SESSION).ok().filter(|v| !v.is_empty());
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
 
-    let start_dir = crate::builddir::start_dir(&inv, &cwd);
     // The workspace's build directory is in use (QuickRust's cache leaves it alone) while this runs.
     let _in_use = match (&engine.target, &engine.workspace_root) {
         (Some(t), Some(root)) if t.managed => {
@@ -476,12 +476,12 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         }
         _ => None,
     };
-    let subset = if inv.family.builds() || inv.family == Family::External { resolve::cargo_config_subset(&start_dir, &inv.configs) } else { Default::default() };
+    let subset = if inv.family.builds() || inv.family == Family::External { engine.cargo_config.clone() } else { Default::default() };
     resolve::apply_aliases(&mut inv, &subset);
 
     // Queries, help output and opted-out nested invocations: replace ourselves with Cargo; a
     // query whose downloads QuickRust shows in a terminal (`cargo tree`) is rendered like `cargo fetch`.
-    let shown_query = inv.family == Family::Query && spec.scenario.is_none() && !spec.stdout_to_stderr && crate::ui::rendering(&inv, &spec.args, &cfg) == Rendering::Lines;
+    let shown_query = inv.family == Family::Query && spec.scenario.is_none() && !spec.stdout_to_stderr && crate::ui::rendering(&inv, &engine.targets, &spec.args, &cfg) == Rendering::Lines;
     if spec.scenario.is_none() && (inv.command.is_none() || (inv.family == Family::Query && !shown_query) || nested_upstream) {
         let mut cmd = engine.command(&spec.args, &inv);
         cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
@@ -516,19 +516,19 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     }
 
     // QuickRust's own rendering of the command's output (a terminal, nothing the user chose).
-    let mut rendering = if !spec.stdout_to_stderr && spec.scenario.is_none() { crate::ui::rendering(&inv, &spec.args, &cfg) } else { Rendering::Off };
+    let mut rendering = if !spec.stdout_to_stderr && spec.scenario.is_none() { crate::ui::rendering(&inv, &engine.targets, &spec.args, &cfg) } else { Rendering::Off };
     // The command as it reaches Cargo, with fast mode's settings.
     let mut args = with_overlays(&spec.args, &inv, &fast.args);
     if let Rendering::BuildFirst(how) = rendering {
-        match target_triple(&inv, &engine) {
-            Some(target) => {
+        match target_triple(&engine).and_then(|target| crate::ui::prebuild(how, &resolve::self_identity().0, &target, engine.cargo_config.string_runners.contains(&target))) {
+            Some((flags, configs)) => {
                 // The command's own arguments (what follows `--` is for the program) and what
                 // keeps it from running anything.
-                let (flags, configs) = crate::ui::prebuild(how, &resolve::self_identity().0, &target);
                 let own: Vec<OsString> = spec.args.iter().take_while(|a| *a != "--").cloned().chain(flags.into_iter().map(OsString::from)).collect();
                 args = with_overlays(&own, &inv, &[fast.args.clone(), configs].concat());
             }
-            // A compiler that cannot name its host leaves the command to Cargo as it is.
+            // A compiler that cannot name its host, or a runner QuickRust cannot set in the form
+            // the user's takes, leaves the command to Cargo as it is.
             None => rendering = Rendering::Off,
         }
     }
@@ -761,7 +761,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             "argv_redacted": std::iter::once("cargo".to_string()).chain(util::redact_args(&argv)).map(|a| tok.apply(&a)).collect::<Vec<_>>(),
             "toolchain_override": inv.toolchain,
             "manifest_path": inv.manifest_path.as_ref().map(|m| path_str(m)),
-            "targets": inv.targets,
+            "targets": engine.targets,
             "release": inv.release,
             "json_messages": inv.json_messages,
         },

@@ -52,7 +52,8 @@ pub enum Prebuild {
     Runner,
 }
 
-pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering {
+/// `targets`: what the command builds for (`resolve::build_targets`).
+pub fn rendering(inv: &Invocation, targets: &[String], args: &[OsString], cfg: &Config) -> Rendering {
     // compat mode leaves the terminal to Cargo unless the user asked for QuickRust's output explicitly.
     let setting = if cfg.str("mode") == "compat" && cfg.origin("output") == "default" { "cargo" } else { cfg.str("output") };
     if setting != "qrust" || !std::io::stderr().is_terminal() || inv.alias_of.is_some() {
@@ -76,7 +77,7 @@ pub fn rendering(inv: &Invocation, args: &[OsString], cfg: &Config) -> Rendering
         Family::Test | Family::Bench if has("--doc") => Rendering::Off,
         Family::Test | Family::Bench => Rendering::BuildFirst(Prebuild::NoRun),
         // One target, named as a triple: the do-nothing runner is set for exactly it.
-        Family::Run if inv.targets.len() <= 1 && inv.targets.iter().all(|t| !t.ends_with(".json")) => Rendering::BuildFirst(Prebuild::Runner),
+        Family::Run if targets.len() <= 1 && targets.iter().all(|t| !t.ends_with(".json")) => Rendering::BuildFirst(Prebuild::Runner),
         _ => Rendering::Off,
     }
 }
@@ -86,15 +87,26 @@ pub const NOOP_RUNNER: &str = "__qrust-noop-runner";
 
 /// What turns a `BuildFirst` command into the build it needs: arguments for the command, and
 /// `--config` settings (as `--config`, `KEY=VALUE` pairs). `target` is the triple the program
-/// is built for.
-pub fn prebuild(how: Prebuild, qrust: &Path, target: &str) -> (Vec<String>, Vec<String>) {
+/// is built for; `string_runner`, that the user's runner for it is one string, not a list.
+/// `None`: the runner cannot be set in that form.
+pub fn prebuild(how: Prebuild, qrust: &Path, target: &str, string_runner: bool) -> Option<(Vec<String>, Vec<String>)> {
     match how {
-        Prebuild::NoRun => (vec!["--no-run".into()], Vec::new()),
+        Prebuild::NoRun => Some((vec!["--no-run".into()], Vec::new())),
         Prebuild::Runner => {
             // For the triple itself: a runner set for the triple takes precedence over any
-            // `cfg(...)` one the user configured, which must not run the program here.
-            let runner = serde_json::to_string(&[util::path_str(qrust), crate::resolve::AS_QRUST.to_string(), NOOP_RUNNER.to_string()]).unwrap_or_default();
-            (Vec::new(), vec!["--config".into(), format!("target.{}.runner={}", target, runner)])
+            // `cfg(...)` one the user configured, which must not run the program here. Cargo
+            // replaces the user's runner for the triple only with one of the same form, a string
+            // or a list, and refuses to merge the two; a string is split at whitespace.
+            let parts = [util::path_str(qrust), crate::resolve::AS_QRUST.to_string(), NOOP_RUNNER.to_string()];
+            let runner = if string_runner {
+                if parts.iter().any(|p| p.chars().any(char::is_whitespace)) {
+                    return None;
+                }
+                serde_json::to_string(&parts.join(" "))
+            } else {
+                serde_json::to_string(&parts)
+            };
+            Some((Vec::new(), vec!["--config".into(), format!("target.{}.runner={}", target, runner.ok()?)]))
         }
     }
 }
@@ -1461,5 +1473,16 @@ mod tests {
         assert_eq!(a, vec![OsString::from("build"), "--release".into(), "--message-format=json".into()]);
         let a = with_arg(vec!["test".into(), "--no-run".into(), "--".into(), "x".into()], "--m");
         assert_eq!(a[2], "--m");
+    }
+
+    // TEST0317: The do-nothing runner takes the form of the user's runner, or is not set
+    #[test]
+    fn test0317_the_do_nothing_runner_takes_the_form_of_the_users_runner_or_is_not_set() {
+        let configs = |qrust: &str, string: bool| prebuild(Prebuild::Runner, Path::new(qrust), "x86_64-unknown-linux-musl", string).map(|(flags, configs)| (flags.is_empty(), configs));
+        assert_eq!(configs("/q/qrust", false), Some((true, vec!["--config".to_string(), "target.x86_64-unknown-linux-musl.runner=[\"/q/qrust\",\"__qrust\",\"__qrust-noop-runner\"]".to_string()])));
+        assert_eq!(configs("/q/qrust", true), Some((true, vec!["--config".to_string(), "target.x86_64-unknown-linux-musl.runner=\"/q/qrust __qrust __qrust-noop-runner\"".to_string()])));
+        // A string is split at whitespace: a path with a space cannot be one.
+        assert_eq!(configs("/my q/qrust", false).map(|(_, c)| c[1].contains("\"/my q/qrust\"")), Some(true));
+        assert_eq!(configs("/my q/qrust", true), None);
     }
 }
