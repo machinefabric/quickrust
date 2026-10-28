@@ -85,7 +85,8 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 | `ci.budget-policy` | string | `.qrust/budgets.toml` | `QRUST_CI_BUDGET_POLICY` | the budget file, relative to the workspace root ([Budgets](budgets.md)) |
 | `ci.baseline` | string | `main` | `QRUST_CI_BASELINE` | the baseline budgets are evaluated against |
 | `ci.enforce-on-build` | bool | `false` | `QRUST_CI_ENFORCE_ON_BUILD` | evaluate budgets after every successful build command; a blocking failure exits 3 |
-| `self.update-url` | string | empty | `QRUST_UPDATE_URL` | the anchor of another release registry `qrust self update` reads QuickRust's releases from: one MachineFabric chartered, whose charter it serves at `<url>/charter.json`. Empty: the registry this QuickRust was published in (`qrust doctor`, `release line`) |
+| `self.update-check` | `background`, `off` | `background` | `QRUST_SELF_UPDATE_CHECK` | once a day after a build, check in the background whether a newer QuickRust is published on this QuickRust's channel, and after a build in a terminal say so, at most once a day, with the command that updates it ([Update QuickRust](../how-to/install.md#update-quickrust)); a check that cannot be made says nothing; never in CI |
+| `self.update-url` | string | empty | `QRUST_UPDATE_URL` | the anchor of another release registry `qrust self update` and `qrust self check` read QuickRust's releases from: one MachineFabric chartered, whose charter it serves at `<url>/charter.json`. Empty: the registry this QuickRust was published in (`qrust doctor`, `release line`) |
 | `toolchain.auto-update` | `background`, `off` | `background` | `QRUST_TOOLCHAIN_AUTO_UPDATE` | once a day after a build, check in the background whether the channel the build used has a newer release, and install it for the next build; never in CI |
 | `toolchain.dist-server` | string | `https://static.rust-lang.org` | `QRUST_DIST_SERVER` | where Rust releases are downloaded from |
 | `security.persist-environment` | `allowlist`, `none` | `allowlist` | `QRUST_SECURITY_PERSIST_ENVIRONMENT` | which environment values run records keep: build-relevant variables only, or none |
@@ -94,7 +95,7 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 
 A key's environment variable is `QRUST_` followed by the key in upper case with `.` and `-` replaced by `_`, except for the keys whose variable is listed otherwise above (`QRUST_MODE`, `QRUST_OUTPUT`, `QRUST_NESTED`, `QRUST_REPORT`, `QRUST_EARLY_CUTOFF`, `QRUST_CACHE_MAX_SIZE`, `QRUST_CACHE_MIN_FREE`, `QRUST_UPDATE_URL`, `QRUST_TOOLCHAIN_AUTO_UPDATE`, `QRUST_DIST_SERVER`).
 
-A run counts as CI when one of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION` is set to a value other than empty, `false` or `0`. CI selects `incremental.ci` over `incremental.local-dev` and turns off `toolchain.auto-update`. An explicit `CARGO_INCREMENTAL` in the environment always wins over both `incremental.*` keys.
+A run counts as CI when one of `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION` is set to a value other than empty, `false` or `0`. CI selects `incremental.ci` over `incremental.local-dev` and turns off `toolchain.auto-update` and `self.update-check`. An explicit `CARGO_INCREMENTAL` in the environment always wins over both `incremental.*` keys.
 
 ## Toolchain selection
 

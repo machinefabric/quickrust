@@ -44,6 +44,8 @@ Ciò da cui questo non protegge: un manifest autentico ma vecchio. Chi controlla
 
 I gestori di pacchetti hanno una propria catena. Una copia installata con apt o dnf viene verificata da questi rispetto alla chiave OpenPGP del repository di MachineFabric, e una formula Homebrew contiene lo SHA-256 dell'archivio.
 
+Una volta al giorno, dopo una build, QuickRust cerca anche da sé una release più recente (`self.update-check`): un processo separato a bassa priorità legge il charter del registro, il manifest di QuickRust e le loro firme, con gli stessi controlli di `qrust self update`, e registra la release più recente che trova. Queste semplici richieste HTTPS GET sono tutto ciò che invia: nessun identificativo, nulla sulla macchina, sull'utente o sulle sue build, e `qrust/<versione>` come user agent. L'host del registro vede ciò che gli mostra qualsiasi download: quell'indirizzo e quella versione. Il controllo non installa nulla. Una release più recente viene solo nominata, dopo una build successiva, con il comando che la installa. Non viene mai eseguito nella CI, e `self.update-check = "off"` lo disattiva.
+
 ## La cache degli artefatti di QuickRust {#quickrusts-artifact-cache}
 
 In fast mode QuickRust ripristina gli output del compilatore invece di compilare quando la stessa unità è già stata compilata in precedenza. La cache è locale all'utente (`~/.qrust/cache/artifacts`, dentro `~/.qrust/cache`, che viene creata con modalità 0700), non ha alcun componente di rete e non viene mai consultata dietro un wrapper di rustc configurato dall'utente.

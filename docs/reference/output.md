@@ -161,9 +161,9 @@ The closing line:
 |---|---|
 | A QuickRust command that could not run (exit status 2) | `FAIL <message>` on stderr |
 | A warning about a build QuickRust could not fully observe or record (it still ran) | `WARN <message>` on stderr |
-| Something QuickRust does or knows (the compiler driver is being built, the disk is nearly full, restored crates name another directory) | `NOTE <message>` on stderr |
+| Something QuickRust does or knows (the compiler driver is being built, the disk is nearly full, restored crates name another directory, a newer QuickRust is available) | `NOTE <message>` on stderr |
 | The result of a management command (`qrust toolchain ...`, `qrust baseline set`, `qrust fix --apply`, `qrust self uninstall`) | `OK   <message>` on stdout |
-| A long-running phase (toolchain install, `qrust setup`, `qrust install`, `qrust gc`, `qrust self update`) | a status line, then `OK   <message> [<time>]` or `FAIL <message> [<time>]` |
+| A long-running phase (toolchain install, `qrust setup`, `qrust install`, `qrust gc`, `qrust self check`, `qrust self update`) | a status line, then `OK   <message> [<time>]` or `FAIL <message> [<time>]` |
 
 Examples:
 

@@ -116,6 +116,9 @@ fn test0277_a_build_from_source_has_no_release_line_and_says_so() {
     let update = run(sb.qrust(&sb.dir).args(["self", "update"]).env("HOME", &home).env("QRUST_UPDATE_URL", "http://127.0.0.1:9"));
     assert_eq!(update.status.code(), Some(2));
     assert!(stderr(&update).contains("was built from source, so it has no release line to update from"), "{}", stderr(&update));
+    let check = run(sb.qrust(&sb.dir).args(["self", "check"]).env("HOME", &home).env("QRUST_UPDATE_URL", "http://127.0.0.1:9"));
+    assert_eq!(check.status.code(), Some(2));
+    assert!(stderr(&check).contains("was built from source, so it has no release line to look for a newer release on"), "{}", stderr(&check));
 }
 
 /// A registry, its signing environment and its roots are what any build in a release environment
@@ -340,4 +343,69 @@ fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed
     assert!(out.status.success() && stderr(&out).contains(&format!("QuickRust 999.0.0 installed (was {})", current)), "{}", stderr(&out));
     assert_eq!(stdout(&ok(Command::new(&installed).arg("--version"))), "qrust 999.0.0\n");
     assert_eq!(stdout(&ok(Command::new(sb.home.join("bin/cargo")).arg("--version"))), "qrust 999.0.0\n");
+}
+
+/// The variables any of which makes a run count as CI, where QuickRust never looks for a release.
+const CI_VARIABLES: [&str; 7] = ["CI", "GITHUB_ACTIONS", "GITLAB_CI", "BUILDKITE", "JENKINS_URL", "TF_BUILD", "TEAMCITY_VERSION"];
+
+// TEST0326: A released quickrust finds a newer signed release after a build and names the command
+#[test]
+fn test0326_a_released_quickrust_finds_a_newer_signed_release_after_a_build_and_names_the_command() {
+    let quickrust = released_quickrust();
+    let server = common::registry::Registry::start();
+    let line = Line::new();
+    let published = Published { server: &server, line: &line };
+    published.charter();
+    let newer = published.release(CHANNEL, "999.0.0", "qrust 999.0.0", None, None);
+    published.sign(&newer);
+    let current = env!("CARGO_PKG_VERSION");
+    let released = |sb: &Sandbox, args: &[&str]| -> Command {
+        let home = sb.dir.join("user");
+        fs::create_dir_all(&home).unwrap();
+        let mut c = sb.with_shim(quickrust.to_str().unwrap(), &sb.dir);
+        c.args(args).env("HOME", &home).env("QRUST_UPDATE_URL", &server.url);
+        for name in CI_VARIABLES {
+            c.env_remove(name);
+        }
+        c
+    };
+    let state = |sb: &Sandbox| fs::read_to_string(sb.home.join("self-update.json")).ok().map(|s| serde_json::from_str::<serde_json::Value>(&s).unwrap());
+
+    // Asked: the newer release, and what installs it.
+    let sb = Sandbox::new("self-check");
+    let checked = ok(&mut released(&sb, &["self", "check"]));
+    assert!(stderr(&checked).contains(&format!("QuickRust 999.0.0 is available (this is {}): run `qrust self update` to update", current)), "{}", stderr(&checked));
+    let doctor = stdout(&run(&mut released(&sb, &["doctor"])));
+    assert!(doctor.contains(&format!("newest release     999.0.0 on {}, checked", server.url)), "{}", doctor);
+
+    // A registry that cannot be reached: `qrust self check` says why, and doctor says the check
+    // did not finish.
+    let unreachable = run(released(&sb, &["self", "check"]).env("QRUST_UPDATE_URL", "http://127.0.0.1:9"));
+    assert_eq!(unreachable.status.code(), Some(2), "{}", stderr(&unreachable));
+    let doctor = stdout(&run(released(&sb, &["doctor"]).env("QRUST_UPDATE_URL", "http://127.0.0.1:9")));
+    assert!(doctor.contains("newest release     the check") && doctor.contains("did not finish"), "{}", doctor);
+
+    // Not asked: a build starts the check in the background, and returns without waiting for it.
+    let sb = Sandbox::new("self-check-build");
+    sb.package("p", "p");
+    let mut build = released(&sb, &["build"]);
+    build.current_dir(sb.dir.join("p"));
+    ok(&mut build);
+    let started = state(&sb).expect("the build marked a check started before it returned");
+    assert!(started["checked_ns"].as_u64().unwrap() > 0);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while state(&sb).and_then(|s| s["latest"].as_str().map(str::to_string)).as_deref() != Some("999.0.0") {
+        assert!(std::time::Instant::now() < deadline, "the background check recorded {:?}; its log:\n{}", state(&sb), fs::read_to_string(sb.home.join("self-update.log")).unwrap_or_default());
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+
+    // Turned off, or in CI: a build starts no check.
+    for (name, value) in [("QRUST_SELF_UPDATE_CHECK", "off"), ("CI", "true"), ("TF_BUILD", "True")] {
+        let sb = Sandbox::new("self-check-off");
+        sb.package("p", "p");
+        let mut build = released(&sb, &["build"]);
+        build.current_dir(sb.dir.join("p")).env(name, value);
+        ok(&mut build);
+        assert_eq!(state(&sb), None, "{}={}", name, value);
+    }
 }

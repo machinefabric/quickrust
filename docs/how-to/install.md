@@ -146,6 +146,22 @@ If your releases come from another release registry, set `self.update-url` (or `
 
 Toolchains are updated separately: see [How to choose and manage toolchains](choose-a-toolchain.md#keep-toolchains-current).
 
+### Know when there is a new release
+
+QuickRust tells you itself. Once a day, after a build, it checks in the background whether a newer release is published on its channel, reading the same signed manifest `qrust self update` installs from. The next build in a terminal then ends with a note such as:
+
+```text
+NOTE QuickRust 1.170.0 is available (this is 1.164.1495): run `qrust self update` to update
+```
+
+For a package manager's installation, the note names that manager's command instead, such as `brew upgrade quickrust`. It is shown at most once a day, and not at all once you are on that release.
+
+The check never holds up a build. It runs as a separate low-priority process, each of its requests is one attempt of at most 10 seconds, and its result is only told after a later build. When it cannot be made, for example offline, or behind a proxy that refuses it, or with the registry unreachable, nothing is said and it is tried again the next day. It never runs in CI, and a QuickRust built from source has no release line to check.
+
+To check now, run `qrust self check`: it says whether a newer release is published and what to run, or why it could not tell. `qrust doctor` shows the newest release the last check found, and when it ran.
+
+To turn the background check off, set `self.update-check = "off"` in `~/.qrust/config.toml`, or `QRUST_SELF_UPDATE_CHECK=off` in the environment. The check sends nothing about you or your builds: it reads the registry's charter, the manifest and their signatures, with `qrust/<version>` as its user agent ([Security and privacy](../explanation/security.md#updates)).
+
 ## Uninstall QuickRust
 
 ```bash

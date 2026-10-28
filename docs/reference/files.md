@@ -20,6 +20,8 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 | `~/.qrust/active/` | one file per running session | only while no QuickRust command runs |
 | `~/.qrust/cargo-runs/` | one empty file per QuickRust process that may be running a Cargo with QuickRust's Cargo home, named by its process id, and the `.lock` they are written under. A toolchain program QuickRust runs by its name (`rust-analyzer`, `rustfmt`, …) has none: a Cargo it runs is QuickRust's `cargo`, which has its own, so an editor's rust-analyzer does not keep Cargo's clean from running; a collection runs Cargo's clean only while none of them is running ([Collection](#collection)). A file whose process is gone holds nothing and is removed by the next command or collection. A command that cannot write its file stops before it runs Cargo | only while no QuickRust command runs |
 | `~/.qrust/linker/ld` | a link to the `wild` in use ([Fast mode](fast-mode.md#linker)) | recreated by the next build |
+| `~/.qrust/self-update.json` | what the checks for a newer QuickRust found ([Update QuickRust](../how-to/install.md#know-when-there-is-a-new-release)): when the last one started, the registry and channel it read, the newest release there, why the last one did not finish if it did not, and when a newer release was last told; read by builds, `qrust self check` and `qrust doctor` | a check starts after the next build |
+| `~/.qrust/self-update.log` | the output of the last background check | written again by the next one |
 | `~/.qrust/notices/` | markers of notes shown once or once an hour | the notes are shown again |
 | `~/.qrust/cache/` | QuickRust's cache (below) | see below |
 

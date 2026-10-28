@@ -38,6 +38,7 @@ pub mod space;
 pub mod store;
 pub mod toolchain;
 pub mod ui;
+pub mod update_check;
 pub mod util;
 pub mod view;
 pub mod waste;

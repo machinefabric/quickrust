@@ -104,6 +104,8 @@ INSTALLATION
                                      install QuickRust for this user: ~/.qrust/bin first on PATH (cargo, rustc,
                                      rustfmt, ... are QuickRust), credentials and registries imported once from
                                      ~/.cargo, the stable toolchain installed
+    qrust self check                 whether a newer QuickRust is published, and the command that installs it
+                                     (QuickRust checks once a day in the background; `self.update-check`)
     qrust self update                install QuickRust's latest release in place of this one
     qrust self uninstall --yes       remove ~/.qrust and the PATH lines
 
@@ -1370,6 +1372,16 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
         Some(line) => println!("  release line       the {} channel of {} ({} signing roots, {}; {} charter roots)", line.channel, line.registry, line.trust.roots.len(), line.trust.environment, line.charter_roots.len()),
         None => println!("  release line       none: built from source, so `qrust self update` has nothing to update from"),
     }
+    if crate::release::identity().is_some() {
+        let state = crate::update_check::load(&crate::update_check::state_path());
+        let when = |ns: u64| human_dur(util::now_wall_ns().saturating_sub(ns));
+        match (&state.latest, &state.failed) {
+            _ if state.checked_ns == 0 => println!("  newest release     not checked yet (`qrust self check`)"),
+            (_, Some(why)) => println!("  newest release     the check {} ago did not finish: {}", when(state.checked_ns), why),
+            (Some(latest), None) => println!("  newest release     {} on {}, checked {} ago", latest, state.registry, when(state.checked_ns)),
+            (None, None) => println!("  newest release     none published on {}, checked {} ago", state.registry, when(state.checked_ns)),
+        }
+    }
     match crate::package::of(&exe) {
         Ok(Some(p)) => println!("  installed by       {} ({}); `{}` updates it", p.manager, p.program.display(), p.update),
         Ok(None) => println!("  installed by       itself; `qrust self update` updates it"),
@@ -1560,13 +1572,20 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
     Ok(0)
 }
 
-/// `qrust self update` and `qrust self uninstall`: QuickRust replaced by its latest release, or
-/// removed from this machine.
+/// `qrust self check`, `qrust self update` and `qrust self uninstall`: whether a newer QuickRust
+/// is published, QuickRust replaced by its latest release, or removed from this machine.
 fn cmd_self(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let action = a.positional();
     let yes = a.flag("--yes");
+    let background = a.flag("--background");
     a.finish()?;
+    if action.as_deref() == Some("check") {
+        return self_check(background);
+    }
+    if background {
+        return Err("--background is for `qrust self check`".into());
+    }
     match action.as_deref() {
         Some("update") => crate::setup::refuse_for_package(crate::setup::OwnAction::Update)?,
         Some("uninstall") => crate::setup::refuse_for_package(crate::setup::OwnAction::Uninstall)?,
@@ -1593,7 +1612,37 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
             }
             Ok(0)
         }
-        Some(other) => Err(format!("unknown `qrust self` action `{}` (update, uninstall)", other)),
-        None => Err("`qrust self` needs an action: update, uninstall".into()),
+        Some(other) => Err(format!("unknown `qrust self` action `{}` (check, update, uninstall)", other)),
+        None => Err("`qrust self` needs an action: check, update, uninstall".into()),
     }
+}
+
+/// `qrust self check`: whether a newer QuickRust is published on this QuickRust's channel, read
+/// from the manifest `qrust self update` installs from, and recorded for the note a build gives.
+/// `--background` is the check a build starts: it prints only to its log.
+fn self_check(background: bool) -> CmdResult {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
+    let source = crate::update_check::Source::of(&cfg)?;
+    let client = crate::net::Client::bounded(crate::update_check::REQUEST_TIMEOUT);
+    let path = crate::update_check::state_path();
+    let current = env!("CARGO_PKG_VERSION");
+    if background {
+        let found = crate::update_check::check(&path, &source, &client, util::now_wall_ns())?;
+        println!("the newest {} release at {} is {}", source.channel, source.registry, found.as_deref().unwrap_or("none yet"));
+        return Ok(0);
+    }
+    let mut phase = crate::ui::Phase::start();
+    phase.status("Looking for a newer QuickRust", true);
+    let found = crate::update_check::check(&path, &source, &client, util::now_wall_ns()).inspect_err(|_| phase.clear_line())?;
+    let newer = crate::update_check::newer(&crate::update_check::load(&path), &source, current);
+    match (newer, found) {
+        (Some(latest), _) => {
+            let update = crate::setup::update_command().inspect_err(|_| phase.clear_line())?;
+            phase.finish(true, &crate::update_check::message(&latest, current, &update));
+        }
+        (None, None) => phase.finish(true, &format!("no QuickRust release is published on the {} channel at {} yet", source.channel, source.registry)),
+        (None, Some(_)) => phase.finish(true, &format!("QuickRust {} is the latest", current)),
+    }
+    Ok(0)
 }

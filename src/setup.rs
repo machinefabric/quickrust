@@ -212,6 +212,17 @@ pub fn refuse_for_package(action: OwnAction) -> Result<(), String> {
     refuse_for_package_in(&engine::bin_dir(), &me, action)
 }
 
+/// The command that updates this QuickRust: the package manager's when one installed it (the
+/// running binary, or the one `~/.qrust/bin` links to), as `qrust self update` names it, and
+/// otherwise `qrust self update` itself.
+pub fn update_command() -> Result<String, String> {
+    let (me, _) = crate::resolve::self_identity();
+    Ok(match package_install(&engine::bin_dir(), &me)? {
+        Some(p) => p.update,
+        None => "qrust self update".to_string(),
+    })
+}
+
 fn refuse_for_package_in(bin: &Path, me: &Path, action: OwnAction) -> Result<(), String> {
     let Some(p) = package_install(bin, me)? else { return Ok(()) };
     Err(match action {

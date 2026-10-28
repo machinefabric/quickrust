@@ -146,6 +146,22 @@ Se le tue release provengono da un altro registro delle release, imposta `self.u
 
 Le toolchain vengono aggiornate separatamente: vedi [Come scegliere e gestire le toolchain](choose-a-toolchain.md#keep-toolchains-current).
 
+### Sapere quando c'è una nuova release {#know-when-there-is-a-new-release}
+
+È QuickRust stesso a dirtelo. Una volta al giorno, dopo una build, controlla in background se sul suo canale è pubblicata una release più recente, leggendo lo stesso manifest firmato da cui installa `qrust self update`. La build successiva in un terminale termina poi con una nota come:
+
+```text
+NOTE QuickRust 1.170.0 is available (this is 1.164.1495): run `qrust self update` to update
+```
+
+Per un'installazione di un gestore di pacchetti, la nota indica invece il comando di quel gestore, per esempio `brew upgrade quickrust`. Viene mostrata al massimo una volta al giorno, e per niente una volta che sei su quella release.
+
+Il controllo non rallenta mai una build. Viene eseguito come processo separato a bassa priorità, ognuna delle sue richieste è un solo tentativo di al massimo 10 secondi, e il suo risultato viene detto solo dopo una build successiva. Quando non si può fare, per esempio offline, dietro un proxy che lo rifiuta o con il registro irraggiungibile, non dice nulla e viene ritentato il giorno dopo. Non viene mai eseguito nella CI, e un QuickRust compilato dal sorgente non ha una linea di release da controllare.
+
+Per controllare subito, esegui `qrust self check`: dice se è pubblicata una release più recente e che cosa eseguire, oppure perché non ha potuto dirlo. `qrust doctor` mostra la release più recente trovata dall'ultimo controllo, e quando è stato eseguito.
+
+Per disattivare il controllo in background, imposta `self.update-check = "off"` in `~/.qrust/config.toml`, oppure `QRUST_SELF_UPDATE_CHECK=off` nell'ambiente. Il controllo non invia nulla su di te o sulle tue build: legge il charter del registro, il manifest e le loro firme, con `qrust/<versione>` come user agent ([Sicurezza e privacy](../explanation/security.md#updates)).
+
 ## Disinstalla QuickRust {#uninstall-quickrust}
 
 ```bash

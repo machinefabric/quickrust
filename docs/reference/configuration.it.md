@@ -85,7 +85,8 @@ Una configurazione non valida ferma ogni comando tranne `qrust upstream`, con ex
 | `ci.budget-policy` | string | `.qrust/budgets.toml` | `QRUST_CI_BUDGET_POLICY` | il file dei budget, relativo alla radice del workspace ([Budget](budgets.md)) |
 | `ci.baseline` | string | `main` | `QRUST_CI_BASELINE` | la baseline rispetto alla quale vengono valutati i budget |
 | `ci.enforce-on-build` | bool | `false` | `QRUST_CI_ENFORCE_ON_BUILD` | valuta i budget dopo ogni comando di build riuscito; un fallimento bloccante termina con exit 3 |
-| `self.update-url` | string | vuoto | `QRUST_UPDATE_URL` | l'ancora di un altro registro delle release da cui `qrust self update` legge le release di QuickRust: uno a cui MachineFabric ha dato un charter, che serve in `<url>/charter.json`. Vuoto: il registro in cui è stato pubblicato questo QuickRust (`qrust doctor`, `release line`) |
+| `self.update-check` | `background`, `off` | `background` | `QRUST_SELF_UPDATE_CHECK` | una volta al giorno dopo una build, controlla in background se sul canale di questo QuickRust è pubblicato un QuickRust più recente e, dopo una build in un terminale, lo dice al massimo una volta al giorno, con il comando che lo aggiorna ([Aggiornare QuickRust](../how-to/install.md#update-quickrust)); un controllo che non si può fare non dice nulla; mai nella CI |
+| `self.update-url` | string | vuoto | `QRUST_UPDATE_URL` | l'ancora di un altro registro delle release da cui `qrust self update` e `qrust self check` leggono le release di QuickRust: uno a cui MachineFabric ha dato un charter, che serve in `<url>/charter.json`. Vuoto: il registro in cui è stato pubblicato questo QuickRust (`qrust doctor`, `release line`) |
 | `toolchain.auto-update` | `background`, `off` | `background` | `QRUST_TOOLCHAIN_AUTO_UPDATE` | una volta al giorno dopo una build, controlla in background se il canale usato dalla build ha una release più recente, e la installa per la build successiva; mai nella CI |
 | `toolchain.dist-server` | string | `https://static.rust-lang.org` | `QRUST_DIST_SERVER` | da dove vengono scaricate le release di Rust |
 | `security.persist-environment` | `allowlist`, `none` | `allowlist` | `QRUST_SECURITY_PERSIST_ENVIRONMENT` | quali valori dell'ambiente conservano i record delle esecuzioni: solo le variabili rilevanti per la build, oppure nessuno |
@@ -94,7 +95,7 @@ Una configurazione non valida ferma ogni comando tranne `qrust upstream`, con ex
 
 La variabile d'ambiente di una chiave è `QRUST_` seguito dalla chiave in maiuscolo con `.` e `-` sostituiti da `_`, tranne per le chiavi la cui variabile è indicata diversamente qui sopra (`QRUST_MODE`, `QRUST_OUTPUT`, `QRUST_NESTED`, `QRUST_REPORT`, `QRUST_EARLY_CUTOFF`, `QRUST_CACHE_MAX_SIZE`, `QRUST_CACHE_MIN_FREE`, `QRUST_UPDATE_URL`, `QRUST_TOOLCHAIN_AUTO_UPDATE`, `QRUST_DIST_SERVER`).
 
-Un'esecuzione conta come CI quando una tra `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION` è impostata a un valore diverso da vuoto, `false` o `0`. La CI seleziona `incremental.ci` al posto di `incremental.local-dev` e disattiva `toolchain.auto-update`. Un `CARGO_INCREMENTAL` esplicito nell'ambiente prevale sempre su entrambe le chiavi `incremental.*`.
+Un'esecuzione conta come CI quando una tra `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `BUILDKITE`, `JENKINS_URL`, `TF_BUILD`, `TEAMCITY_VERSION` è impostata a un valore diverso da vuoto, `false` o `0`. La CI seleziona `incremental.ci` al posto di `incremental.local-dev` e disattiva `toolchain.auto-update` e `self.update-check`. Un `CARGO_INCREMENTAL` esplicito nell'ambiente prevale sempre su entrambe le chiavi `incremental.*`.
 
 ## Selezione della toolchain {#toolchain-selection}
 

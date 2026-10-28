@@ -19,6 +19,8 @@ use std::time::Duration;
 const MAX_IN_MEMORY: u64 = 64 << 20;
 /// Attempts of one download whose transfer breaks off (each resumes where the last stopped).
 const ATTEMPTS: u32 = 4;
+/// What every request says it comes from: QuickRust and its version, and nothing about the user.
+const USER_AGENT: &str = concat!("qrust/", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug)]
 pub enum Error {
@@ -64,6 +66,8 @@ impl Error {
 #[derive(Clone)]
 pub struct Client {
     agent: ureq::Agent,
+    /// Attempts of a request that fails transiently.
+    attempts: u32,
 }
 
 /// The answer to a conditional GET.
@@ -84,9 +88,16 @@ impl Client {
             .try_proxy_from_env(true)
             .timeout_connect(Duration::from_secs(30))
             .timeout_read(Duration::from_secs(60))
-            .user_agent(&format!("qrust/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(USER_AGENT)
             .build();
-        Client { agent }
+        Client { agent, attempts: ATTEMPTS }
+    }
+
+    /// A client for a request nobody waits on and that is asked again later anyway: each request
+    /// is one attempt, over within `whole` from the connection to the last byte of its answer.
+    pub fn bounded(whole: Duration) -> Client {
+        let agent = ureq::AgentBuilder::new().try_proxy_from_env(true).timeout_connect(whole).timeout(whole).user_agent(USER_AGENT).build();
+        Client { agent, attempts: 1 }
     }
 
     fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<ureq::Response, Error> {
@@ -103,12 +114,12 @@ impl Client {
 
     /// The body of `url`, read into memory.
     pub fn get_bytes(&self, url: &str, headers: &[(&str, &str)]) -> Result<Vec<u8>, Error> {
-        retrying(|| read_body(url, self.get(url, headers)?))
+        retrying(self.attempts, || read_body(url, self.get(url, headers)?))
     }
 
     /// The body of `url` unless it still has the entity tag `etag` (HTTP 304).
     pub fn get_if_changed(&self, url: &str, etag: Option<&str>, headers: &[(&str, &str)]) -> Result<Fetched, Error> {
-        retrying(|| {
+        retrying(self.attempts, || {
             let mut all: Vec<(&str, &str)> = headers.to_vec();
             if let Some(tag) = etag {
                 all.push(("If-None-Match", tag));
@@ -132,7 +143,7 @@ impl Client {
         }
         let mut fresh = !part.exists();
         loop {
-            let actual = retrying(|| self.transfer(url, &part, progress))?;
+            let actual = retrying(self.attempts, || self.transfer(url, &part, progress))?;
             if actual.eq_ignore_ascii_case(sha256) {
                 fs::rename(&part, dest).map_err(io_err(dest))?;
                 return Ok(());
@@ -210,12 +221,12 @@ fn read_body(url: &str, resp: ureq::Response) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-/// Runs `attempt` until it succeeds, fails for good, or has failed transiently `ATTEMPTS` times.
-fn retrying<T>(mut attempt: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
+/// Runs `attempt` until it succeeds, fails for good, or has failed transiently `attempts` times.
+fn retrying<T>(attempts: u32, mut attempt: impl FnMut() -> Result<T, Error>) -> Result<T, Error> {
     let mut n = 1;
     loop {
         match attempt() {
-            Err(e) if e.transient() && n < ATTEMPTS => {
+            Err(e) if e.transient() && n < attempts => {
                 std::thread::sleep(Duration::from_millis(250 << n));
                 n += 1;
             }

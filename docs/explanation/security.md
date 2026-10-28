@@ -86,6 +86,16 @@ The package managers have their own chain. A copy installed with apt or dnf is v
 by them against the MachineFabric repository's OpenPGP key, and a Homebrew formula carries
 the archive's SHA-256.
 
+Once a day, after a build, QuickRust also looks for a newer release by itself
+(`self.update-check`): a separate, low-priority process reads the registry's charter,
+QuickRust's manifest and their signatures, under the same checks as `qrust self update`,
+and records the newest release it finds. These plain HTTPS GET requests are all it sends: no identifier,
+nothing about the machine, the user or their builds, and `qrust/<version>` as its user
+agent. The registry's host sees what any download shows it: that address and that version.
+The check installs nothing. A newer release is only named, after a later build, with the
+command that installs it. It never runs in CI, and `self.update-check = "off"` turns it
+off.
+
 ## QuickRust's artifact cache
 
 In fast mode QuickRust restores compiler outputs instead of compiling when the same unit was

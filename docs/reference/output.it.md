@@ -161,9 +161,9 @@ La riga di chiusura:
 |---|---|
 | Un comando di QuickRust che non è potuto partire (exit status 2) | `FAIL <message>` su stderr |
 | Un warning su una build che QuickRust non ha potuto osservare o registrare del tutto (è stata comunque eseguita) | `WARN <message>` su stderr |
-| Qualcosa che QuickRust fa o sa (il driver del compilatore è in fase di build, il disco è quasi pieno, i crate ripristinati indicano un'altra directory) | `NOTE <message>` su stderr |
+| Qualcosa che QuickRust fa o sa (il driver del compilatore è in fase di build, il disco è quasi pieno, i crate ripristinati indicano un'altra directory, è disponibile un QuickRust più recente) | `NOTE <message>` su stderr |
 | Il risultato di un comando di gestione (`qrust toolchain ...`, `qrust baseline set`, `qrust fix --apply`, `qrust self uninstall`) | `OK   <message>` su stdout |
-| Una fase di lunga durata (installazione della toolchain, `qrust setup`, `qrust install`, `qrust gc`, `qrust self update`) | una riga di stato, poi `OK   <message> [<time>]` oppure `FAIL <message> [<time>]` |
+| Una fase di lunga durata (installazione della toolchain, `qrust setup`, `qrust install`, `qrust gc`, `qrust self check`, `qrust self update`) | una riga di stato, poi `OK   <message> [<time>]` oppure `FAIL <message> [<time>]` |
 
 Esempi:
 

@@ -663,6 +663,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             _ => {}
         }
     }
+    // A newer QuickRust a background check found, then (once a day) the next check.
+    if render {
+        if let Some(note) = crate::update_check::notice(&cfg) {
+            crate::ui::note(&note);
+        }
+    }
+    crate::update_check::start(&cfg, &resolve::self_identity().0);
     // Once a day, a channel's newer release is looked for in the background.
     if let Some(key) = &engine.channel {
         if let Err(e) = crate::toolchain::start_update(&crate::toolchain::Layout::current(), key, &resolve::self_identity().0, cfg.str("toolchain.auto-update")) {
