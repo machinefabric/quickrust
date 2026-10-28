@@ -1,6 +1,6 @@
 [package]
 name = "quickrust"
-version = "1.164.1495"
+version = "1.166.1519"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
@@ -14,7 +14,7 @@ members = [".", "bench", "tools/quickrust-dist"]
 # The version the members that build QuickRust's release carry, so a release build
 # names the version it releases.
 [workspace.package]
-version = "1.164.1495"
+version = "1.166.1519"
 
 [lib]
 name = "quickrust"

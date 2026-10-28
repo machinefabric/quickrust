@@ -207,6 +207,10 @@ const HOLD: &str = ".hold-";
 /// removes such records, but a cache inside its bounds is never collected, and a tool that asks
 /// for a held path at every step left dozens of them a run beside the build directories. So each
 /// new hold first clears the records of holders that are gone.
+///
+/// The record is written under the directory's lock, which a collection takes before it looks
+/// again whether the directory is held (`held`) and removes it: so a collection either sees the
+/// hold or has removed the directory before the hold is recorded, never removes it after.
 pub fn hold(dir: &Path, pid: u32) -> Result<(), String> {
     let builds = dir.parent().ok_or_else(|| format!("{} is not a build directory", dir.display()))?;
     let mut name = dir.file_name().map(|n| n.to_os_string()).unwrap_or_default();
@@ -214,7 +218,20 @@ pub fn hold(dir: &Path, pid: u32) -> Result<(), String> {
     let file = dir.with_file_name(name);
     util::create_private_dir(builds).map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))?;
     release_ended_holders(builds);
+    let _lock = util::SharedLock::acquire(&lock_path(dir)).map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))?;
     fs::write(&file, b"").map_err(|e| format!("cannot record a hold on {}: {}", dir.display(), e))
+}
+
+/// Whether a running process holds the managed directory `dir`.
+pub fn held(dir: &Path) -> bool {
+    let (Some(builds), Some(name)) = (dir.parent(), dir.file_name()) else {
+        return false;
+    };
+    let name = util::lossy(name);
+    let Ok(entries) = fs::read_dir(builds) else {
+        return false;
+    };
+    entries.flatten().any(|entry| hold_of(&util::lossy(&entry.file_name())).is_some_and(|(of, holder)| of == name && crate::proc::pid_alive(holder)))
 }
 
 /// Removes the hold records in `builds` whose holder is no longer running. One that cannot be
@@ -247,9 +264,15 @@ pub struct InUse {
 }
 
 pub fn in_use(dir: &Path) -> InUse {
+    InUse { _lock: util::SharedLock::acquire(&lock_path(dir)).ok() }
+}
+
+/// The lock beside a managed directory: shared by the commands using it, exclusive for a
+/// collection removing it.
+fn lock_path(dir: &Path) -> PathBuf {
     let mut name = dir.file_name().map(|n| n.to_os_string()).unwrap_or_default();
     name.push(".lock");
-    InUse { _lock: util::SharedLock::acquire(&dir.with_file_name(name)).ok() }
+    dir.with_file_name(name)
 }
 
 #[cfg(test)]
@@ -354,6 +377,8 @@ mod tests {
                 "app-fca2211b77f340ae.json".to_string(),
                 "app-fca2211b77f340ae.lock".to_string(),
                 format!("lib-0011223344556677.staging.hold-{}", me),
+                // The lock the hold was recorded under.
+                "lib-0011223344556677.staging.lock".to_string(),
             ],
             "the records of the holder that is gone are cleared, and nothing else"
         );

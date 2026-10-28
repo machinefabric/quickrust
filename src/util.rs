@@ -460,7 +460,9 @@ impl ExclusiveLock {
 }
 
 /// A shared lock on a file, held until dropped, alongside other shared holders; an exclusive
-/// holder waits for all of them (Unix: `flock`). On Windows it holds the file open only.
+/// holder waits for all of them, and they for it (Unix: `flock`). On Windows it holds the file
+/// open, sharing it, which an exclusive holder's unshared open refuses and waits out, as this waits
+/// out an exclusive holder.
 pub struct SharedLock {
     _file: fs::File,
 }
@@ -470,13 +472,13 @@ impl SharedLock {
         if let Some(dir) = path.parent() {
             create_private_dir(dir)?;
         }
-        let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
+            let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
             loop {
                 if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH) } == 0 {
-                    break;
+                    return Ok(SharedLock { _file: file });
                 }
                 let e = io::Error::last_os_error();
                 if e.kind() != io::ErrorKind::Interrupted {
@@ -484,7 +486,17 @@ impl SharedLock {
                 }
             }
         }
-        Ok(SharedLock { _file: file })
+        #[cfg(windows)]
+        {
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            loop {
+                match fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) {
+                    Ok(file) => return Ok(SharedLock { _file: file }),
+                    Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => std::thread::sleep(std::time::Duration::from_millis(10)),
+                    Err(e) => return Err(e),
+                }
+            }
+        }
     }
 }
 

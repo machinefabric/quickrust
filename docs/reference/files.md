@@ -57,7 +57,7 @@ A collection removes, in this order:
 
 A collection counts what it frees itself and does not measure the disk again until it ends, because the disk may not show what it frees. A snapshot (Time Machine's hourly local snapshots on macOS, btrfs or ZFS snapshots) keeps the blocks of every file older than itself, and what was used least recently always is. What the disk does not show at the end is recorded in `usage.json` and counted as free, before and after commands and by the next collection, until the disk shows it. That lasts a day at most, the life of a Time Machine local snapshot. After a day, the disk's own figure counts again.
 
-Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a source an install holds; an artifact entry whose files a build directory in use links. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
+Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a source an install holds; an artifact entry whose files a build directory in use links. A collection runs for minutes, so just before it removes a build directory it asks again, under the directory's lock, whether it is held or was used: a run that starts during a collection keeps what it holds. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
 
 | Trigger | Collection |
 |---|---|

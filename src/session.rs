@@ -469,10 +469,13 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let nested_upstream = parent.is_some() && cfg.str("compatibility.nested-cargo") == "upstream";
 
     // The workspace's build directory is in use (QuickRust's cache leaves it alone) while this runs.
+    // Marked used under its lock: a collection removing it removes its record with it, so a mark
+    // made first would be lost to a removal this command then waits out.
     let _in_use = match (&engine.target, &engine.workspace_root) {
         (Some(t), Some(root)) if t.managed => {
+            let in_use = crate::builddir::in_use(&t.dir);
             crate::builddir::mark_used(&t.dir, root);
-            Some(crate::builddir::in_use(&t.dir))
+            Some(in_use)
         }
         _ => None,
     };

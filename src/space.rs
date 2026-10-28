@@ -31,7 +31,10 @@
 //! lock) or Cargo is building in (Cargo's locks), nor a source an install holds (its lock), nor
 //! an artifact entry whose files are mostly linked by something that stays (a build directory
 //! in use: removing the entry would gain little space and lose it). A removal renames the thing away first, so
-//! a build never sees it half deleted; a build that finds it gone builds it again.
+//! a build never sees it half deleted; a build that finds it gone builds it again. Whether a build
+//! directory is held or was used is asked again under its lock just before it is removed: a
+//! collection runs for minutes, and a run that started since its scan holds directories the scan
+//! found idle.
 //!
 //! Sizes are blocks allocated, and a file with several links (the artifact cache links what it
 //! restores into build directories) counts once, and is freed only with its last link.
@@ -673,16 +676,19 @@ pub fn free(cache: &Path, fs: &FsSpace, now: u64) -> u64 {
 
 /// Removes a build directory unless a command or Cargo uses it, or a program's source unless an
 /// install uses it.
-fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], cargo_builds_in_it: bool) -> Result<bool, String> {
+fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], build: bool) -> Result<bool, String> {
     let lock_path = companions.iter().find(|c| c.extension().is_some_and(|e| e == "lock"));
-    let _ours = match lock_path {
+    let ours = match lock_path {
         Some(l) => match util::ExclusiveLock::try_acquire(l).map_err(|e| e.to_string())? {
             Some(g) => Some(g),
             None => return Ok(false),
         },
         None => None,
     };
-    if cargo_builds_in_it && cargo_building_in(dir) {
+    // What the scan said of a build directory is as old as the collection: one that removes
+    // gigabytes runs for minutes, and a run that started meanwhile holds or builds in directories
+    // the scan found idle. Under its lock nothing new starts using it, so it is asked again here.
+    if build && (cargo_building_in(dir) || used_since_scan(dir)) {
         return Ok(false);
     }
     let doomed = cache.join("tmp").join(format!("{}.{}", util::lossy(dir.file_name().unwrap_or_default()), std::process::id()));
@@ -691,8 +697,17 @@ fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], cargo_bui
     for c in companions {
         let _ = fs::remove_file(c);
     }
+    // Gone from where anything looks for it: what waits for the lock (a build, a hold) need not
+    // wait for gigabytes to be deleted.
+    drop(ours);
     let _ = fs::remove_dir_all(&doomed);
     Ok(true)
+}
+
+/// Whether a build directory is in use now, whatever the scan found: held by a running process,
+/// or used within the protection by its record.
+fn used_since_scan(dir: &Path) -> bool {
+    crate::builddir::held(dir) || crate::builddir::meta(dir).is_some_and(|(_, _, used)| used + PROTECTED_NS > util::now_wall_ns())
 }
 
 /// Whether a Cargo holds one of its locks in this target directory (`<dir>/<profile>/.cargo-lock`
@@ -1217,6 +1232,50 @@ mod tests {
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
         assert!(done.removed.is_empty() && done.skipped_in_use == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
+    }
+
+    // TEST0320: A directory held or built in after the scan stays
+    #[test]
+    fn test0320_a_directory_held_or_built_in_after_the_scan_stays() {
+        let c = cache();
+        let a = workspace(&c, "a");
+        let held = build_dir(&c, "a-1", &a, 5 * 3600, 1000);
+        let built = build_dir(&c, "a-2", &a, 5 * 3600, 1000);
+        let idle = build_dir(&c, "a-3", &a, 5 * 3600, 1000);
+        // What a collection decides from: three directories idle for hours, none held.
+        let found = scan(&c, util::now_wall_ns());
+        let unit = |d: &Path| found.units.iter().find(|u| u.path == d).unwrap().clone();
+        let now = util::now_wall_ns();
+        assert!([&held, &built, &idle].iter().all(|d| unit(d).last_used_ns + PROTECTED_NS < now));
+        // While it removes others, a run starts: it holds one and builds in another.
+        crate::builddir::hold(&held, std::process::id()).unwrap();
+        crate::builddir::mark_used_in(&c.join("builds"), &built, &a);
+        assert_eq!(remove(&c, &unit(&held)), Ok(false), "a directory held since the scan was removed");
+        assert_eq!(remove(&c, &unit(&built)), Ok(false), "a directory built in since the scan was removed");
+        assert!(held.exists() && built.exists());
+        // The one nothing touched goes, on the same scan.
+        assert_eq!(remove(&c, &unit(&idle)), Ok(true));
+        assert!(!idle.exists());
+    }
+
+    // TEST0319: A hold waits for a removal under way
+    #[test]
+    fn test0319_a_hold_waits_for_a_removal_under_way() {
+        let c = cache();
+        let a = workspace(&c, "a");
+        let d = build_dir(&c, "a-1", &a, 5 * 3600, 1000);
+        let record = d.with_file_name(format!("a-1.hold-{}", std::process::id()));
+        // A collection removing the directory holds its lock until the directory is gone.
+        let removing = util::ExclusiveLock::acquire(&d.with_file_name("a-1.lock")).unwrap();
+        let (sent, held) = std::sync::mpsc::channel();
+        let dir = d.clone();
+        let holder = std::thread::spawn(move || sent.send(crate::builddir::hold(&dir, std::process::id())).unwrap());
+        assert!(held.recv_timeout(Duration::from_millis(500)).is_err(), "a hold was recorded while its directory was being removed");
+        assert!(!record.exists());
+        drop(removing);
+        assert_eq!(held.recv_timeout(Duration::from_secs(10)).unwrap(), Ok(()));
+        holder.join().unwrap();
+        assert!(record.is_file());
     }
 
     // TEST0121: Program sources count and go least recently used unless an install holds them
