@@ -20,12 +20,20 @@
 //!    Cargo that holds such a row's id panics at its next save.
 //!
 //! A collection goes by its own count of what it frees, never by measuring the disk again while
-//! it runs: a snapshot (Time Machine's hourly local ones, btrfs, ZFS) keeps the blocks of every
-//! file older than itself, and the least recently used ones always are, so the disk shows nothing
-//! freed until the snapshot goes. Measured again, every removal would look like no progress, and
-//! the collection would remove everything it may. What it removed that the disk does not show yet
-//! is recorded with the count and counted as free (`free`) until the disk shows it, for at most a
-//! day, the life of a Time Machine local snapshot.
+//! it runs: other processes write to the disk meanwhile, and a snapshot keeps the blocks of every
+//! file that changed before it was taken, so the disk would show the removals as no progress, and
+//! the collection would remove everything it may.
+//!
+//! What a snapshot keeps is known, not guessed from what the disk failed to gain: a removed file
+//! is kept when it last changed (its status change time, which nothing sets back) before the
+//! volume's newest snapshot was taken. On macOS that is the APFS volume's snapshots, Time
+//! Machine's hourly local ones among them, listed without privilege (`fs_snapshot_list`). Linux
+//! has no unprivileged way to list a btrfs or ZFS file system's snapshots, and a Windows shadow
+//! copy keeps what it holds in storage of its own, so neither sees one: a cache under a snapshot
+//! there is collected by the disk's own figure. What a collection removed that a snapshot keeps
+//! is recorded with the count, by snapshot, and counted as free (`free`) while that snapshot
+//! exists, for at most a day, the life of a Time Machine local snapshot. Anything else the disk
+//! does not show was taken by another writer, and the bounds go by the disk as it is.
 //!
 //! Nothing used in the last 15 minutes is removed, nor a build directory a command holds (its
 //! lock) or Cargo is building in (Cargo's locks), nor a source an install holds (its lock), nor
@@ -39,7 +47,8 @@
 //! Sizes are blocks allocated, and a file with several links (the artifact cache links what it
 //! restores into build directories) counts once, and is freed only with its last link.
 //!
-//! After a build QuickRust checks whether a collection is due (one `statvfs` and a small file read):
+//! After a build QuickRust checks whether a collection is due (one `statvfs`, on macOS the
+//! volume's snapshot list, and a small file read):
 //! below the free space (as `free` counts it), above the size by the free space it has lost since
 //! the last count, or a day after that count; but not within 15 minutes of one that could not get
 //! within the bounds (a disk others fill), when nothing more has become removable. It then runs
@@ -61,17 +70,111 @@ pub const PROTECTED_NS: u64 = 15 * 60 * 1_000_000_000;
 const DAY_NS: u64 = 24 * 3_600 * 1_000_000_000;
 const USAGE: &str = "usage.json";
 /// The format of `USAGE`; a count of another is no count, and the next collection writes one.
-const USAGE_FORMAT: u64 = 2;
+const USAGE_FORMAT: u64 = 3;
 const LOG: &str = "gc-log.jsonl";
 const LOG_KEEP: usize = 200;
 /// The format of a line of `LOG`; lines of another are not read, and are dropped at the next write.
-const LOG_FORMAT: u64 = 2;
+const LOG_FORMAT: u64 = 3;
 
 /// A filesystem's size and what is available to unprivileged users.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FsSpace {
     pub total: u64,
     pub available: u64,
+}
+
+/// The volume a path is on: its space, and when each of its snapshots was taken (wall-clock
+/// nanoseconds; none where QuickRust cannot see them, see the module notes).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Volume {
+    pub space: FsSpace,
+    pub snapshots: Vec<u64>,
+}
+
+impl Volume {
+    /// When its newest snapshot was taken.
+    fn newest_snapshot(&self) -> Option<u64> {
+        self.snapshots.iter().max().copied()
+    }
+}
+
+/// The volume `path` is on, measured now.
+pub fn volume(path: &Path) -> Result<Volume, String> {
+    let space = fs_space(path).map_err(|e| format!("cannot measure the free space of {}: {}", path.display(), e))?;
+    let snapshots = snapshot_times(path).map_err(|e| format!("cannot list the snapshots of the volume {} is on: {}", path.display(), e))?;
+    Ok(Volume { space, snapshots })
+}
+
+/// When each snapshot of the APFS volume `path` is on was taken (`fs_snapshot_list` on the
+/// volume's root, which needs no privilege); none on a volume of another kind.
+#[cfg(target_os = "macos")]
+fn snapshot_times(path: &Path) -> io::Result<Vec<u64>> {
+    use std::ffi::{CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+    #[repr(C)]
+    struct AttrList {
+        bitmapcount: u16,
+        reserved: u16,
+        commonattr: u32,
+        volattr: u32,
+        dirattr: u32,
+        fileattr: u32,
+        forkattr: u32,
+    }
+    extern "C" {
+        fn fs_snapshot_list(dirfd: libc::c_int, alist: *mut AttrList, attrbuf: *mut libc::c_void, bufsize: libc::size_t, flags: u32) -> libc::c_int;
+    }
+    const ATTR_BIT_MAP_COUNT: u16 = 5;
+    // The name is not used, but the call refuses a list without it (EINVAL).
+    const ATTR_CMN_NAME: u32 = 0x0000_0001;
+    const ATTR_CMN_CRTIME: u32 = 0x0000_0200;
+    const ATTR_CMN_RETURNED_ATTRS: u32 = 0x8000_0000;
+    let c = CString::new(path.as_os_str().as_bytes()).map_err(io::Error::other)?;
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if unsafe { CStr::from_ptr(st.f_fstypename.as_ptr()) }.to_bytes() != b"apfs" {
+        return Ok(vec![]);
+    }
+    let root = std::fs::File::open(std::path::Path::new(std::ffi::OsStr::from_bytes(unsafe { CStr::from_ptr(st.f_mntonname.as_ptr()) }.to_bytes())))?;
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&root);
+    let mut list = AttrList { bitmapcount: ATTR_BIT_MAP_COUNT, reserved: 0, commonattr: ATTR_CMN_RETURNED_ATTRS | ATTR_CMN_NAME | ATTR_CMN_CRTIME, volattr: 0, dirattr: 0, fileattr: 0, forkattr: 0 };
+    let mut buf = vec![0u8; 16 * 1024];
+    let mut times = vec![];
+    loop {
+        let n = unsafe { fs_snapshot_list(fd, &mut list, buf.as_mut_ptr().cast(), buf.len(), 0) };
+        if n < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if n == 0 {
+            return Ok(times);
+        }
+        // Each entry: its length, the attributes returned (five words), a reference to the name
+        // (two words), the creation time (seconds, nanoseconds), the name.
+        let mut at = 0usize;
+        for _ in 0..n {
+            let word = |o: usize| buf.get(o..o + 4).map(|b| u32::from_ne_bytes(b.try_into().expect("four bytes")));
+            let long = |o: usize| buf.get(o..o + 8).map(|b| i64::from_ne_bytes(b.try_into().expect("eight bytes")));
+            let (Some(len), Some(returned)) = (word(at), word(at + 4)) else { return Err(io::Error::other("fs_snapshot_list returned a truncated entry")) };
+            if len < 48 {
+                return Err(io::Error::other(format!("fs_snapshot_list returned an entry of {} bytes", len)));
+            }
+            if returned & ATTR_CMN_CRTIME == 0 {
+                return Err(io::Error::other("fs_snapshot_list returned a snapshot without its creation time"));
+            }
+            let (Some(sec), Some(nsec)) = (long(at + 32), long(at + 40)) else { return Err(io::Error::other("fs_snapshot_list returned a truncated entry")) };
+            times.push((sec.max(0) as u64) * 1_000_000_000 + nsec.max(0) as u64);
+            at += len as usize;
+        }
+    }
+}
+
+/// None seen: Linux has no unprivileged way to list a btrfs or ZFS file system's snapshots, and a
+/// Windows shadow copy keeps what it holds in storage of its own (see the module notes).
+#[cfg(not(target_os = "macos"))]
+fn snapshot_times(_path: &Path) -> io::Result<Vec<u64>> {
+    Ok(vec![])
 }
 
 #[cfg(unix)]
@@ -163,8 +266,18 @@ pub struct Unit {
     pub orphan: Option<String>,
     /// Bytes of its files with one link.
     own_bytes: u64,
+    /// Of those, the bytes of files the volume's newest snapshot keeps.
+    own_kept: u64,
     /// Its files with more than one link: identity, bytes, links in this unit.
     shared: Vec<((u64, u64), u64, u64)>,
+}
+
+/// What removing a unit frees: its bytes, and of those, what a snapshot keeps (the disk shows it
+/// free only once the snapshot is deleted).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Freed {
+    bytes: u64,
+    kept: u64,
 }
 
 impl Unit {
@@ -184,6 +297,8 @@ struct LinkCount {
     in_cache: u64,
     /// All its links (the filesystem's count).
     nlink: u64,
+    /// The volume's newest snapshot keeps it.
+    kept: bool,
 }
 
 /// Every file with several links, by identity: freed when its last link goes, and only if it
@@ -194,19 +309,41 @@ struct Links {
 }
 
 impl Links {
-    /// The bytes freed by removing `unit`; the counts are updated as if it were removed.
-    fn release(&mut self, unit: &Unit) -> u64 {
-        let mut freed = unit.own_bytes;
+    /// What removing `unit` frees; the counts are updated as if it were removed.
+    fn release(&mut self, unit: &Unit) -> Freed {
+        let mut freed = Freed { bytes: unit.own_bytes, kept: unit.own_kept };
         for (id, _, here) in &unit.shared {
             if let Some(c) = self.map.get_mut(id) {
                 c.left = c.left.saturating_sub(*here);
                 if c.left == 0 && c.in_cache >= c.nlink {
-                    freed += c.bytes;
+                    freed.bytes += c.bytes;
+                    if c.kept {
+                        freed.kept += c.bytes;
+                    }
                 }
             }
         }
         freed
     }
+}
+
+/// When `md`'s file last changed, its data or its links (the status change time, which nothing
+/// sets back): a snapshot taken after it keeps its blocks.
+#[cfg(unix)]
+fn changed_ns(md: &fs::Metadata) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    (md.ctime().max(0) as u64) * 1_000_000_000 + md.ctime_nsec().max(0) as u64
+}
+
+/// No snapshot is seen off Unix (see `snapshot_times`), so nothing is ever kept.
+#[cfg(not(unix))]
+fn changed_ns(_md: &fs::Metadata) -> u64 {
+    u64::MAX
+}
+
+/// Whether the snapshot taken at `newest_snapshot` keeps the file of `md`: it changed before.
+fn kept_by(md: &fs::Metadata, newest_snapshot: Option<u64>) -> bool {
+    newest_snapshot.is_some_and(|t| changed_ns(md) < t)
 }
 
 fn allocated(md: &fs::Metadata) -> u64 {
@@ -232,14 +369,23 @@ fn identity(_md: &fs::Metadata) -> Option<((u64, u64), u64)> {
     None
 }
 
-/// Measures `path` into `unit` (links not followed).
-fn measure(path: &Path, unit: &mut Unit, all_links: &mut HashMap<(u64, u64), LinkCount>) {
+/// Adds the file or directory of `md` to `unit`'s own bytes.
+fn add_own(unit: &mut Unit, md: &fs::Metadata, newest_snapshot: Option<u64>) {
+    unit.own_bytes += allocated(md);
+    if kept_by(md, newest_snapshot) {
+        unit.own_kept += allocated(md);
+    }
+}
+
+/// Measures `path` into `unit` (links not followed), with what the snapshot taken at
+/// `newest_snapshot` keeps.
+fn measure(path: &Path, unit: &mut Unit, all_links: &mut HashMap<(u64, u64), LinkCount>, newest_snapshot: Option<u64>) {
     let mut stack = vec![path.to_path_buf()];
     let mut here: HashMap<(u64, u64), (u64, u64)> = HashMap::new();
     while let Some(p) = stack.pop() {
         let Ok(md) = fs::symlink_metadata(&p) else { continue };
         if md.is_dir() {
-            unit.own_bytes += allocated(&md);
+            add_own(unit, &md, newest_snapshot);
             stack.extend(fs::read_dir(&p).into_iter().flatten().flatten().map(|e| e.path()));
             continue;
         }
@@ -247,17 +393,17 @@ fn measure(path: &Path, unit: &mut Unit, all_links: &mut HashMap<(u64, u64), Lin
             Some((id, nlink)) => {
                 let e = here.entry(id).or_insert((allocated(&md), 0));
                 e.1 += 1;
-                let g = all_links.entry(id).or_insert(LinkCount { bytes: allocated(&md), left: 0, in_cache: 0, nlink });
+                let g = all_links.entry(id).or_insert(LinkCount { bytes: allocated(&md), left: 0, in_cache: 0, nlink, kept: kept_by(&md, newest_snapshot) });
                 g.left += 1;
                 g.in_cache += 1;
             }
-            None => unit.own_bytes += allocated(&md),
+            None => add_own(unit, &md, newest_snapshot),
         }
     }
     unit.shared = here.into_iter().map(|(id, (bytes, n))| (id, bytes, n)).collect();
 }
 
-/// Everything in the cache at `cache`, measured.
+/// Everything in the cache, measured.
 pub struct Scan {
     pub units: Vec<Unit>,
     links: Links,
@@ -447,21 +593,25 @@ fn cargo_gc(d: &Downloads, max_age: Option<&str>, dry_run: bool) -> Result<(Stri
 fn download_bytes(d: &Downloads) -> (u64, u64) {
     let mut all = HashMap::new();
     let mut size = |sub: &str| {
-        let mut u = Unit { kind: Kind::Registry, path: d.cargo_home.join(sub), companions: vec![], last_used_ns: 0, orphan: None, own_bytes: 0, shared: vec![] };
-        measure(&d.cargo_home.join(sub), &mut u, &mut all);
+        let mut u = Unit { kind: Kind::Registry, path: d.cargo_home.join(sub), companions: vec![], last_used_ns: 0, orphan: None, own_bytes: 0, own_kept: 0, shared: vec![] };
+        measure(&d.cargo_home.join(sub), &mut u, &mut all, None);
         u.own_bytes + u.shared.iter().map(|(_, b, _)| b).sum::<u64>()
     };
     (size("registry"), size("git"))
 }
 
-pub fn scan(cache: &Path, now: u64) -> Scan {
+/// Everything in the cache at `cache`, measured `now`, with what the volume's snapshot taken at
+/// `newest_snapshot` keeps.
+pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
     let mut units: Vec<Unit> = vec![];
     let mut all: HashMap<(u64, u64), LinkCount> = HashMap::new();
     let mut add = |kind: Kind, path: PathBuf, companions: Vec<PathBuf>, last_used_ns: u64, orphan: Option<String>| {
-        let mut u = Unit { kind, path, companions, last_used_ns, orphan, own_bytes: 0, shared: vec![] };
-        measure(&u.path.clone(), &mut u, &mut all);
+        let mut u = Unit { kind, path, companions, last_used_ns, orphan, own_bytes: 0, own_kept: 0, shared: vec![] };
+        measure(&u.path.clone(), &mut u, &mut all, newest_snapshot);
         for c in u.companions.clone() {
-            u.own_bytes += fs::symlink_metadata(&c).map(|m| allocated(&m)).unwrap_or(0);
+            if let Ok(md) = fs::symlink_metadata(&c) {
+                add_own(&mut u, &md, newest_snapshot);
+            }
         }
         units.push(u);
     };
@@ -607,9 +757,9 @@ pub struct Collected {
     pub stopped_early: bool,
     /// The bounds were still exceeded at the end: everything else was in use or too recent.
     pub unmet: bool,
-    /// What it and the collections before it removed that the disk did not show as free at its
-    /// end (a snapshot holds it); counted as free until the disk shows it.
-    pub unseen: u64,
+    /// What it and the collections before it removed that the volume's snapshots keep: counted
+    /// as free while they do (see `Kept`).
+    pub kept: u64,
     /// Why Cargo's downloads were left, when they were: a Cargo QuickRust started was running.
     pub cargo_left: Option<String>,
     /// Why the collection stopped short (a removal or Cargo failed), when it did; what it did
@@ -630,15 +780,57 @@ pub fn goal(policy: &Policy, total: u64, free: u64) -> Goal {
     Goal { max_total: if total > policy.max_bytes { policy.max_bytes / 10 * 9 } else { u64::MAX }, min_free: if free < policy.min_free { policy.min_free / 4 * 5 } else { 0 } }
 }
 
-/// The cache's last count, as `USAGE` records it.
+/// Bytes collections removed that a snapshot of the volume keeps: every file of them changed
+/// before the snapshot taken at `snapshot_ns`, the volume's newest when they were removed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Kept {
+    snapshot_ns: u64,
+    /// When the first of them was removed.
+    removed_ns: u64,
+    bytes: u64,
+}
+
+impl Kept {
+    fn of(v: &Value) -> Option<Kept> {
+        Some(Kept { snapshot_ns: v["snapshot_ns"].as_u64()?, removed_ns: v["removed_ns"].as_u64()?, bytes: v["bytes"].as_u64()? })
+    }
+
+    fn json(&self) -> Value {
+        json!({ "snapshot_ns": self.snapshot_ns, "removed_ns": self.removed_ns, "bytes": self.bytes })
+    }
+
+    /// Whether it still counts as free on a volume whose snapshots were taken at `snapshots`,
+    /// `now`: while its snapshot exists, and for a day at most (a Time Machine local snapshot's
+    /// life; past it the disk's own figure is taken, see the module notes).
+    fn counts(&self, snapshots: &[u64], now: u64) -> bool {
+        self.removed_ns + DAY_NS > now && snapshots.contains(&self.snapshot_ns)
+    }
+}
+
+/// `kept`, one entry per snapshot: their bytes summed, from the first removal.
+fn merged(kept: impl IntoIterator<Item = Kept>) -> Vec<Kept> {
+    let mut by_snapshot: std::collections::BTreeMap<u64, Kept> = Default::default();
+    for k in kept {
+        by_snapshot
+            .entry(k.snapshot_ns)
+            .and_modify(|e| {
+                e.bytes += k.bytes;
+                e.removed_ns = e.removed_ns.min(k.removed_ns);
+            })
+            .or_insert(k);
+    }
+    by_snapshot.into_values().collect()
+}
+
+/// The cache's last count, as `USAGE` records it.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Count {
     scanned_ns: u64,
     total_bytes: u64,
     /// The disk's free space when it was taken.
     free_at_scan: u64,
-    /// What collections removed that the disk did not show free then.
-    unseen_bytes: u64,
+    /// What collections removed that the volume's snapshots kept then.
+    kept: Vec<Kept>,
     /// The collection could not get within the bounds.
     unmet: bool,
 }
@@ -649,17 +841,13 @@ impl Count {
         if v["format"] != json!(USAGE_FORMAT) {
             return None;
         }
-        Some(Count { scanned_ns: v["scanned_ns"].as_u64()?, total_bytes: v["total_bytes"].as_u64()?, free_at_scan: v["free_at_scan"].as_u64()?, unseen_bytes: v["unseen_bytes"].as_u64()?, unmet: v["unmet"].as_bool()? })
+        let kept = v["kept_by_snapshots"].as_array()?.iter().map(Kept::of).collect::<Option<Vec<Kept>>>()?;
+        Some(Count { scanned_ns: v["scanned_ns"].as_u64()?, total_bytes: v["total_bytes"].as_u64()?, free_at_scan: v["free_at_scan"].as_u64()?, kept, unmet: v["unmet"].as_bool()? })
     }
 
-    /// What it records as removed and not shown free, with `fs` measured `now`: less what the
-    /// disk has gained since; none a day after it (a Time Machine local snapshot's life: the disk
-    /// shows it by then, or never will).
-    fn unseen(&self, fs: &FsSpace, now: u64) -> u64 {
-        if self.scanned_ns + DAY_NS <= now {
-            return 0;
-        }
-        self.unseen_bytes.saturating_sub(fs.available.saturating_sub(self.free_at_scan))
+    /// What it records as kept that still counts on `volume`, `now`.
+    fn kept_on(&self, volume: &Volume, now: u64) -> Vec<Kept> {
+        self.kept.iter().copied().filter(|k| k.counts(&volume.snapshots, now)).collect()
     }
 }
 
@@ -668,10 +856,15 @@ fn count(cache: &Path) -> Option<Count> {
     util::read_json(&cache.join(USAGE)).as_ref().and_then(Count::of)
 }
 
-/// The disk's free space as the bounds count it: what `fs` measures `now`, and what the cache at
-/// `cache` removed that the disk does not show yet (see the module notes).
-pub fn free(cache: &Path, fs: &FsSpace, now: u64) -> u64 {
-    fs.available.saturating_add(count(cache).map(|c| c.unseen(fs, now)).unwrap_or(0))
+/// What the cache at `cache` removed that `volume`'s snapshots keep, as counted `now`.
+fn kept(cache: &Path, volume: &Volume, now: u64) -> u64 {
+    count(cache).map(|c| c.kept_on(volume, now).iter().map(|k| k.bytes).sum()).unwrap_or(0)
+}
+
+/// The disk's free space as the bounds count it: what `volume` measures `now`, and what the cache
+/// at `cache` removed that its snapshots keep (see the module notes).
+pub fn free(cache: &Path, volume: &Volume, now: u64) -> u64 {
+    volume.space.available.saturating_add(kept(cache, volume, now))
 }
 
 /// Removes a build directory unless a command or Cargo uses it, or a program's source unless an
@@ -745,23 +938,25 @@ fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
 /// `dry_run`: says what would go. `max_total`: removes down to this size whatever the policy
 /// says (`qrust gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
 /// builds reading them). A removal or Cargo that fails stops it (`Collected::failed`), and what it
-/// did until then is counted and logged like any collection; `Err` only when the disk cannot be
+/// did until then is counted and logged like any collection; `Err` only when the volume cannot be
 /// measured.
 pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
-    collect_on(cache, downloads, policy, max_total, dry_run, deadline, &|| fs_space(cache))
+    collect_on(cache, downloads, policy, max_total, dry_run, deadline, &|| volume(cache))
 }
 
-/// `collect`, with the disk's space measured by `disk`.
-fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>, disk: &dyn Fn() -> io::Result<FsSpace>) -> Result<Collected, String> {
+/// `collect`, with the volume measured by `measure`.
+fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>, measure: &dyn Fn() -> Result<Volume, String>) -> Result<Collected, String> {
     let now = util::now_wall_ns();
-    let measure = || disk().map_err(|e| format!("cannot measure the free space of {}: {}", cache.display(), e));
     let start = measure()?;
-    // What earlier collections removed that the disk does not show yet counts as free, as it
-    // does for the bounds outside a collection.
-    let carried = count(cache).map(|c| c.unseen(&start, now)).unwrap_or(0);
-    let mut scan = scan(cache, now);
+    // What earlier collections removed that the volume's snapshots still keep counts as free, as
+    // it does for the bounds outside a collection.
+    let carried = count(cache).map(|c| c.kept_on(&start, now)).unwrap_or_default();
+    let newest_snapshot = start.newest_snapshot();
+    let mut scan = scan(cache, now, newest_snapshot);
     let (registry_before, git_before) = downloads.map(download_bytes).unwrap_or((0, 0));
-    let mut out = Collected { before: scan.total() + registry_before + git_before, free_before: start.available.saturating_add(carried), ..Default::default() };
+    let mut out = Collected { before: scan.total() + registry_before + git_before, free_before: start.space.available.saturating_add(carried.iter().map(|k| k.bytes).sum()), ..Default::default() };
+    // Of what it removes, the bytes the newest snapshot keeps.
+    let mut kept_now = 0u64;
     let mut total = out.before;
     // The free space, by this collection's count of what it has freed: the disk is not measured
     // again until the end (see the module notes).
@@ -782,10 +977,11 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
         let freed = scan.links.release(&u);
         match if dry_run { Ok(true) } else { remove(cache, &u) } {
             Ok(true) => {
-                total = total.saturating_sub(freed);
-                available = available.saturating_add(freed);
+                total = total.saturating_sub(freed.bytes);
+                available = available.saturating_add(freed.bytes);
+                kept_now += freed.kept;
                 let why = Why::Unusable(u.orphan.clone().expect("what nothing can use says why"));
-                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed, why });
+                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed.bytes, why });
             }
             Ok(false) => out.skipped_in_use += 1,
             Err(e) => {
@@ -830,9 +1026,10 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
         let freed = scan.links.release(&u);
         match if dry_run { Ok(true) } else { remove(cache, &u) } {
             Ok(true) => {
-                total = total.saturating_sub(freed);
-                available = available.saturating_add(freed);
-                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed, why: Why::LeastRecentlyUsed });
+                total = total.saturating_sub(freed.bytes);
+                available = available.saturating_add(freed.bytes);
+                kept_now += freed.kept;
+                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed.bytes, why: Why::LeastRecentlyUsed });
             }
             Ok(false) => out.skipped_in_use += 1,
             Err(e) => out.failed = Some(e),
@@ -857,20 +1054,21 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     }
     out.after = total;
     out.unmet = total > goal.max_total || available < goal.min_free;
+    // What the newest snapshot keeps of what it removed, with what earlier collections removed
+    // that their snapshots still keep. (Cargo's downloads are not counted: Cargo removes them,
+    // and says only how much.)
+    let kept = merged(carried.into_iter().chain(newest_snapshot.filter(|_| kept_now > 0).map(|snapshot_ns| Kept { snapshot_ns, removed_ns: now, bytes: kept_now })));
+    out.kept = kept.iter().map(|k| k.bytes).sum();
     if !dry_run {
-        // What it counted as freed that the disk does not show: what the disk shows beyond its
-        // start is taken as that, the rest is still held (by a snapshot).
         let end = measure()?;
-        let freed = available - out.free_before;
-        out.unseen = (carried + freed).saturating_sub(end.available.saturating_sub(start.available));
         let mut by_kind: serde_json::Map<String, Value> = scan_summary(cache, now);
         if let Some(d) = downloads {
             let (r, g) = download_bytes(d);
             by_kind.insert(Kind::Registry.name().to_string(), json!({ "count": 2, "bytes": r + g }));
         }
-        let usage = json!({ "format": USAGE_FORMAT, "scanned_ns": now, "total_bytes": total, "free_at_scan": end.available, "unseen_bytes": out.unseen, "fs_total": end.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet });
-        // A count that is not written would forget what the disk does not show yet, and the next
-        // collection would remove it again: the collection fails with it.
+        let usage = json!({ "format": USAGE_FORMAT, "scanned_ns": now, "total_bytes": total, "free_at_scan": end.space.available, "kept_by_snapshots": kept.iter().map(Kept::json).collect::<Vec<Value>>(), "fs_total": end.space.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet });
+        // A count that is not written would forget what the snapshots keep, and the next
+        // collection would remove as much again: the collection fails with it.
         if let Err(e) = util::write_json_fast(&cache.join(USAGE), &usage) {
             failed(&mut out, format!("cannot record the count in {}: {}", cache.join(USAGE).display(), e));
         }
@@ -920,7 +1118,7 @@ fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, availa
 
 /// What the cache holds by kind, measured again (after a collection).
 fn scan_summary(cache: &Path, now: u64) -> serde_json::Map<String, Value> {
-    scan(cache, now).by_kind().into_iter().map(|(k, n, b)| (k.name().to_string(), json!({ "count": n, "bytes": b }))).collect()
+    scan(cache, now, None).by_kind().into_iter().map(|(k, n, b)| (k.name().to_string(), json!({ "count": n, "bytes": b }))).collect()
 }
 
 /// A collection's line in `LOG`: by kind and why, how many went and how many bytes; build
@@ -948,7 +1146,7 @@ fn log_line(c: &Collected, goal: &Goal, now: u64) -> Value {
     }
     let removed: Vec<Value> = groups.into_iter().map(|((kind, why), (count, bytes))| json!({ "kind": kind.name(), "why": why, "count": count, "bytes": bytes })).collect();
     json!({
-        "format": LOG_FORMAT, "at": util::iso8601(now), "before": c.before, "after": c.after, "free_before": c.free_before, "unseen": c.unseen,
+        "format": LOG_FORMAT, "at": util::iso8601(now), "before": c.before, "after": c.after, "free_before": c.free_before, "kept_by_snapshots": c.kept,
         "goal": { "max_total": (goal.max_total != u64::MAX).then_some(goal.max_total), "min_free": (goal.min_free > 0).then_some(goal.min_free) },
         "removed": removed, "named": named, "cargo": cargo, "cargo_left": c.cargo_left, "failed": c.failed, "unmet": c.unmet,
     })
@@ -986,18 +1184,18 @@ pub fn recent(cache: &Path, n: usize) -> Vec<Value> {
 /// after one that could not bring the cache within its bounds: until then nothing it left has
 /// become removable, and each collection would only compete with builds (Cargo's downloads are
 /// collected under Cargo's package lock).
-pub fn due(cache: &Path, policy: &Policy, fs: &FsSpace, now: u64) -> bool {
+pub fn due(cache: &Path, policy: &Policy, volume: &Volume, now: u64) -> bool {
     let c = count(cache);
-    if c.is_some_and(|c| c.unmet && c.scanned_ns + PROTECTED_NS > now) {
+    if c.as_ref().is_some_and(|c| c.unmet && c.scanned_ns + PROTECTED_NS > now) {
         return false;
     }
-    if fs.available.saturating_add(c.map(|c| c.unseen(fs, now)).unwrap_or(0)) < policy.min_free {
+    if free(cache, volume, now) < policy.min_free {
         return true;
     }
     match c {
         None => cache.exists(),
         Some(c) => {
-            let lost = c.free_at_scan.saturating_sub(fs.available);
+            let lost = c.free_at_scan.saturating_sub(volume.space.available);
             c.total_bytes + lost > policy.max_bytes || c.scanned_ns + DAY_NS <= now
         }
     }
@@ -1018,8 +1216,8 @@ fn collecting_in(cache: &Path) -> bool {
 /// space to count, no process to start) are the command's to report as a note, never to fail on.
 pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
     let cache = util::cache_dir();
-    let fs = fs_space(util::qrust_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::qrust_home().display(), e))?;
-    if !due(&cache, &policy(cfg, &fs), &fs, util::now_wall_ns()) {
+    let volume = volume(util::qrust_home().as_path())?;
+    if !due(&cache, &policy(cfg, &volume.space), &volume, util::now_wall_ns()) {
         return Ok(false);
     }
     util::create_private_dir(&cache).map_err(|e| e.to_string())?;
@@ -1048,15 +1246,15 @@ fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<C
     let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
     if empty && count(&cache).is_none() {
         if let Ok(fs) = fs_space(home) {
-            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "unseen_bytes": 0, "counted": false, "unmet": false })));
+            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "kept_by_snapshots": [], "counted": false, "unmet": false })));
         }
     }
     if !cache.exists() {
         return None;
     }
-    let fs = fs_space(&cache).ok()?;
-    let policy = policy(cfg, &fs);
-    if free(&cache, &fs, util::now_wall_ns()) >= policy.min_free / 4 {
+    let volume = volume(&cache).ok()?;
+    let policy = policy(cfg, &volume.space);
+    if free(&cache, &volume, util::now_wall_ns()) >= policy.min_free / 4 {
         return None;
     }
     let _lock = util::ExclusiveLock::try_acquire(&cache.join("gc.lock")).ok()??;
@@ -1121,14 +1319,14 @@ mod tests {
         let d = build_dir(&c, "w-1", &ws, 3 * 3600, 0);
         fs::remove_file(d.join("debug/deps/libx.rlib")).unwrap();
         fs::hard_link(&entry, d.join("debug/deps/libx.rlib")).unwrap();
-        let s = scan(&c, util::now_wall_ns());
+        let s = scan(&c, util::now_wall_ns(), None);
         let blocks = fs::metadata(&entry).map(|m| allocated(&m)).unwrap();
         assert!(s.total() >= blocks && s.total() < 2 * blocks, "{} for a {}-byte file linked twice", s.total(), blocks);
         // Removing either alone frees nothing of it; both, all of it.
         let mut links = s.links.clone();
         let unit = |k: Kind| s.units.iter().find(|u| u.kind == k).unwrap().clone();
-        assert!(links.release(&unit(Kind::Artifact)) < blocks);
-        assert!(links.release(&unit(Kind::Build)) >= blocks);
+        assert!(links.release(&unit(Kind::Artifact)).bytes < blocks);
+        assert!(links.release(&unit(Kind::Build)).bytes >= blocks);
     }
 
     // TEST0117: Orphans go first then the least recently used until within bounds
@@ -1243,7 +1441,7 @@ mod tests {
         let built = build_dir(&c, "a-2", &a, 5 * 3600, 1000);
         let idle = build_dir(&c, "a-3", &a, 5 * 3600, 1000);
         // What a collection decides from: three directories idle for hours, none held.
-        let found = scan(&c, util::now_wall_ns());
+        let found = scan(&c, util::now_wall_ns(), None);
         let unit = |d: &Path| found.units.iter().find(|u| u.path == d).unwrap().clone();
         let now = util::now_wall_ns();
         assert!([&held, &built, &idle].iter().all(|d| unit(d).last_used_ns + PROTECTED_NS < now));
@@ -1303,7 +1501,7 @@ mod tests {
         let stray = c.join("src/gone-1.0.0-abcd1234.lock");
         file(&stray, 0);
         age(&stray, 2 * 3600);
-        let counted = scan(&c, util::now_wall_ns()).by_kind();
+        let counted = scan(&c, util::now_wall_ns(), None).by_kind();
         assert!(counted.iter().any(|&(k, n, b)| k == Kind::Source && n == 2 && b >= 100_000), "{:?}", counted);
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
@@ -1324,8 +1522,8 @@ mod tests {
         let u = usage(&cache).expect("counted");
         assert_eq!((u["total_bytes"].as_u64(), u["counted"].as_bool()), (Some(0), Some(false)));
         let p = Policy { max_bytes: u64::MAX / 4, min_free: 0 };
-        let fs = FsSpace { total: u64::MAX / 2, available: u["free_at_scan"].as_u64().unwrap() };
-        assert!(!due(&cache, &p, &fs, util::now_wall_ns()), "not due right after its first count");
+        let v = Volume { space: FsSpace { total: u64::MAX / 2, available: u["free_at_scan"].as_u64().unwrap() }, snapshots: vec![] };
+        assert!(!due(&cache, &p, &v, util::now_wall_ns()), "not due right after its first count");
     }
 
     // TEST0123: A collection is due below the free space above the size or a day after the count
@@ -1334,17 +1532,17 @@ mod tests {
         let c = cache();
         let p = Policy { max_bytes: 1000, min_free: 100 };
         let now = util::now_wall_ns();
-        assert!(due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now), "never counted");
-        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000, "unseen_bytes": 0, "unmet": false })).unwrap();
-        assert!(!due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now));
-        assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now), "below the free space");
-        assert!(due(&c, &p, &FsSpace { total: 10_000, available: 4_800 }, now), "200 bytes lost since the count: past the size");
-        assert!(due(&c, &p, &FsSpace { total: 10_000, available: 5_000 }, now + DAY_NS), "a day later");
+        assert!(due(&c, &p, &vol(10_000, 5_000, &[]), now), "never counted");
+        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000, "kept_by_snapshots": [], "unmet": false })).unwrap();
+        assert!(!due(&c, &p, &vol(10_000, 5_000, &[]), now));
+        assert!(due(&c, &p, &vol(10_000, 50, &[]), now), "below the free space");
+        assert!(due(&c, &p, &vol(10_000, 4_800, &[]), now), "200 bytes lost since the count: past the size");
+        assert!(due(&c, &p, &vol(10_000, 5_000, &[]), now + DAY_NS), "a day later");
         // A collection that could not get within the bounds is not repeated before what it left
         // can have become removable.
-        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "unseen_bytes": 0, "unmet": true })).unwrap();
-        assert!(!due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS - 1));
-        assert!(due(&c, &p, &FsSpace { total: 10_000, available: 50 }, now + PROTECTED_NS));
+        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "kept_by_snapshots": [], "unmet": true })).unwrap();
+        assert!(!due(&c, &p, &vol(10_000, 50, &[]), now + PROTECTED_NS - 1));
+        assert!(due(&c, &p, &vol(10_000, 50, &[]), now + PROTECTED_NS));
     }
 
     // TEST0124: A running collection is known by its lock
@@ -1397,100 +1595,186 @@ mod tests {
     fn six_builds(c: &Path) -> Vec<(PathBuf, u64)> {
         let ws = workspace(c, "w");
         let dirs: Vec<PathBuf> = (1..=6).rev().map(|h| build_dir(c, &format!("w-{}", h), &ws, h * 3600, 300_000)).collect();
-        let s = scan(c, util::now_wall_ns());
+        let s = scan(c, util::now_wall_ns(), None);
         dirs.into_iter().map(|d| (d.clone(), s.units.iter().find(|u| u.path == d).unwrap().bytes())).collect()
     }
 
-    /// A disk whose free space is `available` whatever is removed: a snapshot holds it all.
-    fn held_disk(available: &std::cell::Cell<u64>) -> impl Fn() -> io::Result<FsSpace> + '_ {
-        move || Ok(FsSpace { total: 1 << 40, available: available.get() })
+    /// A volume with `available` free, whose snapshots were taken at `snapshots`.
+    fn vol(total: u64, available: u64, snapshots: &[u64]) -> Volume {
+        Volume { space: FsSpace { total, available }, snapshots: snapshots.to_vec() }
+    }
+
+    /// A volume whose free space is `available` whatever is removed (others write as much as is
+    /// freed, or a snapshot keeps it), with snapshots taken at `snapshots`.
+    fn fixed_volume<'a>(available: &'a std::cell::Cell<u64>, snapshots: &'a [u64]) -> impl Fn() -> Result<Volume, String> + 'a {
+        move || Ok(vol(1 << 40, available.get(), snapshots))
+    }
+
+    /// When a snapshot taken now is taken: after every file the test wrote changed (a file's
+    /// times come from a coarser clock, which may lag this one by a few milliseconds).
+    fn snapshot_now() -> u64 {
+        std::thread::sleep(Duration::from_millis(50));
+        let t = util::now_wall_ns();
+        std::thread::sleep(Duration::from_millis(50));
+        t
     }
 
     fn paths(c: &Collected) -> Vec<PathBuf> {
         c.removed.iter().map(|r| r.path.clone()).collect()
     }
 
-    // TEST0291: Below the free space a collection removes its shortfall though the disk shows nothing freed
+    /// The bytes the count records as kept, by snapshot.
+    fn recorded_kept(c: &Path) -> Vec<(u64, u64)> {
+        usage(c).unwrap()["kept_by_snapshots"].as_array().unwrap().iter().map(|k| (k["snapshot_ns"].as_u64().unwrap(), k["bytes"].as_u64().unwrap())).collect()
+    }
+
+    // TEST0291: Below the free space a collection removes its shortfall though a snapshot keeps what it frees
+    #[cfg(unix)]
     #[test]
-    fn test0291_below_the_free_space_a_collection_removes_its_shortfall_though_the_disk_shows_nothing_freed() {
+    fn test0291_below_the_free_space_a_collection_removes_its_shortfall_though_a_snapshot_keeps_what_it_frees() {
         let c = cache();
         let b = six_builds(&c);
+        let snap = [snapshot_now()];
         // The disk has as much free as the two least recently used directories and half the
         // third; the floor's goal (a quarter above it) is that much more again.
         let short = b[0].1 + b[1].1 + b[2].1 / 2;
         let m = (2 * short).div_ceil(5);
         let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
         let disk = std::cell::Cell::new(short);
-        let done = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert_eq!(paths(&done), [b[0].0.clone(), b[1].0.clone(), b[2].0.clone()], "not just the shortfall: {:?}", done);
         assert!(b[3..].iter().all(|(d, _)| d.exists()) && !done.unmet);
-        // The disk did not show it: recorded, and counted as free, so nothing is due.
+        // The snapshot keeps all of it: recorded under it, and counted as free, so nothing is due.
         let freed = b[0].1 + b[1].1 + b[2].1;
-        assert_eq!((done.unseen, usage(&c).unwrap()["unseen_bytes"].as_u64()), (freed, Some(freed)));
+        assert_eq!((done.kept, recorded_kept(&c)), (freed, vec![(snap[0], freed)]));
         let now = util::now_wall_ns();
-        assert_eq!(free(&c, &held_disk(&disk)().unwrap(), now), short + freed);
-        assert!(!due(&c, &policy, &held_disk(&disk)().unwrap(), now), "due again on the same disk");
-        // On a disk that shows what goes, nothing is left unseen.
-        let c = cache();
-        let b = six_builds(&c);
-        let shown = std::cell::Cell::new(short);
-        let showing = || {
-            let gone: u64 = b.iter().filter(|(d, _)| !d.exists()).map(|(_, n)| n).sum();
-            Ok(FsSpace { total: 1 << 40, available: shown.get() + gone })
-        };
-        let done = collect_on(&c, None, &policy, None, false, None, &showing).unwrap();
-        assert_eq!((paths(&done).len(), done.unseen), (3, 0), "{:?}", done);
+        assert_eq!(free(&c, &vol(1 << 40, short, &snap), now), short + freed);
+        assert!(!due(&c, &policy, &vol(1 << 40, short, &snap), now), "due again on the same disk");
+        // Once the snapshot is deleted, the disk's own figure is the free space.
+        assert_eq!(free(&c, &vol(1 << 40, short, &[]), now), short);
+        assert!(due(&c, &policy, &vol(1 << 40, short, &[]), now));
     }
 
-    // TEST0292: What a collection removed counts as free until the disk shows it and for a day at most
+    // TEST0292: What a snapshot keeps counts as free while that snapshot exists and for a day at most
     #[test]
-    fn test0292_what_a_collection_removed_counts_as_free_until_the_disk_shows_it_and_for_a_day_at_most() {
+    fn test0292_what_a_snapshot_keeps_counts_as_free_while_that_snapshot_exists_and_for_a_day_at_most() {
         let c = cache();
         let now = util::now_wall_ns();
+        let (older, newer) = (now - 3_600 * 1_000_000_000, now - 60 * 1_000_000_000);
         let p = Policy { max_bytes: u64::MAX, min_free: 1000 };
-        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
-        let fs = |available| FsSpace { total: 1 << 40, available };
-        assert_eq!(free(&c, &fs(800), now), 1200);
-        assert!(!due(&c, &p, &fs(800), now));
-        // 300 written since: below the floor.
-        assert_eq!(free(&c, &fs(500), now), 900);
-        assert!(due(&c, &p, &fs(500), now));
-        // The disk shows half of it, then all of it and more: counted once.
-        assert_eq!(free(&c, &fs(1000), now), 1200);
-        assert_eq!(free(&c, &fs(1500), now), 1500);
-        // A day later the disk is taken at its word.
-        assert_eq!(free(&c, &fs(800), now + DAY_NS), 800);
+        let kept = json!([{ "snapshot_ns": older, "removed_ns": now, "bytes": 400 }, { "snapshot_ns": newer, "removed_ns": now, "bytes": 100 }]);
+        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": kept, "unmet": false })).unwrap();
+        let v = |available, snapshots: &[u64]| vol(1 << 40, available, snapshots);
+        assert_eq!(free(&c, &v(800, &[older, newer]), now), 1300);
+        assert!(!due(&c, &p, &v(800, &[older, newer]), now));
+        // Each snapshot's bytes go with it.
+        assert_eq!(free(&c, &v(800, &[older]), now), 1200);
+        assert_eq!(free(&c, &v(800, &[newer]), now), 900);
+        assert!(due(&c, &p, &v(800, &[newer]), now));
+        // One taken since keeps none of it.
+        assert_eq!(free(&c, &v(800, &[now]), now), 800);
+        // Whatever the disk shows meanwhile, the snapshots keep what they keep.
+        assert_eq!(free(&c, &v(300, &[older, newer]), now), 800);
+        // A day after the removal the disk is taken at its word.
+        assert_eq!(free(&c, &v(800, &[older, newer]), now + DAY_NS), 800);
         // A count of another format is no count, whatever it says: the disk's own figure, and a
         // collection is due to count again.
-        util::write_json(&c.join(USAGE), &json!({ "format": 1, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
-        assert_eq!((free(&c, &fs(800), now), usage(&c)), (800, None));
-        assert!(due(&c, &Policy { max_bytes: u64::MAX, min_free: 0 }, &fs(5000), now));
-        // So is one that lacks a field.
-        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unmet": false })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
+        assert_eq!((free(&c, &v(800, &[older]), now), usage(&c)), (800, None));
+        assert!(due(&c, &Policy { max_bytes: u64::MAX, min_free: 0 }, &v(5000, &[]), now));
+        // So is one that lacks a field, or whose record of what is kept is not one.
+        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unmet": false })).unwrap();
+        assert_eq!(usage(&c), None);
+        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": [{ "bytes": 4 }], "unmet": false })).unwrap();
         assert_eq!(usage(&c), None);
     }
 
-    // TEST0293: A collection after one the disk did not show removes only what the disk lost since
+    // TEST0293: A collection after one a snapshot kept removes only what the disk lost since
+    #[cfg(unix)]
     #[test]
-    fn test0293_a_collection_after_one_the_disk_did_not_show_removes_only_what_the_disk_lost_since() {
+    fn test0293_a_collection_after_one_a_snapshot_kept_removes_only_what_the_disk_lost_since() {
+        let c = cache();
+        let b = six_builds(&c);
+        let snap = [snapshot_now()];
+        let short = b[0].1 + b[1].1 + b[2].1 / 2;
+        let m = (2 * short).div_ceil(5);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let disk = std::cell::Cell::new(short);
+        let first = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
+        assert_eq!(paths(&first).len(), 3);
+        // Builds then write enough that, with what the first removed, the disk is half the next
+        // directory below the floor; the snapshot still keeps what the first removed.
+        disk.set((4 * m).checked_sub(first.kept + b[3].1 / 2).expect("the disk cannot lose more than it has"));
+        let now = util::now_wall_ns();
+        assert!(due(&c, &policy, &vol(1 << 40, disk.get(), &snap), now));
+        // The second gives back that, and the margin: two directories, not all that is left.
+        let second = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
+        assert_eq!(paths(&second), [b[3].0.clone(), b[4].0.clone()], "{:?}", second);
+        assert!(b[5].0.exists());
+        assert_eq!(second.kept, first.kept + b[3].1 + b[4].1);
+        assert_eq!(recorded_kept(&c), vec![(snap[0], second.kept)]);
+    }
+
+    // TEST0327: Space a busy disk without a snapshot did not show is not counted as free
+    #[test]
+    fn test0327_space_a_busy_disk_without_a_snapshot_did_not_show_is_not_counted_as_free() {
         let c = cache();
         let b = six_builds(&c);
         let short = b[0].1 + b[1].1 + b[2].1 / 2;
         let m = (2 * short).div_ceil(5);
         let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        // Other processes write as much as the collection frees: the disk never gains, and the
+        // volume has no snapshot.
         let disk = std::cell::Cell::new(short);
-        let first = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
-        assert_eq!(paths(&first).len(), 3);
-        // Builds then write enough that, with what the first removed, the disk is half the next
-        // directory below the floor; the snapshot still holds what the first removed.
-        disk.set((4 * m).checked_sub(first.unseen + b[3].1 / 2).expect("the disk cannot lose more than it has"));
+        let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &[])).unwrap();
+        assert_eq!(paths(&done), [b[0].0.clone(), b[1].0.clone(), b[2].0.clone()], "{:?}", done);
+        assert_eq!((done.kept, recorded_kept(&c)), (0, vec![]), "what others wrote was counted as kept by a snapshot");
+        // The bounds go by the disk as it is: still below its floor, a collection is due.
         let now = util::now_wall_ns();
-        assert!(due(&c, &policy, &held_disk(&disk)().unwrap(), now));
-        // The second gives back that, and the margin: two directories, not all that is left.
-        let second = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
-        assert_eq!(paths(&second), [b[3].0.clone(), b[4].0.clone()], "{:?}", second);
-        assert!(b[5].0.exists());
-        assert_eq!(second.unseen, first.unseen + b[3].1 + b[4].1);
+        assert_eq!(free(&c, &vol(1 << 40, short, &[]), now), short);
+        assert!(due(&c, &policy, &vol(1 << 40, short, &[]), now), "the free-space floor no longer applies");
+        let again = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &[])).unwrap();
+        assert!(!again.removed.is_empty() && again.kept == 0, "{:?}", again);
+    }
+
+    // TEST0328: Only what changed before the volume's newest snapshot counts as kept
+    #[cfg(unix)]
+    #[test]
+    fn test0328_only_what_changed_before_the_volumes_newest_snapshot_counts_as_kept() {
+        let c = cache();
+        let ws = workspace(&c, "w");
+        let earlier = snapshot_now();
+        // Three directories written before the newest snapshot, three after it.
+        let before: Vec<PathBuf> = (4..=6).rev().map(|h| build_dir(&c, &format!("w-{}", h), &ws, h * 3600, 300_000)).collect();
+        let newest = snapshot_now();
+        let after: Vec<PathBuf> = (1..=3).rev().map(|h| build_dir(&c, &format!("w-{}", h), &ws, h * 3600, 300_000)).collect();
+        // The status change time is what counts: a modification time set back does not make a file
+        // the snapshot keeps.
+        age(&after[0].join("debug/deps/libx.rlib"), 5 * 86_400);
+        let s = scan(&c, util::now_wall_ns(), None);
+        let bytes = |dirs: &[PathBuf]| dirs.iter().map(|d| s.units.iter().find(|u| &u.path == d).unwrap().bytes()).sum::<u64>();
+        let disk = std::cell::Cell::new(1 << 30);
+        let snapshots = [earlier, newest];
+        let done = collect_on(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None, &fixed_volume(&disk, &snapshots)).unwrap();
+        assert_eq!(paths(&done).len(), 6, "{:?}", done);
+        assert_eq!(done.kept, bytes(&before), "{} of {} written before the snapshot", done.kept, bytes(&before));
+        assert!(bytes(&after) > 0);
+        assert_eq!(recorded_kept(&c), vec![(newest, bytes(&before))]);
+    }
+
+    // TEST0329: The snapshots of an APFS volume are listed from any directory on it
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn test0329_the_snapshots_of_an_apfs_volume_are_listed_from_any_directory_on_it() {
+        // The sealed system volume is mounted from a snapshot of itself.
+        let root = volume(Path::new("/")).unwrap();
+        let now = util::now_wall_ns();
+        let year_2020 = 1_577_836_800 * 1_000_000_000;
+        assert!(!root.snapshots.is_empty() && root.snapshots.iter().all(|&t| t > year_2020 && t < now), "{:?}", root);
+        // A directory below the root of its volume: the list is asked of the volume's root.
+        let c = cache();
+        assert!(volume(&c).is_ok_and(|v| v.snapshots.iter().all(|&t| t > year_2020 && t < now)), "{:?}", volume(&c));
+        assert_eq!(volume(Path::new("/System/Library")).unwrap().snapshots, root.snapshots);
     }
 
     // TEST0294: Cargo's clean waits for every QuickRust process that runs Cargo
@@ -1571,14 +1855,14 @@ mod tests {
         let d = Downloads { cargo_home, cargo, runs: CargoRuns { dir: home.join("cargo-runs") } };
         let short = b[0].1 + b[1].1 / 2;
         let disk = std::cell::Cell::new(short);
+        let snap = [snapshot_now()];
         let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
-        let done = collect_on(&c, Some(&d), &policy, None, false, None, &held_disk(&disk)).unwrap();
+        let done = collect_on(&c, Some(&d), &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("the package cache is broken")), "{:?}", done);
         assert!(!gone.exists() && !b[0].0.exists() && b[5].0.exists());
-        // What it removed counts, though Cargo failed: the next check knows the disk will show it.
-        let u = usage(&c).unwrap();
-        assert_eq!(u["unseen_bytes"].as_u64(), Some(done.unseen));
-        assert!(done.unseen >= b[0].1 + b[1].1, "{:?}", done);
+        // What it removed counts, though Cargo failed: the next check knows the snapshot keeps it.
+        assert_eq!(recorded_kept(&c), vec![(snap[0], done.kept)]);
+        assert!(done.kept >= b[0].1 + b[1].1, "{:?}", done);
         let line = &recent(&c, 1)[0];
         assert!(line["failed"].as_str().is_some_and(|e| e.contains("broken")) && line["named"].as_array().unwrap().len() == 3, "{}", line);
     }
@@ -1614,14 +1898,17 @@ mod tests {
     fn test0300_a_collection_that_cannot_record_its_count_fails_and_says_so() {
         let c = cache();
         let b = six_builds(&c);
-        // Where the count goes, a directory: what the disk does not show would be forgotten.
+        // Where the count goes, a directory: what the snapshot keeps would be forgotten.
         fs::create_dir_all(c.join(USAGE).join("x")).unwrap();
         let short = b[0].1 / 2;
         let disk = std::cell::Cell::new(short);
+        let snap = [snapshot_now()];
         let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
-        let done = collect_on(&c, None, &policy, None, false, None, &held_disk(&disk)).unwrap();
+        let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("cannot record the count")), "{:?}", done);
-        assert!(!b[0].0.exists() && done.unseen > 0);
+        assert!(!b[0].0.exists());
+        #[cfg(unix)]
+        assert!(done.kept > 0, "{:?}", done);
         let line = &recent(&c, 1)[0];
         assert!(line["failed"].as_str().is_some_and(|e| e.contains("cannot record the count")), "{}", line);
     }

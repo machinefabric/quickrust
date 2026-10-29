@@ -1147,7 +1147,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         None if background => return Ok(0),
         None => util::ExclusiveLock::acquire(&lock_path).map_err(|e| e.to_string())?,
     };
-    let fs = crate::space::fs_space(util::qrust_home().as_path()).map_err(|e| format!("cannot measure the free space of {}: {}", util::qrust_home().display(), e))?;
+    let fs = crate::space::volume(util::qrust_home().as_path())?.space;
     let policy = crate::space::policy(&cfg, &fs);
     let phase = crate::ui::Phase::start();
     let done = crate::space::collect(&cache, crate::space::downloads().as_ref(), &policy, to, dry_run, None)?;
@@ -1158,7 +1158,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     }
     if format == "json" {
         let removed: Vec<Value> = done.removed.iter().map(|r| json!({ "kind": r.kind.name(), "path": path_str(&r.path), "bytes": r.bytes, "why": r.why.to_string() })).collect();
-        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available, "free_counted": done.free_before, "unseen": done.unseen, "cargo_left": done.cargo_left, "failed": done.failed })).unwrap_or_default());
+        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available, "free_counted": done.free_before, "kept_by_snapshots": done.kept, "cargo_left": done.cargo_left, "failed": done.failed })).unwrap_or_default());
         return failed;
     }
     for r in &done.removed {
@@ -1168,8 +1168,8 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         crate::ui::note(left);
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
-    let unseen = if done.unseen > 0 { format!(" and {} removed that the disk does not show yet", human_bytes(done.unseen)) } else { String::new() };
-    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), unseen, if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
+    let kept = if done.kept > 0 { format!(" and {} removed that a snapshot still keeps", human_bytes(done.kept)) } else { String::new() };
+    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
     failed
 }
 
@@ -1227,9 +1227,14 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     };
     let last = ctx.store.resolve_run_ref("latest", true).ok().and_then(|id| ctx.store.load_run(&id)).map(|r| json!({ "run": r["run"]["id"], "cache": r["cache"] }));
     let qrust_cache = util::cache_dir();
-    let fs = crate::space::fs_space(util::qrust_home().as_path()).ok();
+    let volume = crate::space::volume(util::qrust_home().as_path());
+    if let Err(e) = &volume {
+        crate::ui::say(crate::ui::Tag::Warn, e);
+    }
+    let volume = volume.ok();
+    let fs = volume.as_ref().map(|v| v.space);
     let bounds = fs.map(|f| crate::space::policy(&ctx.cfg, &f));
-    let counted_free = fs.map(|f| crate::space::free(&qrust_cache, &f, util::now_wall_ns()));
+    let counted_free = volume.as_ref().map(|v| crate::space::free(&qrust_cache, v, util::now_wall_ns()));
     let v = json!({
         "provider_policy": provider, "policy_origin": ctx.cfg.origin("cache.provider"), "fail": ctx.cfg.str("cache.fail"),
         "existing_rustc_wrapper": existing.as_ref().map(|(w, s)| json!({ "wrapper": w, "source": s })),
@@ -1272,7 +1277,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         };
         println!("  {:<24} at most {} (cache.max-size = {}), keeps {} of the disk free (cache.min-free = {}), {} free now", "bounds", human_bytes(m), setting("cache.max-size"), human_bytes(f), setting("cache.min-free"), human_bytes(free));
         if let Some(counted) = hc["free_counted"].as_u64().filter(|c| *c > free) {
-            println!("  {:<24} {} removed by collections that the disk does not show free yet (a snapshot holds it); counted as free until it does, for a day at most", "not shown yet", human_bytes(counted - free));
+            println!("  {:<24} {} removed by collections that the volume's snapshots still keep; counted as free while they do, for a day at most", "kept by snapshots", human_bytes(counted - free));
         }
     }
     for c in hc["recent_collections"].as_array().into_iter().flatten() {

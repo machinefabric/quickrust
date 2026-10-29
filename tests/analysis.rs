@@ -308,7 +308,7 @@ fn test0195_what_qrust_starts_in_the_background_is_qrust_whatever_name_it_runs_b
     let cargo = linked.join("cargo");
     fs::hard_link(env!("CARGO_BIN_EXE_qrust"), &cargo).unwrap();
     // A cache last counted long ago: the build starts a collection.
-    sb.file("qrust-home/cache/usage.json", r#"{"format": 2, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0, "unseen_bytes": 0, "unmet": false}"#);
+    sb.file("qrust-home/cache/usage.json", r#"{"format": 3, "scanned_ns": 0, "total_bytes": 0, "free_at_scan": 0, "kept_by_snapshots": [], "unmet": false}"#);
     ok(sb.with_shim(&cargo.display().to_string(), &p).arg("build"));
     // The collection counts the cache when it is done (a command only records that it never was).
     let usage = sb.home.join("cache/usage.json");
