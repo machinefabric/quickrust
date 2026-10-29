@@ -203,7 +203,13 @@ pub fn path_str(p: &Path) -> String {
 
 /// Canonicalize for identity purposes only; never used to rewrite user-facing paths.
 pub fn canon(p: &Path) -> PathBuf {
-    without_verbatim_prefix(fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()))
+    canonical(p).unwrap_or_else(|_| p.to_path_buf())
+}
+
+/// `fs::canonicalize` in the form `canon` gives, so the two compare: a verbatim path never starts
+/// with the plain one it means.
+pub fn canonical(p: &Path) -> io::Result<PathBuf> {
+    fs::canonicalize(p).map(without_verbatim_prefix)
 }
 
 /// Windows' canonical paths are verbatim (`\\?\C:\…`, `\\?\UNC\server\share\…`), a form many
@@ -637,11 +643,44 @@ pub fn file_identity(p: &Path) -> Option<(u64, u64)> {
         use std::os::unix::fs::MetadataExt;
         fs::metadata(p).ok().map(|m| (m.dev(), m.ino()))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = p;
-        None
+        windows_file_identity(p).ok()
     }
+}
+
+/// The volume's serial number and the file's index on it, which every hard link of the file shares.
+#[cfg(windows)]
+fn windows_file_identity(p: &Path) -> io::Result<(u64, u64)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        attributes: u32,
+        created: [u32; 2],
+        accessed: [u32; 2],
+        written: [u32; 2],
+        volume_serial: u32,
+        size_high: u32,
+        size_low: u32,
+        links: u32,
+        index_high: u32,
+        index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(file: *mut std::ffi::c_void, info: *mut ByHandleFileInformation) -> i32;
+    }
+    // Opened for no access but its attributes, and with backup semantics, without which a directory
+    // cannot be opened at all.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    let f = fs::File::options().access_mode(0).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p)?;
+    let mut info = ByHandleFileInformation::default();
+    if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((info.volume_serial as u64, (info.index_high as u64) << 32 | info.index_low as u64))
 }
 
 pub fn is_ci() -> bool {
@@ -725,6 +764,29 @@ mod tests {
         let again = ExclusiveLock::try_acquire(&path).unwrap().expect("free once released");
         assert!(ExclusiveLock::try_acquire(&path).unwrap().is_none(), "taken while held");
         drop(again);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // TEST0330: A file's links are one file, and a copy written at once after is another
+    #[test]
+    fn test0330_a_files_links_are_one_file_and_a_copy_written_at_once_after_is_another() {
+        let dir = std::env::temp_dir().join(format!("qrust-identity-{}", new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let (a, link, copy) = (dir.join("a"), dir.join("link"), dir.join("copy"));
+        fs::write(&a, "cargo 1").unwrap();
+        fs::hard_link(&a, &link).unwrap();
+        // The same size, within the same tick of the clock that stamps file times.
+        fs::write(&copy, "cargo 2").unwrap();
+        let id = file_identity(&a).expect("a file has an identity");
+        assert_eq!(file_identity(&link), Some(id));
+        assert_ne!(file_identity(&copy), Some(id));
+        // Replaced under its name, it is another file.
+        fs::remove_file(&a).unwrap();
+        fs::write(&a, "cargo 3").unwrap();
+        assert_ne!(file_identity(&a), Some(id));
+        assert_eq!(file_identity(&link), Some(id));
+        assert!(file_identity(&dir).is_some(), "a directory has one too");
+        assert_eq!(file_identity(&dir.join("missing")), None);
         fs::remove_dir_all(&dir).ok();
     }
 

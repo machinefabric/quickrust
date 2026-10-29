@@ -196,7 +196,7 @@ fn edit_target(opts: &Options, meta: &Value, root: &Path) -> Result<PathBuf, Str
             pick("lib").or_else(|| pick("bin")).ok_or("no library or binary target found to edit; pass --edit <file>")?
         }
     };
-    let canon = fs::canonicalize(&file).map_err(|e| format!("cannot edit {}: {}", file.display(), e))?;
+    let canon = util::canonical(&file).map_err(|e| format!("cannot edit {}: {}", file.display(), e))?;
     // Mutations are confined to the workspace (FR-020 validation).
     if !canon.starts_with(util::canon(root)) {
         return Err(format!("{} is outside the workspace {}; refusing to edit it", canon.display(), root.display()));

@@ -740,7 +740,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             if !crate::toolchain::spec::is_link_name(&name) || !matches!(Spec::parse(&name), Ok(Spec::Named(_))) {
                 return Err(format!("`{}` cannot name a linked toolchain: use letters, digits, `-`, `_` and `.`, and not a channel or release name", name));
             }
-            let dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {}", dir, e))?;
+            let dir = util::canonical(Path::new(&dir)).map_err(|e| format!("{}: {}", dir, e))?;
             let tc = toolchain::Toolchain { id: name.clone(), dir: dir.clone(), linked: true };
             for tool in ["rustc", "cargo"] {
                 let bin = tc.bin(tool);

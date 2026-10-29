@@ -127,16 +127,7 @@ pub fn engine_program(tc: &Toolchain) -> Result<PathBuf, String> {
 
 /// Whether `a` and `b` are one file (links of it).
 fn same_file(a: &Path, b: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        util::file_identity(a).is_some_and(|id| util::file_identity(b) == Some(id))
-    }
-    // NTFS keeps the size and times in the file record every link of the file shares.
-    #[cfg(not(unix))]
-    {
-        let key = |p: &Path| std::fs::metadata(p).ok().map(|m| (m.len(), m.modified().ok(), m.created().ok()));
-        key(a).is_some() && key(a) == key(b)
-    }
+    util::file_identity(a).is_some_and(|id| util::file_identity(b) == Some(id))
 }
 
 /// Why a toolchain was chosen.

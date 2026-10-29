@@ -1278,7 +1278,18 @@ mod tests {
 
     fn age(p: &Path, secs: u64) {
         let t = std::time::SystemTime::now() - Duration::from_secs(secs);
-        fs::File::open(p).or_else(|_| fs::File::options().write(true).open(p)).unwrap().set_modified(t).unwrap();
+        // Windows sets a time through a handle that may write attributes, and opens a directory only
+        // with backup semantics.
+        #[cfg(windows)]
+        let f = {
+            use std::os::windows::fs::OpenOptionsExt;
+            const FILE_WRITE_ATTRIBUTES: u32 = 0x100;
+            const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+            fs::File::options().access_mode(FILE_WRITE_ATTRIBUTES).custom_flags(FILE_FLAG_BACKUP_SEMANTICS).open(p)
+        };
+        #[cfg(not(windows))]
+        let f = fs::File::open(p);
+        f.unwrap().set_modified(t).unwrap();
     }
 
     /// A managed build directory of a workspace at `root`, last used `ago_secs` ago.
