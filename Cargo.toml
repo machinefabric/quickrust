@@ -54,7 +54,7 @@ semver = "1"
 # release key that two of the build's root keys certify. The chain is mg-srel's; the formats
 # and charter rules are MachineFabric's, in `src/release.rs`. Verification only.
 [dependencies.mg-srel]
-version = "=0.1.0"
+version = "0.5"
 
 [dev-dependencies]
 # The tests sign the release lines they serve: QuickRust verifies and never signs.
