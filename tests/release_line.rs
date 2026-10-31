@@ -296,7 +296,7 @@ fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed
     // Certified by this build's roots, for the other environment.
     let certificate = Line::certificate(&line.release, "prod", now() - 3600, now() + 86_400);
     published.put_signature(Line::envelope(&offered, &certificate, &[&line.roots[0], &line.roots[1]], &line.release));
-    refused("is for the prod environment; this QuickRust was built for staging");
+    refused("is for 'prod', and this client trusts 'staging'");
 
     // A certificate that has run out.
     let certificate = Line::certificate(&line.release, ENVIRONMENT, now() - 7200, now() - 3600);
