@@ -29,9 +29,9 @@
 //! release line ([`identity`] is `None`).
 
 use serde::Deserialize;
-use signed_release::{CharterExpectation, CharterRules, CharterTrust, Formats, KindRule, LocationRule};
+use mg_srel::{CharterExpectation, CharterRules, CharterTrust, Formats, KindRule, LocationRule};
 
-pub use signed_release::{ChainError, CharterError};
+pub use mg_srel::{ChainError, CharterError};
 
 /// The product's name in the release registry.
 pub const APP_ID: &str = "quickrust";
@@ -124,9 +124,9 @@ pub fn charter_rules() -> CharterRules {
 
 /// `trust` as the chain is verified against: MachineFabric's manifest formats, under the
 /// environment this QuickRust was built for.
-pub fn content_trust(trust: &Trust) -> Result<signed_release::Trust, String> {
+pub fn content_trust(trust: &Trust) -> Result<mg_srel::Trust, String> {
     let roots: Vec<&str> = trust.roots.iter().map(String::as_str).collect();
-    signed_release::Trust::new(&roots, &trust.environment, Formats { certificate: CERTIFICATE_FORMAT.to_string(), envelope: ENVELOPE_FORMAT.to_string() })
+    mg_srel::Trust::new(&roots, &trust.environment, Formats { certificate: CERTIFICATE_FORMAT.to_string(), envelope: ENVELOPE_FORMAT.to_string() })
         .map_err(|e| format!("this QuickRust's signing roots cannot be used: {}", e))
 }
 
@@ -134,7 +134,7 @@ pub fn content_trust(trust: &Trust) -> Result<signed_release::Trust, String> {
 pub fn charter_trust(charter_roots: &[String]) -> Result<CharterTrust, String> {
     let roots: Vec<&str> = charter_roots.iter().map(String::as_str).collect();
     let formats = Formats { certificate: CERTIFICATE_FORMAT.to_string(), envelope: CHARTER_ENVELOPE_FORMAT.to_string() };
-    signed_release::Trust::new(&roots, CHARTER_LABEL, formats)
+    mg_srel::Trust::new(&roots, CHARTER_LABEL, formats)
         .map(|trust| CharterTrust { trust })
         .map_err(|e| format!("this QuickRust's charter roots cannot be used: {}", e))
 }
@@ -145,7 +145,7 @@ pub fn charter_trust(charter_roots: &[String]) -> Result<CharterTrust, String> {
 /// Returns the address of QuickRust's manifest, as the charter states it.
 pub fn verify_charter(charter: &[u8], envelope: &[u8], trust: &CharterTrust, anchor: &str, environment: &str, now: u64) -> Result<String, CharterError> {
     let expect = CharterExpectation { anchor: Some(anchor), kind: "releases", environment: Some(environment) };
-    let verified = signed_release::verify_charter(charter, envelope, trust, &charter_rules(), &expect, now)?;
+    let verified = mg_srel::verify_charter(charter, envelope, trust, &charter_rules(), &expect, now)?;
     // The rules hold a release registry's manifest location to taking `{app_id}` and nothing
     // else, so filling it in cannot fail for a charter that verified.
     Ok(verified.charter.location("manifest", &[("app_id", APP_ID)]).expect("a verified release charter's manifest location takes {app_id}"))
@@ -282,13 +282,13 @@ pub fn fetch_latest(client: &crate::net::Client, registry: &str, trust: &Trust, 
     // Never from a cache: a document and its signature are replaced together, and a stale one of
     // either beside a fresh one of the other reads as a forgery.
     let fresh = [("Cache-Control", "no-cache")];
-    let charter_url = format!("{}/{}", registry, signed_release::CHARTER_FILE);
+    let charter_url = format!("{}/{}", registry, mg_srel::CHARTER_FILE);
     let charter = match client.get_bytes(&charter_url, &fresh) {
         Ok(bytes) => bytes,
         Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("{} has no charter ({} is missing), so it is not a release registry MachineFabric chartered", registry, charter_url)),
         Err(e) => return Err(e.to_string()),
     };
-    let charter_sig_url = format!("{}/{}", registry, signed_release::CHARTER_SIG_FILE);
+    let charter_sig_url = format!("{}/{}", registry, mg_srel::CHARTER_SIG_FILE);
     let charter_sig = match client.get_bytes(&charter_sig_url, &fresh) {
         Ok(bytes) => bytes,
         Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("{} has a charter and no signature for it ({} is missing)", registry, charter_sig_url)),
@@ -306,7 +306,7 @@ pub fn fetch_latest(client: &crate::net::Client, registry: &str, trust: &Trust, 
         Err(crate::net::Error::Status { status: 404, .. }) => return Err(format!("{} is published without a signature ({} is missing), so nothing in it can be trusted", url, signature_url)),
         Err(e) => return Err(e.to_string()),
     };
-    signed_release::verify_manifest(&signature, &manifest, &content, now).map_err(|e| format!("{} is not a release manifest this QuickRust trusts: {}", url, e))?;
+    mg_srel::verify_manifest(&signature, &manifest, &content, now).map_err(|e| format!("{} is not a release manifest this QuickRust trusts: {}", url, e))?;
     latest(&manifest, channel, platform)
 }
 
@@ -329,7 +329,7 @@ mod tests {
 
     /// The manifest's chain verified as a published QuickRust verifies it.
     fn verify_manifest(manifest: &[u8], envelope: &[u8], trust: &Trust, now: u64) -> Result<(), ChainError> {
-        signed_release::verify_manifest(envelope, manifest, &content_trust(trust).unwrap(), now).map(|_| ())
+        mg_srel::verify_manifest(envelope, manifest, &content_trust(trust).unwrap(), now).map(|_| ())
     }
 
     fn charters(roots: &[String]) -> CharterTrust {
