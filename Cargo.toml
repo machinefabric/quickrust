@@ -1,6 +1,6 @@
 [package]
 name = "quickrust"
-version = "1.169.1580"
+version = "1.170.1590"
 edition = "2021"
 rust-version = "1.80"
 description = "Cargo, faster: every Cargo command, with Rust toolchains, a shared build cache and output that QuickRust manages"
@@ -14,7 +14,7 @@ members = [".", "bench", "tools/quickrust-dist"]
 # The version the members that build QuickRust's release carry, so a release build
 # names the version it releases.
 [workspace.package]
-version = "1.169.1580"
+version = "1.170.1590"
 
 [lib]
 name = "quickrust"
@@ -49,8 +49,15 @@ tar = { version = "0.4", default-features = false }
 # QuickRust's own Windows release archive is a .zip (`qrust self update` unpacks it).
 zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 semver = "1"
-# Release manifests are signed: raw ed25519 over their exact bytes, by a release key that two of
-# the build's root keys certify (`src/release.rs`). Verification only.
+
+# Release manifests and registry charters are signed: raw ed25519 over their exact bytes, by a
+# release key that two of the build's root keys certify. The chain is signed-release's; the formats
+# and charter rules are MachineFabric's, in `src/release.rs`. Verification only.
+[dependencies.signed-release]
+version = "=0.1.0"
+
+[dev-dependencies]
+# The tests sign the release lines they serve: QuickRust verifies and never signs.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]
