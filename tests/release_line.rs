@@ -284,14 +284,14 @@ fn test0280_a_released_quickrust_updates_itself_only_to_what_its_registry_signed
     // Signed, and then replaced: the signature is of the manifest it was made for.
     published.sign(&unsigned);
     published.release(CHANNEL, "999.0.1", "qrust 999.0.1", None, None);
-    refused("the manifest's signature does not match the manifest");
+    refused("the signature does not verify over the document's bytes");
 
     // Signed by a release key that roots this build has never heard of certified.
     let strangers = Line { roots: [Key::new(21), Key::new(22), Key::new(23)], release: Key::new(29) };
     let offered = published.release(CHANNEL, "999.0.0", "qrust 999.0.0", None, None);
     let certificate = Line::certificate(&strangers.release, ENVIRONMENT, now() - 3600, now() + 86_400);
     published.put_signature(Line::envelope(&offered, &certificate, &[&strangers.roots[0], &strangers.roots[1]], &strangers.release));
-    refused("is signed by 0 of this QuickRust's roots; 2 must sign");
+    refused("is signed by 0 trusted root(s); 2 are required");
 
     // Certified by this build's roots, for the other environment.
     let certificate = Line::certificate(&line.release, "prod", now() - 3600, now() + 86_400);
