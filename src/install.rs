@@ -7,7 +7,8 @@
 //!   `cargo metadata`), so registries, source replacement, yanked releases and the toolchain's
 //!   Rust version count exactly as in a build. Its source then comes from QuickRust's
 //!   Cargo home, copied into QuickRust's cache.
-//! - `--git` clones with the system `git`; `--path` builds the package where it is.
+//! - `--git` clones with the system `git` and finds the package anywhere in the repository, as Cargo
+//!   does; `--path` builds the package where it is.
 //! - It is built like any build QuickRust runs (release profile unless `--debug` / `--profile`), with
 //!   QuickRust's output, artifact cache and build directories. As by `cargo install`, a crate's
 //!   dependencies are resolved afresh, and with `--locked` from the lockfile published with it
@@ -565,7 +566,7 @@ fn git(url: &str, git_ref: Option<&(String, String)>, name: &str, inv: &Invocati
         }
     }
     let head = std::process::Command::new(&git).arg("-C").arg(&dir).args(["rev-parse", "HEAD"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
-    let (mut s, root) = local(&dir, name, inv, cwd, cfg)?;
+    let (mut s, root) = local(&package_in(&dir, url, name)?, name, inv, cwd, cfg)?;
     if root.join("Cargo.lock").is_file() {
         fs::rename(root.join("Cargo.lock"), root.join(PUBLISHED_LOCK)).map_err(|e| format!("cannot keep {}'s lockfile aside: {}", url, e))?;
     }
@@ -574,6 +575,48 @@ fn git(url: &str, git_ref: Option<&(String, String)>, name: &str, inv: &Invocati
     s.copy_root = Some(root);
     s._lock = Some(lock);
     Ok(s)
+}
+
+/// Where in a clone of `url` the package `name` is.
+///
+/// Cargo reads every manifest in a repository, at any depth, so a workspace kept in a directory of
+/// one (`tools/Cargo.toml`, its members below it) is installed from as one at the root is. A
+/// directory whose name starts with a dot, and every `target`, are not searched; a manifest that
+/// does not parse is skipped and said, as Cargo skips it. Without a name, the repository's root
+/// manifest, from whose workspace `local` picks the one package with binaries.
+fn package_in(clone: &Path, url: &str, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty() {
+        return if clone.join("Cargo.toml").is_file() {
+            Ok(clone.to_path_buf())
+        } else {
+            Err(format!("{} has no Cargo.toml at its root: name the package to install", url))
+        };
+    }
+    let mut found = vec![];
+    let mut stack = vec![clone.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.is_file() {
+            let text = fs::read_to_string(&manifest).map_err(|e| format!("cannot read {}: {}", manifest.display(), e))?;
+            match toml::from_str::<toml::Value>(&text) {
+                Ok(parsed) if parsed.get("package").and_then(|p| p.get("name")).and_then(toml::Value::as_str) == Some(name) => found.push(dir.clone()),
+                Ok(_) => {}
+                Err(e) => crate::ui::note(&format!("skipping {}, which is not a manifest: {}", manifest.display(), e.message())),
+            }
+        }
+        for e in fs::read_dir(&dir).map_err(|e| format!("cannot read {}: {}", dir.display(), e))?.flatten() {
+            let entry = e.file_name();
+            let entry = entry.to_string_lossy();
+            if e.file_type().is_ok_and(|t| t.is_dir()) && !entry.starts_with('.') && entry != "target" {
+                stack.push(e.path());
+            }
+        }
+    }
+    match found.as_slice() {
+        [one] => Ok(one.clone()),
+        [] => Err(format!("{} has no package `{}`", url, name)),
+        many => Err(format!("{} has {} packages named `{}`: {}", url, many.len(), name, many.iter().map(|d| util::path_str(d)).collect::<Vec<_>>().join(", "))),
+    }
 }
 
 /// A package in a local directory (a workspace, or one of its members by `name`), and the root

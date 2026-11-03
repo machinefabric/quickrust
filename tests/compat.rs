@@ -380,6 +380,54 @@ fn test0243_qrust_installs_programs_into_its_own_bin() {
     assert_eq!(run(sb.qrust(&sb.dir).args(["uninstall", "local-tool"])).status.code(), Some(2));
 }
 
+// TEST0331: A package is installed from a git repository wherever in it its manifest is
+#[test]
+fn test0331_a_package_is_installed_from_a_git_repository_wherever_in_it_its_manifest_is() {
+    let sb = Sandbox::new("installgit");
+    let bin = sb.home.join("bin");
+    let run_tool = |name: &str| stdout(&ok(&mut std::process::Command::new(bin.join(name))));
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git").arg("-C").arg(sb.dir.join("repo")).args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"]).args(args).output().unwrap();
+        assert!(out.status.success(), "git {:?}: {}", args, String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let main = |says: &str| format!("fn main() {{\n    println!(\"{}\");\n}}\n", says);
+    // No manifest at the root: the workspace is a directory of the repository, the daemon a member.
+    sb.file("repo/README.md", "a repository whose Rust is in tool/\n");
+    sb.file("repo/tool/Cargo.toml", "[workspace]\nmembers = [\"daemon\"]\n\n[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    sb.file("repo/tool/src/main.rs", &main("tool"));
+    sb.file("repo/tool/daemon/Cargo.toml", "[package]\nname = \"tool-daemon\"\nversion = \"0.1.0\"\nedition = \"2021\"\n");
+    sb.file("repo/tool/daemon/src/main.rs", &main("daemon 1"));
+    // What Cargo does not search, and a manifest it cannot read: none of them is a second
+    // `tool-daemon`, and none stops the search.
+    for decoy in ["repo/.hidden/Cargo.toml", "repo/tool/target/stale/Cargo.toml"] {
+        sb.file(decoy, "[package]\nname = \"tool-daemon\"\nversion = \"9.0.0\"\nedition = \"2021\"\n");
+    }
+    sb.file("repo/fixtures/broken/Cargo.toml", "[package\nname = \"tool-daemon\"\n");
+    git(&["init", "--quiet"]);
+    git(&["add", "--all", "--force"]);
+    git(&["commit", "--quiet", "-m", "one"]);
+    let first = git(&["rev-parse", "HEAD"]);
+    sb.file("repo/tool/daemon/src/main.rs", &main("daemon 2"));
+    git(&["commit", "--quiet", "--all", "-m", "two"]);
+    let url = sb.dir.join("repo").display().to_string();
+
+    // A member, at the revision asked for.
+    let out = ok(sb.qrust(&sb.dir).args(["install", "--git", &url, "--rev", &first, "tool-daemon"]));
+    assert!(stderr(&out).contains("which is not a manifest"), "the malformed manifest is skipped and said: {}", stderr(&out));
+    assert_eq!(run_tool("tool-daemon"), "daemon 1\n");
+    // The workspace's own package, from the default branch.
+    ok(sb.qrust(&sb.dir).args(["install", "--git", &url, "tool"]));
+    assert_eq!(run_tool("tool"), "tool\n");
+    ok(sb.qrust(&sb.dir).args(["install", "--git", &url, "tool-daemon", "--force"]));
+    assert_eq!(run_tool("tool-daemon"), "daemon 2\n");
+    // A name the repository has no package by, and no name with no manifest at the root.
+    let absent = run(sb.qrust(&sb.dir).args(["install", "--git", &url, "absent"]));
+    assert!(stderr(&absent).contains("has no package `absent`"), "{}", stderr(&absent));
+    let unnamed = run(sb.qrust(&sb.dir).args(["install", "--git", &url]));
+    assert!(stderr(&unnamed).contains("has no Cargo.toml at its root"), "{}", stderr(&unnamed));
+}
+
 // TEST0244: Toolchain programs load their own libraries whatever the library path says
 #[test]
 #[cfg(target_os = "linux")]
