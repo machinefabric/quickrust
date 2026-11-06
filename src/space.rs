@@ -68,7 +68,7 @@ use std::time::{Duration, Instant};
 /// What was used this recently is never removed.
 pub const PROTECTED_NS: u64 = 15 * 60 * 1_000_000_000;
 const DAY_NS: u64 = 24 * 3_600 * 1_000_000_000;
-const USAGE: &str = "usage.json";
+pub const USAGE: &str = "usage.json";
 /// The format of `USAGE`; a count of another is no count, and the next collection writes one.
 const USAGE_FORMAT: u64 = 3;
 const LOG: &str = "gc-log.jsonl";
@@ -96,6 +96,12 @@ impl Volume {
     fn newest_snapshot(&self) -> Option<u64> {
         self.snapshots.iter().max().copied()
     }
+}
+
+/// The volume the cache at `cache` is on, measured now: its directory's, or that of the directory
+/// it will be made in.
+pub fn cache_volume(cache: &Path) -> Result<Volume, String> {
+    volume(cache.ancestors().find(|d| d.is_dir()).unwrap_or(cache))
 }
 
 /// The volume `path` is on, measured now.
@@ -905,7 +911,7 @@ fn used_since_scan(dir: &Path) -> bool {
 
 /// Whether a Cargo holds one of its locks in this target directory (`<dir>/<profile>/.cargo-lock`
 /// and the like, two levels down).
-fn cargo_building_in(dir: &Path) -> bool {
+pub fn cargo_building_in(dir: &Path) -> bool {
     let mut candidates = vec![];
     for a in entries(dir) {
         if a.is_dir() {
@@ -1042,9 +1048,14 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
             Err(e) => out.failed = Some(format!("Cargo's downloads were not collected: cannot read which commands run Cargo ({}): {}", d.runs.dir.display(), e)),
             Ok(Err(running)) => out.cargo_left = Some(format!("Cargo's downloads were left: {} QuickRust command{} running Cargo (process {})", running.len(), if running.len() == 1 { " was" } else { "s were" }, running.iter().map(u32::to_string).collect::<Vec<_>>().join(", "))),
             Ok(Ok(_idle)) => {
-                let (freed, summary, failed) = collect_downloads(d, registry_before + git_before, &goal, total, available, now, dry_run);
+                // Cargo's home stays in QuickRust's home when the cache moves to another disk:
+                // its downloads count towards the cache's size, and free none of that disk.
+                let frees_disk = same_volume(cache, &d.cargo_home);
+                let (freed, summary, failed) = collect_downloads(d, registry_before + git_before, &goal, total, available, frees_disk, now, dry_run);
                 total = total.saturating_sub(freed);
-                available = available.saturating_add(freed);
+                if frees_disk {
+                    available = available.saturating_add(freed);
+                }
                 if freed > 0 {
                     out.removed.push(Removal { kind: Kind::Registry, path: d.cargo_home.clone(), bytes: freed, why: Why::Cargo(summary) });
                 }
@@ -1081,11 +1092,27 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     Ok(out)
 }
 
+/// What the bounds still need of Cargo's downloads once `freed` bytes of them are gone, with the
+/// cache at `total` and the disk's free space at `available`: towards the size, and towards the
+/// free space only when they are on the cache's disk (`frees_disk`).
+fn still_needed(goal: &Goal, total: u64, available: u64, freed: u64, frees_disk: bool) -> u64 {
+    let short_of_free = if frees_disk { goal.min_free.saturating_sub(available.saturating_add(freed)) } else { 0 };
+    total.saturating_sub(freed).saturating_sub(goal.max_total).max(short_of_free)
+}
+
+/// Whether `a` and `b` are on one volume.
+fn same_volume(a: &Path, b: &Path) -> bool {
+    matches!((util::file_identity(a), util::file_identity(b)), (Some((x, _)), Some((y, _))) if x == y)
+}
+
 /// Cargo's collection of the downloads of `d`, which held `before` bytes: by Cargo's own ages,
 /// then by each of CARGO_AGES while the bounds need room, with the cache at `total` and the disk's
 /// free space at `available` (a dry run goes by what Cargo says it would remove); none that cannot
-/// remove anything. What it freed, Cargo's last summary, and why it stopped if Cargo failed.
-fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, available: u64, now: u64, dry_run: bool) -> (u64, String, Option<String>) {
+/// remove anything. What it removes adds to the disk's free space only when `frees_disk` (the
+/// downloads are on the cache's disk). What it freed, Cargo's last summary, and why it stopped if
+/// Cargo failed.
+#[allow(clippy::too_many_arguments)]
+fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, available: u64, frees_disk: bool, now: u64, dry_run: bool) -> (u64, String, Option<String>) {
     let measured = |d: &Downloads| {
         let (r, g) = download_bytes(d);
         r + g
@@ -1096,7 +1123,7 @@ fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, availa
     let ages = std::iter::once((None, CARGO_OWN_AGE_NS)).chain(CARGO_AGES.iter().map(|&(age, age_ns)| (Some(age), age_ns)));
     for (age, age_ns) in ages {
         let freed = before.saturating_sub(after);
-        let needed = total.saturating_sub(freed).saturating_sub(goal.max_total).max(goal.min_free.saturating_sub(available.saturating_add(freed)));
+        let needed = still_needed(goal, total, available, freed, frees_disk);
         // Cargo's own ages apply at every collection; the shorter ones only while needed.
         if age.is_some() && needed == 0 {
             break;
@@ -1216,7 +1243,7 @@ fn collecting_in(cache: &Path) -> bool {
 /// space to count, no process to start) are the command's to report as a note, never to fail on.
 pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
     let cache = util::cache_dir();
-    let volume = volume(util::qrust_home().as_path())?;
+    let volume = cache_volume(&cache)?;
     if !due(&cache, &policy(cfg, &volume.space), &volume, util::now_wall_ns()) {
         return Ok(false);
     }
@@ -1237,15 +1264,15 @@ pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
 /// lost). When the disk is nearly full (a quarter of `cache.min-free`, as `free` counts it),
 /// collects for at most ten seconds. `None` when nothing needed doing.
 pub fn before_command(cfg: &Config) -> Option<Result<Collected, String>> {
-    before_command_in(cfg, &util::cache_dir(), &util::qrust_home())
+    before_command_in(cfg, &util::cache_dir())
 }
 
-/// `before_command` for the cache at `cache` in QuickRust's home `home`.
-fn before_command_in(cfg: &Config, cache: &Path, home: &Path) -> Option<Result<Collected, String>> {
+/// `before_command` for the cache at `cache`.
+fn before_command_in(cfg: &Config, cache: &Path) -> Option<Result<Collected, String>> {
     let cache = cache.to_path_buf();
     let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
     if empty && count(&cache).is_none() {
-        if let Ok(fs) = fs_space(home) {
+        if let Ok(fs) = cache_volume(&cache).map(|v| v.space) {
             let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "kept_by_snapshots": [], "counted": false, "unmet": false })));
         }
     }
@@ -1521,6 +1548,20 @@ mod tests {
         assert!(held.exists() && done.skipped_in_use == 1, "{:?}", done);
     }
 
+    // TEST0338: Cargos downloads on another disk than the cache count towards its size only
+    #[test]
+    fn test0338_cargos_downloads_on_another_disk_than_the_cache_count_towards_its_size_only() {
+        // The disk is 1000 bytes short of its free space, and the cache within its size.
+        let short = Goal { max_total: u64::MAX, min_free: 5_000 };
+        assert_eq!(still_needed(&short, 100, 4_000, 0, true), 1_000, "on the cache's disk, removing them frees it");
+        assert_eq!(still_needed(&short, 100, 4_000, 400, true), 600);
+        assert_eq!(still_needed(&short, 100, 4_000, 0, false), 0, "elsewhere, removing them frees none of the cache's disk");
+        // Over its size, they count wherever they are.
+        let big = Goal { max_total: 1_000, min_free: 0 };
+        assert_eq!(still_needed(&big, 1_500, 0, 200, false), 300);
+        assert_eq!(still_needed(&big, 1_500, 0, 200, true), 300);
+    }
+
     // TEST0122: A fresh cache is counted without a scan and then checked by its growth
     #[test]
     fn test0122_a_fresh_cache_is_counted_without_a_scan_and_then_checked_by_its_growth() {
@@ -1528,7 +1569,7 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         let cache = home.join("cache");
         // The first command of a fresh QuickRust home: no collection, a count of nothing.
-        let first = before_command_in(&Config::defaults(), &cache, &home);
+        let first = before_command_in(&Config::defaults(), &cache);
         assert!(first.is_none() || first.as_ref().is_some_and(|r| r.is_ok()));
         let u = usage(&cache).expect("counted");
         assert_eq!((u["total_bytes"].as_u64(), u["counted"].as_bool()), (Some(0), Some(false)));

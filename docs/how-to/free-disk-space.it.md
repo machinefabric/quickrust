@@ -1,6 +1,6 @@
 # Come mantenere la cache di QuickRust entro i limiti del disco
 
-Questa guida ti mostra come vedere quanto spazio usa QuickRust, liberare spazio subito e impostare i limiti che QuickRust rispetta da solo.
+Questa guida ti mostra come vedere quanto spazio usa QuickRust, liberare spazio subito, impostare i limiti che QuickRust rispetta da solo e spostare la cache su un altro disco.
 
 Tutto ciò che si trova sotto `~/.qrust/cache` (directory di build, la cache degli artefatti, driver del compilatore, download) può essere ricompilato o scaricato di nuovo, e QuickRust rimuove ciò che è stato usato meno di recente ogni volta che la cache supera il suo limite di dimensione o il disco resta a corto di spazio libero. Questa guida ti serve solo quando i default non sono adatti alla tua macchina. Il modo in cui la pulizia decide è descritto in [Perché QuickRust possiede il proprio ambiente](../explanation/owning-the-environment.md).
 
@@ -55,6 +55,22 @@ Entrambe accettano una dimensione (`500MB`, `40GiB`), una quota del disco (`10%`
 
 Se il disco è condiviso con altri dati di grandi dimensioni, aumenta `min-free`; QuickRust allora restituisce spazio man mano che il disco si riempie, qualunque sia la sua dimensione. Restituisce quanto manca al disco più un quarto di `min-free`, a partire da ciò che è stato usato meno di recente, e di nuovo quando il disco ha perso quel margine. Su un disco che di solito è sotto `min-free` a causa di altri dati, abbassa `min-free` allo spazio che vuoi mantenere libero: altrimenti la cache resta più piccola della differenza.
 
+## Sposta la cache su un altro disco {#move-the-cache-to-another-disk}
+
+Quando il disco su cui si trova `~/.qrust` è a corto di spazio, o ne è collegato uno più veloce, sposta lì la cache:
+
+```bash
+qrust cache move /Volumes/Fast/qrust-cache
+```
+
+```text
+OK   Moved QuickRust's cache from /Users/me/.qrust/cache to /Volumes/Fast/qrust-cache: 18.4 GiB in 212034 files [2m14.07s]
+```
+
+Ogni comando successivo usa la cache lì, e nulla di ciò che contiene va perso: le build restano aggiornate com'erano, e la cache degli artefatti conserva ogni voce. La directory non deve ancora esistere, o deve essere vuota. Lo spostamento aspetta che finiscano i comandi di QuickRust in esecuzione, e si ferma mentre un programma tiene una directory di build (`qrust path --hold-for`). Da quel momento i limiti descritti sopra valgono per il disco su cui si trova la cache, e `qrust cache status` mostra dove si trova.
+
+Se quel disco non è montato, i comandi di QuickRust si fermano e lo dicono invece di compilare in una cache nuova e vuota: montalo, oppure sposta la cache altrove, dove riparte vuota. `qrust cache move ~/.qrust/cache` la riporta indietro. Dettagli: [File e directory](../reference/files.md#where-the-cache-is).
+
 ## Guarda dentro la directory di build di un workspace {#look-inside-one-workspaces-build-directory}
 
 ```bash
@@ -73,7 +89,7 @@ Per svuotare la directory di build di un workspace, esegui `cargo clean` al suo 
 - I programmi installati con `qrust install` restano finché non li rimuovi con `qrust uninstall`; i loro sorgenti di build fanno parte della cache.
 - Una directory target che hai scelto tu (`--target-dir`, `CARGO_TARGET_DIR`) non viene mai ripulita: puliscila con `cargo clean`.
 
-Anche cancellare `~/.qrust/cache` a mano funziona, purché non sia in esecuzione nessuna build: le build successive compilano e scaricano di nuovo ciò di cui hanno bisogno.
+Anche cancellare `~/.qrust/cache` a mano funziona, purché non sia in esecuzione nessuna build: le build successive compilano e scaricano di nuovo ciò di cui hanno bisogno. Una cache che hai spostato resta dove l'hai messa: svuota la sua directory invece di cancellarla, altrimenti QuickRust la prende per un disco non montato.
 
 ## Se una build esaurisce lo spazio {#if-a-build-runs-out-of-space}
 

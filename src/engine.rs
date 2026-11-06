@@ -53,6 +53,7 @@ pub fn run_proxy(tool: &str, args: Vec<OsString>) -> ! {
     }
     let mut cmd = engine.tool(tool);
     cmd.args(&args[usize::from(plus.is_some())..]);
+    crate::relocate::let_go();
     let err = crate::proc::exec(&mut cmd);
     fail(format!("could not run {}: {}", program.display(), err))
 }

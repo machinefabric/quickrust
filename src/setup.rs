@@ -519,6 +519,12 @@ pub fn uninstall() -> Result<Vec<String>, String> {
         let _ = std::process::Command::new("powershell").args(["-NoProfile", "-NonInteractive", "-Command", &script]).output();
     }
     let home = util::qrust_home();
+    // Moved out of the home, the cache goes with it; its record is in the home.
+    let cache = crate::relocate::place()?;
+    if cache.moved && cache.dir.exists() {
+        fs::remove_dir_all(&cache.dir).map_err(|e| format!("cannot remove QuickRust's cache, {}: {}", cache.dir.display(), e))?;
+        removed.push(util::path_str(&cache.dir));
+    }
     if home.exists() {
         fs::remove_dir_all(&home).map_err(|e| format!("cannot remove {}: {}", home.display(), e))?;
         removed.push(util::path_str(&home));

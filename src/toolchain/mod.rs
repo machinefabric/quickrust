@@ -24,19 +24,22 @@ use install::Report;
 use spec::{Channel, Spec};
 use std::path::{Path, PathBuf};
 
-/// QuickRust's toolchain directories under its home.
+/// QuickRust's toolchain directories: under its home, and archives being downloaded in its cache.
 #[derive(Clone, Debug)]
 pub struct Layout {
     home: PathBuf,
+    /// `None`: QuickRust's cache, found when a download needs it (a command that downloads
+    /// nothing does not hold the cache's lock).
+    cache: Option<PathBuf>,
 }
 
 impl Layout {
-    pub fn new(home: PathBuf) -> Layout {
-        Layout { home }
+    pub fn new(home: PathBuf, cache: PathBuf) -> Layout {
+        Layout { home, cache: Some(cache) }
     }
 
     pub fn current() -> Layout {
-        Layout::new(util::qrust_home())
+        Layout { home: util::qrust_home(), cache: None }
     }
 
     pub fn toolchains(&self) -> PathBuf {
@@ -45,7 +48,7 @@ impl Layout {
 
     /// Archives being downloaded (disposable).
     pub fn downloads(&self) -> PathBuf {
-        self.home.join("cache").join("downloads")
+        self.cache.clone().unwrap_or_else(util::cache_dir).join("downloads")
     }
 }
 
@@ -658,7 +661,8 @@ mod tests {
     use super::*;
 
     fn layout() -> Layout {
-        Layout::new(std::env::temp_dir().join(format!("qrust-tc-{}", util::new_id())))
+        let home = std::env::temp_dir().join(format!("qrust-tc-{}", util::new_id()));
+        Layout::new(home.clone(), home.join("cache"))
     }
 
     fn sel(s: &str) -> Selection {

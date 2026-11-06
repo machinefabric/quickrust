@@ -23,13 +23,29 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 | `~/.qrust/self-update.json` | what the checks for a newer QuickRust found ([Update QuickRust](../how-to/install.md#know-when-there-is-a-new-release)): when the last one started, the registry and channel it read, the newest release there, why the last one did not finish if it did not, and when a newer release was last told; read by builds, `qrust self check` and `qrust doctor` | a check starts after the next build |
 | `~/.qrust/self-update.log` | the output of the last background check | written again by the next one |
 | `~/.qrust/notices/` | markers of notes shown once or once an hour | the notes are shown again |
-| `~/.qrust/cache/` | QuickRust's cache (below) | see below |
+| `~/.qrust/cache/` | QuickRust's cache (below), unless `qrust cache move` put it elsewhere | see below |
+| `~/.qrust/cache.json` | where QuickRust's cache is, when `qrust cache move` put it elsewhere ([Where the cache is](#where-the-cache-is)) | the cache is `~/.qrust/cache/` again, and the moved one is left where it is |
+| `~/.qrust/cache.lock` | held, shared, by every QuickRust command while it uses the cache, and exclusively by `qrust cache move` | recreated by the next command |
+| `~/.qrust/cache-move.json` | a move of the cache under way | only while no move runs |
 
 `<id>` is the first 16 hexadecimal digits of the SHA-256 of the workspace root's canonical path.
 
+## Where the cache is
+
+The cache is `~/.qrust/cache/` unless `qrust cache move DIR` moved it ([Commands](commands.md#storage)): every command after the move, and the compiler wrapper under it, uses it in `DIR`. Nothing in it is lost or rebuilt: build directories stay as fresh as they were, and the artifact cache keeps every entry. A binary that QuickRust's compiler driver links again from the objects of its last compilation is compiled in full once, at its next rebuild, because those objects are named by where they were.
+
+- On the cache's own disk, the move renames it. To another disk, it copies the cache, then removes the old one. The copy keeps each file's modification time and permissions, symbolic links as links, and files the artifact cache shares with build directories as one file. A symbolic link into the cache by its absolute path is pointed at the same thing where it went. A copy that does not fit is not started.
+- The cache's bounds (`cache.max-size`, `cache.min-free`) are of the disk it is on. The count the old disk's bounds went by is dropped, and the cache is counted again on its new disk. Cargo's downloads stay in `~/.qrust/cargo/`: they count towards `cache.max-size`, and when the cache is on another disk, removing them frees none of its space.
+- Every QuickRust command holds `~/.qrust/cache.lock` while it uses the cache. A move waits for them, saying which are running; a command that starts during a move waits for it, then uses the cache where it went.
+- A move that stops half way (the machine loses power, the process is killed) is finished or undone by the next QuickRust command that runs alone; `~/.qrust/cache-move.json` records it until then.
+- `~/.qrust/cache.json` names the cache's directory. When that directory is missing (on a disk that is not mounted), every command that needs the cache stops and says so, rather than build into a new, empty one, and `qrust doctor` reports it. Mount the disk, or move the cache elsewhere, where it starts empty.
+- Paths into the cache change: `qrust path` prints a workspace's new target directory. A program that kept one from before the move finds it gone.
+
+Exported reports write the cache's directory as `$QRUST_CACHE`.
+
 ## QuickRust's cache
 
-Everything under `~/.qrust/cache/` can be rebuilt or downloaded again. QuickRust keeps it within `cache.max-size` and leaves `cache.min-free` of the disk free ([Configuration](configuration.md#keys)), removing what was used least recently.
+Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust keeps it within `cache.max-size` and leaves `cache.min-free` of its disk free ([Configuration](configuration.md#keys)), removing what was used least recently.
 
 | Path | Content |
 |---|---|
@@ -109,7 +125,7 @@ No `target/` directory is created in a project.
 - once, from `$CARGO_HOME` or `~/.cargo`: `credentials.toml`, and the `[registries]`, `[registry]`, `[source]`, `[net]` and `[http]` tables of `config.toml`, into `~/.qrust/cargo/` (the tables it did not import are listed);
 - `~/.qrust/setup.json`.
 
-`qrust self uninstall --yes` removes `~/.qrust` and the lines and files above that `qrust setup` added. rustup and `~/.cargo` are never changed.
+`qrust self uninstall --yes` removes `~/.qrust`, QuickRust's cache where `qrust cache move` put it, and the lines and files above that `qrust setup` added. rustup and `~/.cargo` are never changed.
 
 ### A package's installation
 

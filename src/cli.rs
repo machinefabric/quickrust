@@ -74,6 +74,8 @@ STORAGE
     qrust gc [--dry-run] [--to SIZE] [--format text|json]
                                      collect QuickRust's cache now (it does so by itself when it must: see
                                      cache.max-size and cache.min-free)
+    qrust cache move DIR             move QuickRust's cache (build directories, artifact cache, drivers) to
+                                     DIR, which must not exist or be empty; every later command uses it there
 
 POLICY AND REMEDIATION
     qrust policy explain [--format text|json]
@@ -1147,7 +1149,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
         None if background => return Ok(0),
         None => util::ExclusiveLock::acquire(&lock_path).map_err(|e| e.to_string())?,
     };
-    let fs = crate::space::volume(util::qrust_home().as_path())?.space;
+    let fs = crate::space::cache_volume(&cache)?.space;
     let policy = crate::space::policy(&cfg, &fs);
     let phase = crate::ui::Phase::start();
     let done = crate::space::collect(&cache, crate::space::downloads().as_ref(), &policy, to, dry_run, None)?;
@@ -1171,6 +1173,39 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     let kept = if done.kept > 0 { format!(" and {} removed that a snapshot still keeps", human_bytes(done.kept)) } else { String::new() };
     phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
     failed
+}
+
+/// `qrust cache move DIR`: QuickRust's cache moved to DIR, where every later command finds it
+/// (see `relocate`). It uses none of the cache before the move, which holds the cache's lock.
+fn cmd_cache_move(arg: &str, format: &str) -> CmdResult {
+    let cwd = std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?;
+    let to = crate::relocate::destination(Path::new(arg), &cwd)?;
+    let mut phase = crate::ui::Phase::start();
+    phase.status(&format!("Moving QuickRust's cache to {}", to.display()), true);
+    let moved = crate::relocate::move_to(&to, &mut |p| match p {
+        crate::relocate::Progress::Waiting(who) => phase.note(who),
+        crate::relocate::Progress::Copied { done, total } => phase.status(&format!("Copying QuickRust's cache to {}: {} of {}", to.display(), human_bytes(done), human_bytes(total)), false),
+    });
+    let moved = moved.inspect_err(|_| phase.clear_line())?;
+    if format == "json" {
+        phase.clear_line();
+        let (how, files, bytes) = match moved.how {
+            crate::relocate::How::AlreadyThere => ("already-there", None, None),
+            crate::relocate::How::Nothing => ("nothing", None, None),
+            crate::relocate::How::Renamed => ("renamed", None, None),
+            crate::relocate::How::Copied { files, bytes } => ("copied", Some(files), Some(bytes)),
+        };
+        println!("{}", serde_json::to_string_pretty(&json!({ "from": path_str(&moved.from), "to": path_str(&moved.to), "how": how, "files": files, "bytes": bytes })).unwrap_or_default());
+        return Ok(0);
+    }
+    let (from, to) = (moved.from.display(), moved.to.display());
+    match moved.how {
+        crate::relocate::How::AlreadyThere => phase.done(&format!("QuickRust's cache is already at {}", to)),
+        crate::relocate::How::Nothing => phase.done(&format!("QuickRust's cache is now {} (there was none at {} to move)", to, from)),
+        crate::relocate::How::Renamed => phase.finish(true, &format!("Moved QuickRust's cache from {} to {}", from, to)),
+        crate::relocate::How::Copied { files, bytes } => phase.finish(true, &format!("Moved QuickRust's cache from {} to {}: {} in {} files", from, to, human_bytes(bytes), files)),
+    }
+    Ok(0)
 }
 
 fn cmd_policy(raw: &[OsString]) -> CmdResult {
@@ -1205,8 +1240,15 @@ fn cmd_policy(raw: &[OsString]) -> CmdResult {
 fn cmd_cache(raw: &[OsString]) -> CmdResult {
     let mut a = Args::new(raw);
     let format = a.format(&["text", "json"])?;
-    if a.positional().as_deref() != Some("status") {
-        return Err("usage: qrust cache status [--format text|json]".into());
+    let usage = "usage: qrust cache status [--format text|json] | qrust cache move DIR [--format text|json]";
+    match a.positional().as_deref() {
+        Some("status") => {}
+        Some("move") => {
+            let to = a.positional().ok_or(usage)?;
+            a.finish()?;
+            return cmd_cache_move(&to, &format);
+        }
+        _ => return Err(usage.into()),
     }
     a.finish()?;
     let ctx = Ctx::load()?;
@@ -1227,7 +1269,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     };
     let last = ctx.store.resolve_run_ref("latest", true).ok().and_then(|id| ctx.store.load_run(&id)).map(|r| json!({ "run": r["run"]["id"], "cache": r["cache"] }));
     let qrust_cache = util::cache_dir();
-    let volume = crate::space::volume(util::qrust_home().as_path());
+    let volume = crate::space::cache_volume(&qrust_cache);
     if let Err(e) = &volume {
         crate::ui::say(crate::ui::Tag::Warn, e);
     }
@@ -1493,6 +1535,14 @@ fn cmd_doctor(raw: &[OsString]) -> CmdResult {
     if let Err(e) = util::create_private_dir(&home).and_then(|_| util::write_atomic_fast(&home.join(".doctor"), b"ok")).and_then(|_| std::fs::remove_file(home.join(".doctor"))) {
         problem(format!("{} is not writable ({}); builds still run but are not recorded", home.display(), e));
     }
+    match crate::relocate::place() {
+        Ok(p) if p.moved && !p.dir.is_dir() => {
+            println!("  cache              {} (moved there)", p.dir.display());
+            problem(format!("QuickRust's cache is at {} (`qrust cache move` put it there), which does not exist: if it is on a disk that is not mounted, mount it", p.dir.display()));
+        }
+        Ok(p) => println!("  cache              {}{}", p.dir.display(), if p.moved { " (moved there)" } else { "" }),
+        Err(e) => problem(e),
+    }
     println!("  active sessions    {}", store::active_sessions().len());
     if let Some(cfg) = &cfg {
         println!("  cache policy       provider {}, fail {}", cfg.str("cache.provider"), cfg.str("cache.fail"));
@@ -1610,7 +1660,11 @@ fn cmd_self(raw: &[OsString]) -> CmdResult {
             }
             Ok(0)
         }
-        Some("uninstall") if !yes => Err(format!("`qrust self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records) and the PATH lines `qrust setup` added", util::qrust_home().display())),
+        Some("uninstall") if !yes => {
+            let place = crate::relocate::place()?;
+            let cache = if place.moved { format!(", QuickRust's cache at {}", place.dir.display()) } else { String::new() };
+            Err(format!("`qrust self uninstall --yes` removes {} with everything in it (toolchains, installed programs, caches, records){} and the PATH lines `qrust setup` added", util::qrust_home().display(), cache))
+        }
         Some("uninstall") => {
             for r in crate::setup::uninstall()? {
                 crate::ui::say_out(crate::ui::Tag::Ok, &format!("Removed {}", r));

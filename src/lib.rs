@@ -28,6 +28,7 @@ pub mod recommend;
 pub mod release;
 #[cfg(unix)]
 pub mod relay;
+pub mod relocate;
 pub mod remedy;
 pub mod render;
 pub mod resolve;

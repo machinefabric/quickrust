@@ -182,10 +182,13 @@ pub fn qrust_home() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("qrust"))
 }
 
-/// QuickRust's disposable cache (`$QRUST_HOME/cache`): everything in it can be rebuilt or
-/// downloaded again, and QuickRust removes what it must to stay within its space (see `space`).
+/// QuickRust's disposable cache (`$QRUST_HOME/cache`, unless `qrust cache move` put it elsewhere):
+/// everything in it can be rebuilt or downloaded again, and QuickRust removes what it must to stay
+/// within its space (see `space`). Found once per process, which holds the cache's lock from then
+/// on (see `relocate`); a cache that is not where it was moved to ends the command.
 pub fn cache_dir() -> PathBuf {
-    qrust_home().join("cache")
+    static CACHE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| crate::relocate::settle().unwrap_or_else(|e| crate::session::fail(&e))).clone()
 }
 
 /// Remembered answers (what a compiler says about itself, which workspace a directory is in).
@@ -253,6 +256,7 @@ impl Tokenizer {
         }
         if redact_home {
             add(cargo_home(), "$CARGO_HOME");
+            add(cache_dir(), "$QRUST_CACHE");
             add(qrust_home(), "$QRUST_HOME");
             if let Some(h) = home_dir() {
                 add(h, "$HOME");
@@ -474,6 +478,56 @@ pub struct SharedLock {
 }
 
 impl SharedLock {
+    /// The lock if nobody holds it exclusively, `None` if somebody does.
+    pub fn try_acquire(path: &Path) -> io::Result<Option<SharedLock>> {
+        if let Some(dir) = path.parent() {
+            create_private_dir(dir)?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(path)?;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+                    return Ok(Some(SharedLock { _file: file }));
+                }
+                let e = io::Error::last_os_error();
+                match e.kind() {
+                    io::ErrorKind::Interrupted => continue,
+                    io::ErrorKind::WouldBlock => return Ok(None),
+                    _ => return Err(e),
+                }
+            }
+        }
+        #[cfg(windows)]
+        {
+            const ERROR_SHARING_VIOLATION: i32 = 32;
+            match fs::OpenOptions::new().create(true).truncate(false).write(true).open(path) {
+                Ok(file) => Ok(Some(SharedLock { _file: file })),
+                Err(e) if e.raw_os_error() == Some(ERROR_SHARING_VIOLATION) => Ok(None),
+                Err(e) => Err(e),
+            }
+        }
+    }
+
+    /// Keeps the lock held by the program this process replaces itself with (`exec`), which
+    /// would otherwise close it. On Windows a process is not replaced: it waits for the program,
+    /// holding the lock.
+    pub fn keep_across_exec(&self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = self._file.as_raw_fd();
+            // SAFETY: the descriptor is this lock's own, open for as long as it is.
+            unsafe {
+                let flags = libc::fcntl(fd, libc::F_GETFD);
+                if flags >= 0 {
+                    libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC);
+                }
+            }
+        }
+    }
+
     pub fn acquire(path: &Path) -> io::Result<SharedLock> {
         if let Some(dir) = path.parent() {
             create_private_dir(dir)?;
@@ -645,13 +699,31 @@ pub fn file_identity(p: &Path) -> Option<(u64, u64)> {
     }
     #[cfg(windows)]
     {
-        windows_file_identity(p).ok()
+        windows_file_identity(p).ok().map(|(id, _)| id)
     }
 }
 
-/// The volume's serial number and the file's index on it, which every hard link of the file shares.
+/// The identity of the file at `p` (`md` its metadata) when it has more than one link: the same
+/// for each of them. `None` for a file with one.
+pub fn linked_identity(p: &Path, md: &fs::Metadata) -> io::Result<Option<(u64, u64)>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = p;
+        Ok((md.nlink() > 1).then(|| (md.dev(), md.ino())))
+    }
+    #[cfg(windows)]
+    {
+        let _ = md;
+        let (id, links) = windows_file_identity(p)?;
+        Ok((links > 1).then_some(id))
+    }
+}
+
+/// The volume's serial number and the file's index on it, which every hard link of the file
+/// shares; and how many links it has.
 #[cfg(windows)]
-fn windows_file_identity(p: &Path) -> io::Result<(u64, u64)> {
+fn windows_file_identity(p: &Path) -> io::Result<((u64, u64), u32)> {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     #[repr(C)]
@@ -680,7 +752,7 @@ fn windows_file_identity(p: &Path) -> io::Result<(u64, u64)> {
     if unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((info.volume_serial as u64, (info.index_high as u64) << 32 | info.index_low as u64))
+    Ok(((info.volume_serial as u64, (info.index_high as u64) << 32 | info.index_low as u64), info.links))
 }
 
 pub fn is_ci() -> bool {

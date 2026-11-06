@@ -165,8 +165,9 @@ no rendered output.
 
 State under `~/.qrust` keeps real local paths (the directories holding run records and
 QuickRust's cache are created with mode 0700). Everything exported — `QRUST_REPORT`, `--format json`, HTML, baselines —
-replaces the workspace root, the home directory, QuickRust's Cargo home and QuickRust's home
-with `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_HOME`
+replaces the workspace root, the home directory, QuickRust's Cargo home, QuickRust's cache
+(wherever `qrust cache move` put it) and QuickRust's home with `$WORKSPACE`, `$HOME`,
+`$CARGO_HOME`, `$QRUST_CACHE`, `$QRUST_HOME`
 (`security.redact-path-home`, on by default).
 
 ## Deleting

@@ -418,6 +418,7 @@ pub fn exec_upstream(args: Vec<OsString>) -> ! {
     let engine = crate::engine::for_command(&inv, &cwd, &cfg).unwrap_or_else(|e| fail(&e));
     let mut cmd = engine.upstream_command(&args, &inv);
     cmd.env(crate::ENV_EXEC_GUARD, format!("{}:upstream", std::process::id()));
+    crate::relocate::keep_across_exec();
     let err = proc::exec(&mut cmd);
     fail(&format!("could not execute Cargo {}: {}", engine.cargo().display(), err))
 }
@@ -488,6 +489,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     if spec.scenario.is_none() && (inv.command.is_none() || (inv.family == Family::Query && !shown_query) || nested_upstream) {
         let mut cmd = engine.command(&spec.args, &inv);
         cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
+        crate::relocate::keep_across_exec();
         let err = proc::exec(&mut cmd);
         return Err(format!("could not execute Cargo {}: {}", engine.program.display(), err));
     }
@@ -496,7 +498,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let store = WsStore::open(ws_root.as_deref());
     let store_ok = store.ensure().is_ok();
     let id = util::new_id();
-    let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::qrust_home().join("cache").join("artifacts"));
+    let artifact_cache = spec.artifact_cache.clone().unwrap_or_else(|| util::cache_dir().join("artifacts"));
     let mut plan = plan(&inv, &cfg, &subset, &store, &id, &artifact_cache, &engine)?;
     if !store_ok {
         plan.instrumented = false;

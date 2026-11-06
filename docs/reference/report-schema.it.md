@@ -13,7 +13,7 @@ Regole (API-001 … API-004):
 - Le durate sono in nanosecondi (`*_ns`), le dimensioni in byte (`*_bytes`); gli istanti
   dell'orologio di sistema sono stringhe RFC 3339 in UTC (`*_at`) con il valore grezzo in `*_wall_ns`.
 - I documenti esportati contengono percorsi tokenizzati (`$WORKSPACE`, `$HOME`,
-  `$CARGO_HOME`, `$QRUST_HOME`).
+  `$CARGO_HOME`, `$QRUST_CACHE`, `$QRUST_HOME`).
 - Un report memorizzato è immutabile.
 
 ## Livello superiore {#top-level}

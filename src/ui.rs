@@ -477,9 +477,9 @@ fn truncate(text: &str, width: usize) -> String {
 
 /// Why a build failed on a full disk, and what QuickRust's cache holds there.
 fn disk_full_note() -> String {
-    let home = util::qrust_home();
-    let free = crate::space::fs_space(&home).map(|f| util::human_bytes(f.available)).unwrap_or_else(|_| "?".into());
-    let cache = crate::space::usage(&util::cache_dir()).and_then(|u| u["total_bytes"].as_u64()).map(util::human_bytes).unwrap_or_else(|| "an uncounted amount".into());
+    let dir = util::cache_dir();
+    let free = crate::space::cache_volume(&dir).map(|v| util::human_bytes(v.space.available)).unwrap_or_else(|_| "?".into());
+    let cache = crate::space::usage(&dir).and_then(|u| u["total_bytes"].as_u64()).map(util::human_bytes).unwrap_or_else(|| "an uncounted amount".into());
     format!("the disk is full: {} free where QuickRust keeps its cache, which holds {}; `qrust gc` frees what is not in use, `qrust cache status` shows it", free, cache)
 }
 

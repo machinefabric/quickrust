@@ -76,7 +76,7 @@ La suite di test inserisce delle credenziali e verifica che non compaiano in alc
 
 ## Percorsi {#paths}
 
-Lo stato sotto `~/.qrust` conserva i percorsi locali reali (le directory che contengono i record delle esecuzioni e la cache di QuickRust vengono create con modalità 0700). Tutto ciò che viene esportato — `QRUST_REPORT`, `--format json`, HTML, baseline — sostituisce la radice del workspace, la home directory, la home di Cargo di QuickRust e la home di QuickRust con `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_HOME` (`security.redact-path-home`, attiva per impostazione predefinita).
+Lo stato sotto `~/.qrust` conserva i percorsi locali reali (le directory che contengono i record delle esecuzioni e la cache di QuickRust vengono create con modalità 0700). Tutto ciò che viene esportato — `QRUST_REPORT`, `--format json`, HTML, baseline — sostituisce la radice del workspace, la home directory, la home di Cargo di QuickRust, la cache di QuickRust (ovunque l'abbia messa `qrust cache move`) e la home di QuickRust con `$WORKSPACE`, `$HOME`, `$CARGO_HOME`, `$QRUST_CACHE`, `$QRUST_HOME` (`security.redact-path-home`, attiva per impostazione predefinita).
 
 ## Cancellazione {#deleting}
 

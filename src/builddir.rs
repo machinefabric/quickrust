@@ -50,7 +50,12 @@ pub struct Target {
 
 /// Where QuickRust's build directories live.
 pub fn builds_dir() -> PathBuf {
-    util::cache_dir().join("builds")
+    builds_dir_in(&util::cache_dir())
+}
+
+/// Where the build directories of the cache at `cache` live.
+pub fn builds_dir_in(cache: &Path) -> PathBuf {
+    cache.join("builds")
 }
 
 /// The longest name a build variant may have.

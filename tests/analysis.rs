@@ -1975,3 +1975,127 @@ fn test0231_qrust_says_up_to_date_only_when_cargo_would_build_nothing() {
     // And it does answer when nothing changed: the point of judging at all.
     assert!(skipped.iter().filter(|w| w.starts_with("nothing")).count() >= 3, "{:?}", skipped);
 }
+
+/// A package `app` built with every unit in the artifact cache: a dependency in the (sandbox)
+/// Cargo home's registry whose build script generates code it includes through `OUT_DIR`, and a
+/// binary that links in milliseconds, stored all the same. Returns it and the Cargo that builds it.
+fn cached_app(sb: &Sandbox) -> (std::path::PathBuf, impl Fn() -> std::process::Command + '_) {
+    let dep = sb.dir.join("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/Cargo.toml", "[package]\nname = \"greet\"\nversion = \"1.0.0\"\nedition = \"2021\"\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    std::fs::write(format!(\"{out}/greeting.rs\"), \"const GREETING: &str = \\\"hello from the cache\\\";\").unwrap();\n    println!(\"cargo::rerun-if-changed=build.rs\");\n}\n");
+    sb.file("qrust-home/cargo/registry/src/fake-0000/greet-1.0.0/src/lib.rs", "include!(concat!(env!(\"OUT_DIR\"), \"/greeting.rs\"));\n\npub fn greet() -> &'static str {\n    GREETING\n}\n");
+    sb.file("app/Cargo.toml", &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\ngreet = {{ path = {:?} }}\n\n[profile.dev.package.greet]\nincremental = false\n", dep.display().to_string()));
+    sb.file("app/src/main.rs", "fn main() {\n    println!(\"{}\", greet::greet());\n}\n");
+    let app = sb.dir.join("app");
+    let dir = app.clone();
+    (app, move || {
+        let mut c = sb.cargo(&dir);
+        c.env("QRUST_CACHE_ARTIFACTS_MIN_LINK_MS", "0");
+        c
+    })
+}
+
+/// Moves QuickRust's cache of a built `cached_app` to `to` (the move `how`, in its words), and
+/// checks that nothing of it went cold: the build directory is as fresh as it was, and the
+/// artifact cache restores every unit after a clean.
+fn moved_cache_stays_warm(sb: &Sandbox, to: &std::path::Path, how: &str) {
+    let (app, cargo) = cached_app(sb);
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello from the cache\n");
+    assert_eq!(cache_results(sb).len(), 3, "{:#?}", cache_details(sb));
+    assert!(cache_results(sb).iter().all(|(_, r)| r == "stored"), "{:#?}", cache_details(sb));
+    let before = sb.target_dir(&app);
+    assert!(before.starts_with(sb.home.join("cache")));
+    // The artifact cache stored the library by linking the build directory's file.
+    let rlib_links = |target: &std::path::Path| {
+        use std::os::unix::fs::MetadataExt;
+        let rlib = fs::read_dir(target.join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|e| e == "rlib")).unwrap();
+        fs::metadata(rlib).unwrap().nlink()
+    };
+    let links = rlib_links(&before);
+    assert!(links >= 2, "{}", links);
+
+    let moved = json_out(sb.qrust(&app).args(["cache", "move", to.to_str().unwrap(), "--format", "json"]));
+    assert_eq!((moved["how"].as_str(), moved["to"].as_str()), (Some(how), to.to_str()), "{}", moved);
+    assert!(!sb.home.join("cache").exists(), "nothing is left where it was");
+    let after = sb.target_dir(&app);
+    assert_eq!(after, to.join("builds").join(before.file_name().unwrap()), "every later command finds it there");
+    assert_eq!(rlib_links(&after), links, "a file the artifact cache shares with the build directory is still one file");
+    // Exported, its place is a token; said, it is the directory.
+    let status = stdout(&ok(sb.qrust(&app).args(["cache", "status"])));
+    assert!(status.lines().next().is_some_and(|l| l.contains(&format!(", {}", to.display()))), "{}", status);
+
+    // Nothing to do: the moved build directory is as fresh as it was.
+    let fresh = stderr(&ok(cargo().args(["build", "-v"])));
+    let work: Vec<&str> = fresh.lines().map(str::trim_start).filter(|l| l.starts_with("Compiling") || l.starts_with("Running")).collect();
+    assert!(work.is_empty(), "Cargo had work after the move: {:?}", work);
+    let r = sb.report(&app, "latest");
+    assert_eq!((r["metrics"]["units_compiled"].as_u64(), r["metrics"]["units_restored"].as_u64()), (Some(0), Some(0)), "{}", r["metrics"]);
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello from the cache\n");
+    assert!(!sb.home.join("cache").exists(), "and nothing is made where it was");
+
+    // The artifact cache came along: after a clean, every unit comes back from it.
+    ok(cargo().arg("clean"));
+    assert_eq!(stdout(&ok(cargo().args(["run", "-q"]))), "hello from the cache\n");
+    assert!(cache_results(sb).iter().all(|(_, r)| r == "hit"), "{:#?}", cache_details(sb));
+    let r = sb.report(&app, "latest");
+    assert_eq!((r["metrics"]["units_compiled"].as_u64(), r["metrics"]["units_restored"].as_u64()), (Some(0), Some(3)), "{}", r["metrics"]);
+}
+
+// TEST0336: A cache moved on its volume is renamed and stays warm
+#[test]
+fn test0336_a_cache_moved_on_its_volume_is_renamed_and_stays_warm() {
+    let sb = Sandbox::new("cache-move");
+    // An empty directory is a destination; one with anything in it is not.
+    let to = sb.dir.join("fast/qrust-cache");
+    fs::create_dir_all(&to).unwrap();
+    let full = sb.file("full/file", "");
+    moved_cache_stays_warm(&sb, &to, "renamed");
+    let app = sb.dir.join("app");
+    let refused = run(sb.qrust(&app).args(["cache", "move", full.parent().unwrap().to_str().unwrap()]));
+    assert!(!refused.status.success() && stderr(&refused).contains("is not empty"), "{}", stderr(&refused));
+    assert!(to.join("builds").is_dir(), "a refused move moves nothing");
+
+    // Its disk not mounted: commands stop and say so, and build nothing anywhere else.
+    let unmounted = sb.dir.join("fast-unmounted");
+    fs::rename(sb.dir.join("fast"), &unmounted).unwrap();
+    let stopped = run(sb.cargo(&app).arg("build"));
+    assert!(!stopped.status.success() && stderr(&stopped).contains("which does not exist"), "{}", stderr(&stopped));
+    assert!(!to.exists() && !sb.home.join("cache").exists(), "no new, empty cache is made");
+    // Moved again, it starts empty there: the build is cold, and works.
+    let again = sb.dir.join("again");
+    let moved = json_out(sb.qrust(&app).args(["cache", "move", again.to_str().unwrap(), "--format", "json"]));
+    assert_eq!(moved["how"], "nothing", "{}", moved);
+    assert_eq!(stdout(&ok(sb.cargo(&app).args(["run", "-q"]))), "hello from the cache\n");
+    assert!(sb.target_dir(&app).starts_with(&again));
+
+    // Back in the home, where it is without a record.
+    let home_cache = sb.home.join("cache");
+    let back = json_out(sb.qrust(&app).args(["cache", "move", home_cache.to_str().unwrap(), "--format", "json"]));
+    assert_eq!(back["how"], "renamed", "{}", back);
+    assert!(!sb.home.join("cache.json").exists());
+    assert!(sb.target_dir(&app).starts_with(&home_cache));
+}
+
+// TEST0337: A cache moved to another volume is copied and stays warm
+#[test]
+#[cfg(target_os = "linux")]
+fn test0337_a_cache_moved_to_another_volume_is_copied_and_stays_warm() {
+    use std::os::unix::fs::MetadataExt;
+    let sb = Sandbox::new("cache-copy");
+    // Another file system than the sandbox's, of another size (so that bounds of either tell
+    // which): /dev/shm, a tmpfs of its own, or the disk the suite builds on, where the sandbox is
+    // in a tmpfs.
+    let size = |dir: &std::path::Path| -> u64 { stdout(&ok(std::process::Command::new("df").args(["-B1", "--output=size"]).arg(dir))).lines().nth(1).unwrap().trim().parse().unwrap() };
+    let fs_of = |dir: &std::path::Path| (fs::metadata(dir).unwrap().dev(), size(dir));
+    let here = fs_of(&sb.dir);
+    let other = [std::path::PathBuf::from("/dev/shm"), std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))]
+        .into_iter()
+        .find(|d| d.is_dir() && { let (dev, bytes) = fs_of(d); dev != here.0 && bytes != here.1 })
+        .expect("the test needs a file system other than the sandbox's, of another size: /dev/shm or the suite's target directory");
+    let to = other.join(format!("qrust-cache-copy-{}", std::process::id()));
+    moved_cache_stays_warm(&sb, &to, "copied");
+    // Its bounds go by the disk it is on.
+    let status = json_out(sb.qrust(&sb.dir.join("app")).args(["cache", "status", "--format", "json"]).env("QRUST_CACHE_MAX_SIZE", "100%"));
+    assert_eq!(status["qrust_cache"]["max_bytes"].as_u64(), Some(size(&to)), "{}", status);
+    fs::remove_dir_all(&to).unwrap();
+}

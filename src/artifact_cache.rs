@@ -715,19 +715,23 @@ impl Job {
         }
         fs::create_dir_all(self.root.join("m")).map_err(|e| e.to_string())?;
         util::write_json_fast(&self.root.join("m").join(format!("{}.json", key1)), &json!({ "env_deps": names, "inputs": inputs })).map_err(|e| e.to_string())?;
-        util::write_json_fast(&self.relink_marker(), &json!({ "key2": key2, "files": files })).map_err(|e| e.to_string())
+        util::write_json_fast(&self.relink_marker(), &json!({ "key2": key2, "out_dir": util::path_str(&self.out_dir), "files": files })).map_err(|e| e.to_string())
     }
 
     /// The `.rlink` to link this unit from, when the objects of its last compilation are what
     /// compiling it now would produce (compiled from the same sources against the same
-    /// dependency interfaces, every file as it was written), with the objects back where it
-    /// names them.
+    /// dependency interfaces, every file as it was written) and are where the `.rlink` names
+    /// them (in this output directory, which a moved build directory is not), with the objects
+    /// back there.
     pub fn prepare_relink(&self) -> Option<PathBuf> {
         let key1 = self.compile_key1.as_ref()?;
+        let marker = util::read_json(&self.relink_marker())?;
+        if marker["out_dir"].as_str() != Some(util::path_str(&self.out_dir).as_str()) {
+            return None;
+        }
         let m = util::read_json(&self.root.join("m").join(format!("{}.json", key1)))?;
         let list = |k: &str| -> Vec<String> { m[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(str::to_string)).collect() };
         let key2 = level2(&self.root, key1, &list("env_deps"), &list("inputs"), &[], &self.cwd)?;
-        let marker = util::read_json(&self.relink_marker())?;
         if marker["key2"].as_str() != Some(key2.as_str()) {
             return None;
         }
