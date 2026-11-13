@@ -9,7 +9,10 @@
 //! 1. what nothing can use any more, whatever the space: build directories of workspaces that are
 //!    gone, drivers of toolchains that are gone, stale downloads and memos, leftovers;
 //! 2. while the cache is above its size or the disk below its free space, build directories,
-//!    artifact entries and sources of installed programs, least recently used first;
+//!    artifact entries and sources of installed programs: what frees the most for how long it
+//!    has gone unused first (its size times the time since its last use), so a large directory
+//!    nobody has used for hours goes before a small one used half an hour ago, and the goal is
+//!    met with the fewest removals;
 //! 3. crates and git checkouts downloaded into QuickRust's Cargo home: Cargo removes them itself
 //!    (`cargo -Zgc clean gc`, which knows when each was last used and waits for builds reading
 //!    them), unused for its usual ages at every collection, and, while the bounds are still
@@ -36,13 +39,18 @@
 //! does not show was taken by another writer, and the bounds go by the disk as it is.
 //!
 //! Nothing used in the last 15 minutes is removed, nor a build directory a command holds (its
-//! lock) or Cargo is building in (Cargo's locks), nor a source an install holds (its lock), nor
-//! an artifact entry whose files are mostly linked by something that stays (a build directory
-//! in use: removing the entry would gain little space and lose it). A removal renames the thing away first, so
-//! a build never sees it half deleted; a build that finds it gone builds it again. Whether a build
-//! directory is held or was used is asked again under its lock just before it is removed: a
-//! collection runs for minutes, and a run that started since its scan holds directories the scan
-//! found idle.
+//! lock) or Cargo is building in (Cargo's locks), nor one a running process holds
+//! (`builddir::holder`: a hold, a program run from it, a process working in it or in its
+//! workspace's checkout), nor a source an install holds (its lock), nor an artifact entry whose
+//! files are mostly linked by something that stays (a build directory in use: removing the entry
+//! would gain little space and lose it). A removal renames the thing away first, so a build never
+//! sees it half deleted; a build that finds it gone builds it again. Whether a build directory is
+//! held or was used is asked again under its lock just before it is removed: a collection runs
+//! for minutes, and a run that started since its scan holds directories the scan found idle.
+//!
+//! A removed build directory leaves a notice for its workspace (`builddir::record_collected`),
+//! which the workspace's next command says. A collection that ends short of its goal says what it
+//! kept and why (`Collected::left`), and logs it.
 //!
 //! Sizes are blocks allocated, and a file with several links (the artifact cache links what it
 //! restores into build directories) counts once, and is freed only with its last link.
@@ -270,6 +278,10 @@ pub struct Unit {
     pub last_used_ns: u64,
     /// Why nothing can use it any more, if so.
     pub orphan: Option<String>,
+    /// A build directory's workspace, while it exists: told when the directory is removed.
+    pub workspace: Option<PathBuf>,
+    /// Why a running process holds it, if one does (build directories, see `builddir::holder`).
+    pub held: Option<String>,
     /// Bytes of its files with one link.
     own_bytes: u64,
     /// Of those, the bytes of files the volume's newest snapshot keeps.
@@ -599,7 +611,7 @@ fn cargo_gc(d: &Downloads, max_age: Option<&str>, dry_run: bool) -> Result<(Stri
 fn download_bytes(d: &Downloads) -> (u64, u64) {
     let mut all = HashMap::new();
     let mut size = |sub: &str| {
-        let mut u = Unit { kind: Kind::Registry, path: d.cargo_home.join(sub), companions: vec![], last_used_ns: 0, orphan: None, own_bytes: 0, own_kept: 0, shared: vec![] };
+        let mut u = Unit { kind: Kind::Registry, path: d.cargo_home.join(sub), companions: vec![], last_used_ns: 0, orphan: None, workspace: None, held: None, own_bytes: 0, own_kept: 0, shared: vec![] };
         measure(&d.cargo_home.join(sub), &mut u, &mut all, None);
         u.own_bytes + u.shared.iter().map(|(_, b, _)| b).sum::<u64>()
     };
@@ -611,8 +623,8 @@ fn download_bytes(d: &Downloads) -> (u64, u64) {
 pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
     let mut units: Vec<Unit> = vec![];
     let mut all: HashMap<(u64, u64), LinkCount> = HashMap::new();
-    let mut add = |kind: Kind, path: PathBuf, companions: Vec<PathBuf>, last_used_ns: u64, orphan: Option<String>| {
-        let mut u = Unit { kind, path, companions, last_used_ns, orphan, own_bytes: 0, own_kept: 0, shared: vec![] };
+    let mut add_unit = |kind: Kind, path: PathBuf, companions: Vec<PathBuf>, last_used_ns: u64, orphan: Option<String>, workspace: Option<PathBuf>| {
+        let mut u = Unit { kind, path, companions, last_used_ns, orphan, workspace, held: None, own_bytes: 0, own_kept: 0, shared: vec![] };
         measure(&u.path.clone(), &mut u, &mut all, newest_snapshot);
         for c in u.companions.clone() {
             if let Ok(md) = fs::symlink_metadata(&c) {
@@ -621,52 +633,44 @@ pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
         }
         units.push(u);
     };
-    // Workspaces' build directories, with their records and locks.
+    // Workspaces' build directories, with their records and locks. Which a running process holds
+    // is the collection's to ask (`builddir::holder`).
     let builds = cache.join("builds");
-    let in_builds = entries(&builds);
-    // The directories a running process holds (`builddir::hold`), by name.
-    let held: std::collections::HashSet<String> = in_builds
-        .iter()
-        .filter(|p| !p.is_dir())
-        .filter_map(|p| crate::builddir::hold_of(&util::lossy(p.file_name().unwrap_or_default())).filter(|(_, pid)| crate::proc::pid_alive(*pid)).map(|(dir, _)| dir.to_string()))
-        .collect();
-    for p in in_builds {
+    for p in entries(&builds) {
         let name = util::lossy(p.file_name().unwrap_or_default());
         if p.is_dir() {
             let companions = vec![p.with_file_name(format!("{}.json", name)), p.with_file_name(format!("{}.lock", name))];
-            let (last_used, orphan) = match crate::builddir::meta(&p) {
-                Some((root, _, used)) if root.join("Cargo.toml").is_file() => (used, None),
-                Some((root, _, used)) => (used, Some(format!("its workspace {} is gone", root.display()))),
-                None => (mtime(&p), Some("it has no record of its workspace".to_string())),
+            let (last_used, orphan, workspace) = match crate::builddir::meta(&p) {
+                Some((root, _, used)) if root.join("Cargo.toml").is_file() => (used, None, Some(root)),
+                Some((root, _, used)) => (used, Some(format!("its workspace {} is gone", root.display())), None),
+                None => (mtime(&p), Some("it has no record of its workspace".to_string()), None),
             };
-            // Held is in use, now: whatever its record says of when it was last built in.
-            let last_used = if held.contains(&name) { now } else { last_used };
-            add(Kind::Build, p, companions, last_used, orphan);
+            add_unit(Kind::Build, p, companions, last_used, orphan, workspace);
         } else if let Some((_, pid)) = crate::builddir::hold_of(&name) {
             if !crate::proc::pid_alive(pid) {
-                add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some(format!("the process that held the build directory ({}) is gone", pid)));
+                add_unit(Kind::Leftover, p.clone(), vec![], mtime(&p), Some(format!("the process that held the build directory ({}) is gone", pid)), None);
             }
         } else if let Some(stem) = name.strip_suffix(".json").or_else(|| name.strip_suffix(".lock")) {
             if !builds.join(stem).exists() {
-                add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the build directory it belonged to is gone".into()));
+                add_unit(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the build directory it belonged to is gone".into()), None);
             }
         }
     }
     // The artifact cache: entries, and the small records next to them.
     let artifacts = cache.join("artifacts");
     for p in entries(&artifacts.join("e")) {
-        add(Kind::Artifact, p.clone(), vec![], mtime(&p.join("entry.json")), None);
+        add_unit(Kind::Artifact, p.clone(), vec![], mtime(&p.join("entry.json")), None, None);
     }
     for (sub, days) in [("h", 14), ("q", 14), ("m", 30)] {
         for p in entries(&artifacts.join(sub)) {
             let t = mtime(&p);
             let stale = t + days * DAY_NS < now;
-            add(Kind::Memo, p, vec![], t, stale.then(|| format!("unused for {} days", days)));
+            add_unit(Kind::Memo, p, vec![], t, stale.then(|| format!("unused for {} days", days)), None);
         }
     }
     for p in entries(&artifacts.join("l")) {
         let live = crate::artifact_cache::link_record_live(&artifacts, &p);
-        add(Kind::Memo, p.clone(), vec![], mtime(&p), (!live).then(|| "the library it describes is gone".to_string()));
+        add_unit(Kind::Memo, p.clone(), vec![], mtime(&p), (!live).then(|| "the library it describes is gone".to_string()), None);
     }
     // Compiler drivers: for a toolchain that is gone, or builds that did not finish.
     for p in entries(&cache.join("drivers")) {
@@ -679,7 +683,7 @@ pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
                 _ => None,
             }
         };
-        add(Kind::Driver, p.clone(), vec![], mtime(&p), orphan);
+        add_unit(Kind::Driver, p.clone(), vec![], mtime(&p), orphan, None);
     }
     // Sources of installed programs, with their locks; copies that never finished.
     let sources = cache.join("src");
@@ -687,33 +691,44 @@ pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
         let name = util::lossy(p.file_name().unwrap_or_default());
         if name.starts_with('.') && name.ends_with(".part") {
             let t = mtime(&p);
-            add(Kind::Leftover, p, vec![], t, (t + 3_600 * 1_000_000_000 < now).then(|| "a copy that never finished".to_string()));
+            add_unit(Kind::Leftover, p, vec![], t, (t + 3_600 * 1_000_000_000 < now).then(|| "a copy that never finished".to_string()), None);
         } else if p.is_dir() {
             // When an install last used it (an unfinished clone: when it was made).
             let complete = p.join(crate::install::COMPLETE);
             let used = if complete.is_file() { mtime(&complete) } else { mtime(&p) };
-            add(Kind::Source, p.clone(), vec![crate::install::copy_lock(&p)], used, None);
+            add_unit(Kind::Source, p.clone(), vec![crate::install::copy_lock(&p)], used, None, None);
         } else if let Some(stem) = name.strip_suffix(".lock") {
             if !sources.join(stem).exists() {
-                add(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the source it belonged to is gone".into()));
+                add_unit(Kind::Leftover, p.clone(), vec![], mtime(&p), Some("the source it belonged to is gone".into()), None);
             }
         }
+    }
+    // Notices of removed build directories, kept for their workspace's next command: nobody's
+    // once the workspace is gone, or after a month without one.
+    for p in entries(&crate::builddir::collected_dir(cache)) {
+        let t = mtime(&p);
+        let orphan = match crate::builddir::collected_record(&p) {
+            Some((root, _)) if !root.join("Cargo.toml").is_file() => Some(format!("its workspace {} is gone", root.display())),
+            Some(_) => (t + 30 * DAY_NS < now).then(|| "unread for 30 days".to_string()),
+            None => Some("it is not a notice QuickRust can read".to_string()),
+        };
+        add_unit(Kind::Memo, p, vec![], t, orphan, None);
     }
     // Downloads that never finished, remembered answers, leftovers of removals.
     for p in entries(&cache.join("downloads")) {
         let t = mtime(&p);
-        add(Kind::Download, p, vec![], t, (t + 7 * DAY_NS < now).then(|| "an unfinished download, a week old".to_string()));
+        add_unit(Kind::Download, p, vec![], t, (t + 7 * DAY_NS < now).then(|| "an unfinished download, a week old".to_string()), None);
     }
     for kind in entries(&cache.join("memo")) {
         for p in entries(&kind) {
             let t = mtime(&p);
-            add(Kind::Memo, p, vec![], t, (t + 30 * DAY_NS < now).then(|| "unused for 30 days".to_string()));
+            add_unit(Kind::Memo, p, vec![], t, (t + 30 * DAY_NS < now).then(|| "unused for 30 days".to_string()), None);
         }
     }
     for dir in [cache.join("tmp"), artifacts.join("tmp")] {
         for p in entries(&dir) {
             let t = mtime(&p);
-            add(Kind::Leftover, p, vec![], t, (t + 3_600 * 1_000_000_000 < now).then(|| "left by a removal that stopped".to_string()));
+            add_unit(Kind::Leftover, p, vec![], t, (t + 3_600 * 1_000_000_000 < now).then(|| "left by a removal that stopped".to_string()), None);
         }
     }
     Scan { units, links: Links { map: all } }
@@ -724,19 +739,58 @@ pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
 pub enum Why {
     /// Nothing can use it any more; the reason.
     Unusable(String),
-    /// The bounds needed the room, and it was used longest ago.
-    LeastRecentlyUsed,
+    /// The bounds needed the room, and nothing held it; how long it had gone unused (ns).
+    Room { unused_ns: u64 },
     /// Cargo removed it from its downloads; its summary.
     Cargo(String),
+}
+
+impl Why {
+    /// The group a collection's log counts it in.
+    fn group(&self) -> &'static str {
+        match self {
+            Why::Unusable(_) => "nothing could use it",
+            Why::Room { .. } => "the bounds needed room",
+            Why::Cargo(_) => "Cargo",
+        }
+    }
 }
 
 impl std::fmt::Display for Why {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Why::Unusable(reason) => f.write_str(reason),
-            Why::LeastRecentlyUsed => f.write_str("used least recently"),
+            // Past the protection: always minutes or more.
+            Why::Room { unused_ns } => write!(f, "the bounds needed room, and nothing had used it for {}", util::human_ago(0, *unused_ns).trim_end_matches(" ago")),
             Why::Cargo(summary) => write!(f, "Cargo: {}", summary),
         }
+    }
+}
+
+/// What a collection kept that the bounds would have taken: a build directory or program source
+/// by itself, other kinds counted together by reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Left {
+    pub kind: Kind,
+    /// A build directory's or source's path; none for a group.
+    pub path: Option<PathBuf>,
+    pub count: u64,
+    pub bytes: u64,
+    pub why: String,
+}
+
+/// Adds `unit`, kept for `why` (`group_why` when counted with others of its kind), to `left`.
+fn leave(left: &mut Vec<Left>, unit: &Unit, why: String, group_why: &str) {
+    if matches!(unit.kind, Kind::Build | Kind::Source) {
+        left.push(Left { kind: unit.kind, path: Some(unit.path.clone()), count: 1, bytes: unit.bytes(), why });
+        return;
+    }
+    match left.iter_mut().find(|l| l.path.is_none() && l.kind == unit.kind && l.why == group_why) {
+        Some(group) => {
+            group.count += 1;
+            group.bytes += unit.bytes();
+        }
+        None => left.push(Left { kind: unit.kind, path: None, count: 1, bytes: unit.bytes(), why: group_why.to_string() }),
     }
 }
 
@@ -758,8 +812,8 @@ pub struct Collected {
     /// The free space it started from, as the bounds count it (`free`).
     pub free_before: u64,
     pub removed: Vec<Removal>,
-    /// What would have been removed but is in use.
-    pub skipped_in_use: usize,
+    /// When it ended short of its goal (`unmet`): what it kept, and why.
+    pub left: Vec<Left>,
     pub stopped_early: bool,
     /// The bounds were still exceeded at the end: everything else was in use or too recent.
     pub unmet: bool,
@@ -771,6 +825,13 @@ pub struct Collected {
     /// Why the collection stopped short (a removal or Cargo failed), when it did; what it did
     /// until then is recorded all the same.
     pub failed: Option<String>,
+}
+
+impl Collected {
+    /// How many things it kept that the bounds would have taken.
+    pub fn left_count(&self) -> u64 {
+        self.left.iter().map(|l| l.count).sum()
+    }
 }
 
 pub struct Goal {
@@ -873,22 +934,35 @@ pub fn free(cache: &Path, volume: &Volume, now: u64) -> u64 {
     volume.space.available.saturating_add(kept(cache, volume, now))
 }
 
-/// Removes a build directory unless a command or Cargo uses it, or a program's source unless an
-/// install uses it.
-fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], build: bool) -> Result<bool, String> {
+/// What became of a removal: done, or not, as the thing is in use (why).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Removed {
+    Done,
+    InUse(String),
+}
+
+/// Removes a build directory unless a command, Cargo or another running process uses it, or a
+/// program's source unless an install uses it.
+fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], build: bool) -> Result<Removed, String> {
     let lock_path = companions.iter().find(|c| c.extension().is_some_and(|e| e == "lock"));
     let ours = match lock_path {
         Some(l) => match util::ExclusiveLock::try_acquire(l).map_err(|e| e.to_string())? {
             Some(g) => Some(g),
-            None => return Ok(false),
+            None if build => return Ok(Removed::InUse("a QuickRust command is using it".into())),
+            None => return Ok(Removed::InUse("an install is using it".into())),
         },
         None => None,
     };
     // What the scan said of a build directory is as old as the collection: one that removes
     // gigabytes runs for minutes, and a run that started meanwhile holds or builds in directories
     // the scan found idle. Under its lock nothing new starts using it, so it is asked again here.
-    if build && (cargo_building_in(dir) || used_since_scan(dir)) {
-        return Ok(false);
+    if build {
+        if cargo_building_in(dir) {
+            return Ok(Removed::InUse("a Cargo is building in it".into()));
+        }
+        if let Some(why) = in_use_now(dir)? {
+            return Ok(Removed::InUse(why));
+        }
     }
     let doomed = cache.join("tmp").join(format!("{}.{}", util::lossy(dir.file_name().unwrap_or_default()), std::process::id()));
     util::create_private_dir(&cache.join("tmp")).map_err(|e| e.to_string())?;
@@ -900,13 +974,23 @@ fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], build: bo
     // wait for gigabytes to be deleted.
     drop(ours);
     let _ = fs::remove_dir_all(&doomed);
-    Ok(true)
+    Ok(Removed::Done)
 }
 
-/// Whether a build directory is in use now, whatever the scan found: held by a running process,
-/// or used within the protection by its record.
-fn used_since_scan(dir: &Path) -> bool {
-    crate::builddir::held(dir) || crate::builddir::meta(dir).is_some_and(|(_, _, used)| used + PROTECTED_NS > util::now_wall_ns())
+/// Why a build directory is in use now, whatever the scan found, if it is: a running process
+/// holds it (`builddir::holder`), or its record says it was used within the protection.
+fn in_use_now(dir: &Path) -> Result<Option<String>, String> {
+    let processes = running_processes()?;
+    if let Some(why) = crate::builddir::holder(dir, &processes) {
+        return Ok(Some(why));
+    }
+    let now = util::now_wall_ns();
+    Ok(crate::builddir::meta(dir).filter(|(_, _, used)| used + PROTECTED_NS > now).map(|(_, _, used)| format!("it was used {}, since the collection began", util::human_ago(used, now))))
+}
+
+/// The running processes, for `builddir::holder`.
+fn running_processes() -> Result<Vec<crate::proc::Running>, String> {
+    crate::proc::running().map_err(|e| format!("cannot list the running processes, so cannot tell which build directories they use: {}", e))
 }
 
 /// Whether a Cargo holds one of its locks in this target directory (`<dir>/<profile>/.cargo-lock`
@@ -923,19 +1007,19 @@ pub fn cargo_building_in(dir: &Path) -> bool {
     candidates.iter().any(|lock| matches!(util::ExclusiveLock::try_acquire(lock), Ok(None)))
 }
 
-fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
+fn remove(cache: &Path, unit: &Unit) -> Result<Removed, String> {
     match unit.kind {
         Kind::Build => remove_locked_dir(cache, &unit.path, &unit.companions, true),
         Kind::Source => remove_locked_dir(cache, &unit.path, &unit.companions, false),
-        Kind::Artifact => Ok(crate::artifact_cache::discard(&cache.join("artifacts"), &unit.path)),
+        Kind::Artifact => crate::artifact_cache::discard(&cache.join("artifacts"), &unit.path).map(|_| Removed::Done).map_err(|e| format!("cannot remove {}: {}", unit.path.display(), e)),
         _ => {
             let md = fs::symlink_metadata(&unit.path).map_err(|e| e.to_string());
             let r = match md {
                 Ok(m) if m.is_dir() => fs::remove_dir_all(&unit.path),
                 Ok(_) => fs::remove_file(&unit.path),
-                Err(_) => return Ok(true),
+                Err(_) => return Ok(Removed::Done),
             };
-            r.map(|_| true).map_err(|e| format!("cannot remove {}: {}", unit.path.display(), e))
+            r.map(|_| Removed::Done).map_err(|e| format!("cannot remove {}: {}", unit.path.display(), e))
         }
     }
 }
@@ -945,7 +1029,7 @@ fn remove(cache: &Path, unit: &Unit) -> Result<bool, String> {
 /// says (`qrust gc --to`). With a `deadline`, Cargo's downloads are left alone (Cargo waits for
 /// builds reading them). A removal or Cargo that fails stops it (`Collected::failed`), and what it
 /// did until then is counted and logged like any collection; `Err` only when the volume cannot be
-/// measured.
+/// measured, or the running processes cannot be listed (nothing can be known to be unused).
 pub fn collect(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_total: Option<u64>, dry_run: bool, deadline: Option<Instant>) -> Result<Collected, String> {
     collect_on(cache, downloads, policy, max_total, dry_run, deadline, &|| volume(cache))
 }
@@ -968,50 +1052,85 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     // again until the end (see the module notes).
     let mut available = out.free_before;
     let mut units = std::mem::take(&mut scan.units);
+    // Which build directories running processes hold, asked once for the whole scan (and again
+    // under each one's lock before it is removed).
+    let processes = running_processes()?;
+    for u in units.iter_mut().filter(|u| u.kind == Kind::Build) {
+        u.held = crate::builddir::holder(&u.path, &processes);
+    }
     let late = |u: &Unit| u.last_used_ns + PROTECTED_NS > now;
+    // Why `u` stays now, whatever the bounds: in use, or used within the protection.
+    let in_use = |u: &Unit| -> Option<(String, &'static str)> {
+        if let Some(why) = &u.held {
+            return Some((why.clone(), "a running process holds it"));
+        }
+        late(u).then(|| (format!("it was used {}, and nothing used in the last 15 minutes is removed", util::human_ago(u.last_used_ns, now)), "used in the last 15 minutes"))
+    };
+    // A removed build directory's workspace is told by its next command.
+    let tell = |out: &mut Collected, u: &Unit, bytes: u64, why: &Why| {
+        if let (Some(root), false) = (&u.workspace, dry_run) {
+            if let Err(e) = crate::builddir::record_collected(cache, &u.path, root, bytes, &why.to_string(), now) {
+                failed(out, format!("cannot tell the workspace {} that its build directory {} was removed ({}): {}", root.display(), u.path.display(), crate::builddir::collected_dir(cache).display(), e));
+            }
+        }
+    };
     // 1: what nothing can use.
     let (orphans, rest): (Vec<Unit>, Vec<Unit>) = units.drain(..).partition(|u| u.orphan.is_some());
     // What stays whatever the bounds: the files it links are not freed by removing another unit.
     let mut staying: Vec<Unit> = vec![];
     for u in orphans {
         // Even what nothing can use waits out the protection: a command writes a build
-        // directory's record before Cargo makes the directory.
-        if late(&u) {
+        // directory's record before Cargo makes the directory. And a program may still run
+        // from a build directory whose workspace is gone.
+        if let Some((why, group_why)) = in_use(&u) {
+            leave(&mut out.left, &u, why, group_why);
             staying.push(u);
             continue;
         }
         let freed = scan.links.release(&u);
-        match if dry_run { Ok(true) } else { remove(cache, &u) } {
-            Ok(true) => {
+        match if dry_run { Ok(Removed::Done) } else { remove(cache, &u) } {
+            Ok(Removed::Done) => {
                 total = total.saturating_sub(freed.bytes);
                 available = available.saturating_add(freed.bytes);
                 kept_now += freed.kept;
                 let why = Why::Unusable(u.orphan.clone().expect("what nothing can use says why"));
+                tell(&mut out, &u, freed.bytes, &why);
                 out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed.bytes, why });
             }
-            Ok(false) => out.skipped_in_use += 1,
+            Ok(Removed::InUse(why)) => {
+                leave(&mut out.left, &u, why.clone(), "in use");
+                staying.push(u);
+            }
             Err(e) => {
                 out.failed = Some(e);
                 break;
             }
         }
     }
-    // 2: least recently used, while the bounds are exceeded.
+    // 2: while the bounds are exceeded, what frees the most for how long it has gone unused.
     let mut goal = goal(policy, total, available);
     if let Some(m) = max_total {
         goal.max_total = goal.max_total.min(m);
     }
-    let (mut candidates, others): (Vec<Unit>, Vec<Unit>) = rest.into_iter().partition(|u| matches!(u.kind, Kind::Build | Kind::Artifact | Kind::Source));
-    candidates.sort_by_key(|u| (u.last_used_ns, u.path.clone()));
+    let (candidates, others): (Vec<Unit>, Vec<Unit>) = rest.into_iter().partition(|u| matches!(u.kind, Kind::Build | Kind::Artifact | Kind::Source));
     staying.extend(others);
-    staying.extend(candidates.iter().filter(|u| late(u)).cloned());
+    let (in_use_now, mut candidates): (Vec<Unit>, Vec<Unit>) = candidates.into_iter().partition(|u| in_use(u).is_some());
+    for u in in_use_now {
+        let (why, group_why) = in_use(&u).expect("partitioned as in use");
+        leave(&mut out.left, &u, why, group_why);
+        staying.push(u);
+    }
+    // A large directory nobody has used for hours before a small one used half an hour ago: the
+    // goal is met with the fewest removals, and of what was used about as long ago, the largest
+    // goes first. Ties go oldest first.
+    candidates.sort_by_key(|u| (std::cmp::Reverse(u.bytes() as u128 * now.saturating_sub(u.last_used_ns) as u128), u.last_used_ns, u.path.clone()));
     // An artifact entry most of whose bytes are files something staying links (a build
     // directory in use, or a link from outside the cache) is kept: removing it would lose it and
     // gain little space. (A build directory is not: what it has of its own, incremental state
     // above all, is freed, and its outputs come back from the artifact cache.)
-    let held: std::collections::HashSet<(u64, u64)> = staying.iter().flat_map(|u| u.shared.iter().map(|(id, _, _)| *id)).chain(scan.links.map.iter().filter(|(_, c)| c.in_cache < c.nlink).map(|(id, _)| *id)).collect();
-    let mostly_held = |u: &Unit| {
-        let freeable = u.own_bytes + u.shared.iter().filter(|(id, _, _)| !held.contains(id)).map(|(_, b, _)| b).sum::<u64>();
+    let linked: std::collections::HashSet<(u64, u64)> = staying.iter().flat_map(|u| u.shared.iter().map(|(id, _, _)| *id)).chain(scan.links.map.iter().filter(|(_, c)| c.in_cache < c.nlink).map(|(id, _)| *id)).collect();
+    let mostly_linked = |u: &Unit| {
+        let freeable = u.own_bytes + u.shared.iter().filter(|(id, _, _)| !linked.contains(id)).map(|(_, b, _)| b).sum::<u64>();
         freeable * 2 < u.bytes()
     };
     for u in candidates {
@@ -1022,22 +1141,21 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
             out.stopped_early = true;
             break;
         }
-        if late(&u) {
-            out.skipped_in_use += 1;
-            continue;
-        }
-        if u.kind == Kind::Artifact && mostly_held(&u) {
+        if u.kind == Kind::Artifact && mostly_linked(&u) {
+            leave(&mut out.left, &u, String::new(), "a build directory in use links most of its files");
             continue;
         }
         let freed = scan.links.release(&u);
-        match if dry_run { Ok(true) } else { remove(cache, &u) } {
-            Ok(true) => {
+        match if dry_run { Ok(Removed::Done) } else { remove(cache, &u) } {
+            Ok(Removed::Done) => {
                 total = total.saturating_sub(freed.bytes);
                 available = available.saturating_add(freed.bytes);
                 kept_now += freed.kept;
-                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed.bytes, why: Why::LeastRecentlyUsed });
+                let why = Why::Room { unused_ns: now.saturating_sub(u.last_used_ns) };
+                tell(&mut out, &u, freed.bytes, &why);
+                out.removed.push(Removal { kind: u.kind, path: u.path, bytes: freed.bytes, why });
             }
-            Ok(false) => out.skipped_in_use += 1,
+            Ok(Removed::InUse(why)) => leave(&mut out.left, &u, why, "in use"),
             Err(e) => out.failed = Some(e),
         }
     }
@@ -1065,6 +1183,10 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     }
     out.after = total;
     out.unmet = total > goal.max_total || available < goal.min_free;
+    // What it kept matters when it fell short: within its goal, what it left was not needed.
+    if !out.unmet {
+        out.left.clear();
+    }
     // What the newest snapshot keeps of what it removed, with what earlier collections removed
     // that their snapshots still keep. (Cargo's downloads are not counted: Cargo removes them,
     // and says only how much.)
@@ -1083,7 +1205,7 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
         if let Err(e) = util::write_json_fast(&cache.join(USAGE), &usage) {
             failed(&mut out, format!("cannot record the count in {}: {}", cache.join(USAGE).display(), e));
         }
-        if !out.removed.is_empty() || out.cargo_left.is_some() || out.failed.is_some() {
+        if !out.removed.is_empty() || out.cargo_left.is_some() || out.failed.is_some() || out.unmet {
             if let Err(e) = log(cache, &out, &goal, now) {
                 failed(&mut out, format!("cannot log the collection in {}: {}", cache.join(LOG).display(), e));
             }
@@ -1150,21 +1272,17 @@ fn scan_summary(cache: &Path, now: u64) -> serde_json::Map<String, Value> {
 
 /// A collection's line in `LOG`: by kind and why, how many went and how many bytes; build
 /// directories and program sources by name, as a build that comes back cold is traced to them
-/// and they are few; Cargo's summary; and what the collection started from and aimed for.
+/// and they are few; Cargo's summary; what the collection started from and aimed for; and, when
+/// it fell short, what it kept and why (build directories and sources by name, the rest counted).
 fn log_line(c: &Collected, goal: &Goal, now: u64) -> Value {
     let mut groups: std::collections::BTreeMap<(Kind, &str), (u64, u64)> = Default::default();
     let mut named = vec![];
     let mut cargo = None;
     for r in &c.removed {
-        let why = match &r.why {
-            Why::Unusable(_) => "nothing could use it",
-            Why::LeastRecentlyUsed => "used least recently",
-            Why::Cargo(summary) => {
-                cargo = Some(summary.clone());
-                "Cargo"
-            }
-        };
-        let g = groups.entry((r.kind, why)).or_default();
+        if let Why::Cargo(summary) = &r.why {
+            cargo = Some(summary.clone());
+        }
+        let g = groups.entry((r.kind, r.why.group())).or_default();
         g.0 += 1;
         g.1 += r.bytes;
         if matches!(r.kind, Kind::Build | Kind::Source) {
@@ -1175,8 +1293,13 @@ fn log_line(c: &Collected, goal: &Goal, now: u64) -> Value {
     json!({
         "format": LOG_FORMAT, "at": util::iso8601(now), "before": c.before, "after": c.after, "free_before": c.free_before, "kept_by_snapshots": c.kept,
         "goal": { "max_total": (goal.max_total != u64::MAX).then_some(goal.max_total), "min_free": (goal.min_free > 0).then_some(goal.min_free) },
-        "removed": removed, "named": named, "cargo": cargo, "cargo_left": c.cargo_left, "failed": c.failed, "unmet": c.unmet,
+        "removed": removed, "named": named, "cargo": cargo, "cargo_left": c.cargo_left, "failed": c.failed, "unmet": c.unmet, "left": left_json(&c.left),
     })
+}
+
+/// What a collection kept, as its log and `qrust gc --format json` write it.
+pub fn left_json(left: &[Left]) -> Vec<Value> {
+    left.iter().map(|l| json!({ "kind": l.kind.name(), "path": l.path.as_deref().map(util::path_str), "count": l.count, "bytes": l.bytes, "why": l.why })).collect()
 }
 
 /// Records `why` the collection `out` fell short, after whatever it already says.
@@ -1254,7 +1377,9 @@ pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
     }
     let log = fs::File::create(cache.join("gc.log")).map_err(|e| e.to_string())?;
     let mut c = crate::resolve::qrust_command(qrust);
-    c.args(["gc", "--background"]);
+    // It works in the cache, not in the command's workspace, where it would count as a process
+    // working there (`builddir::holder`); the bounds it keeps are the command's.
+    c.args(["gc", "--background"]).current_dir(&cache).env("QRUST_CACHE_MAX_SIZE", cfg.str("cache.max-size")).env("QRUST_CACHE_MIN_FREE", cfg.str("cache.min-free"));
     crate::proc::spawn_detached(&mut c, log).map_err(|e| format!("cannot start {}: {}", qrust.display(), e))?;
     Ok(true)
 }
@@ -1394,7 +1519,7 @@ mod tests {
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [older.as_path(), old.as_path()]);
-        assert!(fresh.exists() && done.skipped_in_use == 1);
+        assert!(fresh.exists() && done.left_count() == 1);
         assert!(done.after < done.before);
         assert!(usage(&c).is_some() && recent(&c, 5).len() == 2);
     }
@@ -1427,7 +1552,7 @@ mod tests {
         // that is gone.
         assert!(held.exists() && !idle.exists(), "{:?}", done.removed);
         assert!(mine.is_file() && !theirs.exists());
-        assert_eq!(done.skipped_in_use, 1);
+        assert_eq!(done.left_count(), 1);
 
         // The holder ends (here: its record is of a process that has): the directory is collected.
         fs::remove_file(&mine).unwrap();
@@ -1466,7 +1591,7 @@ mod tests {
         file(&building.join("debug/.cargo-lock"), 0);
         let _cargo = util::ExclusiveLock::acquire(&building.join("debug/.cargo-lock")).unwrap();
         let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
-        assert!(done.removed.is_empty() && done.skipped_in_use == 2, "{:?}", done);
+        assert!(done.removed.is_empty() && done.left_count() == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
     }
 
@@ -1486,11 +1611,11 @@ mod tests {
         // While it removes others, a run starts: it holds one and builds in another.
         crate::builddir::hold(&held, std::process::id()).unwrap();
         crate::builddir::mark_used_in(&c.join("builds"), &built, &a);
-        assert_eq!(remove(&c, &unit(&held)), Ok(false), "a directory held since the scan was removed");
-        assert_eq!(remove(&c, &unit(&built)), Ok(false), "a directory built in since the scan was removed");
+        assert_eq!(remove(&c, &unit(&held)), Ok(Removed::InUse(format!("process {} holds it (`qrust path --hold-for`)", std::process::id()))), "a directory held since the scan was removed");
+        assert!(matches!(remove(&c, &unit(&built)), Ok(Removed::InUse(why)) if why.starts_with("it was used just now")), "a directory built in since the scan was removed");
         assert!(held.exists() && built.exists());
         // The one nothing touched goes, on the same scan.
-        assert_eq!(remove(&c, &unit(&idle)), Ok(true));
+        assert_eq!(remove(&c, &unit(&idle)), Ok(Removed::Done));
         assert!(!idle.exists());
     }
 
@@ -1545,7 +1670,7 @@ mod tests {
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [part.as_path(), stray.as_path(), old.as_path(), build.as_path()]);
         assert!(!old.exists() && !copy_lock(&old).exists());
-        assert!(held.exists() && done.skipped_in_use == 1, "{:?}", done);
+        assert!(held.exists() && done.left_count() == 1, "{:?}", done);
     }
 
     // TEST0338: Cargos downloads on another disk than the cache count towards its size only
@@ -1986,10 +2111,100 @@ mod tests {
         assert!(text.len() < 1500, "{} bytes for one collection: {}", text.len(), text);
         let line = &recent(&c, 5)[0];
         let group = |kind: &str| line["removed"].as_array().unwrap().iter().find(|g| g["kind"] == kind).cloned().unwrap_or_else(|| panic!("{}", line));
-        assert_eq!((group("artifact cache")["count"].as_u64(), group("artifact cache")["why"].as_str()), (Some(300), Some("used least recently")));
+        assert_eq!((group("artifact cache")["count"].as_u64(), group("artifact cache")["why"].as_str()), (Some(300), Some("the bounds needed room")));
         assert_eq!(group("build directories")["count"].as_u64(), Some(1));
         let named = line["named"].as_array().unwrap();
         assert_eq!((named.len(), named[0]["path"].as_str()), (1, Some(util::path_str(&d).as_str())));
         assert_eq!((line["before"].as_u64(), line["after"].as_u64()), (Some(done.before), Some(done.after)));
+    }
+
+    /// A process this test started, ended when it is dropped (by its own id, whatever the test
+    /// found).
+    #[cfg(unix)]
+    struct Started(std::process::Child);
+
+    #[cfg(unix)]
+    impl Started {
+        /// `program` sleeping for a minute in `cwd`.
+        fn sleeping(program: &Path, cwd: &Path) -> Started {
+            Started(std::process::Command::new(program).arg("60").current_dir(cwd).stdin(std::process::Stdio::null()).spawn().unwrap())
+        }
+
+        fn pid(&self) -> String {
+            self.0.id().to_string()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Started {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    // TEST0339: A build directory a running process holds is never collected and an unmet collection says why
+    #[cfg(unix)]
+    #[test]
+    fn test0339_a_build_directory_a_running_process_holds_is_never_collected_and_an_unmet_collection_says_why() {
+        let c = cache();
+        let tmp = c.parent().unwrap();
+        // Four workspaces whose directories nobody has built in for hours, over a cache that must
+        // shrink to nothing.
+        let (ran, session, idle) = (workspace(&c, "ran"), workspace(&c, "session"), workspace(&c, "idle"));
+        // One is a checkout's submodule: an agent's session works at the top of the checkout.
+        fs::create_dir_all(tmp.join("checkout/.git/modules/sub")).unwrap();
+        file(&tmp.join("checkout/sub/ws/Cargo.toml"), 10);
+        fs::write(tmp.join("checkout/sub/.git"), "gitdir: ../.git/modules/sub\n").unwrap();
+        let nested = tmp.join("checkout/sub/ws");
+        let ran_dir = build_dir(&c, "ran-1", &ran, 5 * 3600, 400_000);
+        let session_dir = build_dir(&c, "session-1", &session, 6 * 3600, 400_000);
+        let nested_dir = build_dir(&c, "ws-1", &nested, 7 * 3600, 400_000);
+        let idle_dir = build_dir(&c, "idle-1", &idle, 4 * 3600, 400_000);
+        // A test harness runs a program it built there; a shell works in a workspace's sources;
+        // a session works at the top of the checkout the third workspace is a submodule of.
+        let program = ran_dir.join("debug/sleeper");
+        fs::copy("/bin/sleep", &program).unwrap();
+        fs::create_dir_all(session.join("src")).unwrap();
+        let running = Started::sleeping(&program, tmp);
+        let shell = Started::sleeping(Path::new("/bin/sleep"), &session.join("src"));
+        let agent = Started::sleeping(Path::new("/bin/sleep"), &tmp.join("checkout"));
+        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let done = collect(&c, None, &tight, None, false, None).unwrap();
+        assert!(ran_dir.exists() && session_dir.exists() && nested_dir.exists(), "a directory in use was collected: {:?}", done);
+        assert!(!idle_dir.exists(), "{:?}", done);
+        // Short of its goal, it says what it kept and why, by name.
+        let line = &recent(&c, 1)[0];
+        assert_eq!(line["unmet"], json!(true), "{}", line);
+        let why = |dir: &Path| line["left"].as_array().into_iter().flatten().find(|l| l["path"].as_str() == Some(util::path_str(dir).as_str())).and_then(|l| l["why"].as_str().map(str::to_string)).unwrap_or_else(|| panic!("{} is not named: {}", dir.display(), line));
+        assert!(why(&ran_dir).contains(&running.pid()) && why(&ran_dir).contains("sleeper"), "{}", why(&ran_dir));
+        assert!(why(&session_dir).contains(&shell.pid()), "{}", why(&session_dir));
+        assert!(why(&nested_dir).contains(&agent.pid()) && why(&nested_dir).contains("checkout"), "{}", why(&nested_dir));
+        // Once they have ended, the directories go.
+        drop((running, shell, agent));
+        let done = collect(&c, None, &tight, None, false, None).unwrap();
+        assert!(!ran_dir.exists() && !session_dir.exists() && !nested_dir.exists(), "{:?}", done);
+    }
+
+    // TEST0340: A large build directory unused for an hour goes before a small one unused for two and the goal is met
+    #[test]
+    fn test0340_a_large_build_directory_unused_for_an_hour_goes_before_a_small_one_unused_for_two_and_the_goal_is_met() {
+        let c = cache();
+        let (a, b) = (workspace(&c, "a"), workspace(&c, "b"));
+        // Both past the protection, nothing holds either; the small one was used longer ago.
+        let small = build_dir(&c, "a-1", &a, 2 * 3600, 100_000);
+        let large = build_dir(&c, "b-1", &b, 3600, 4_000_000);
+        let s = scan(&c, util::now_wall_ns(), None);
+        let large_bytes = s.units.iter().find(|u| u.path == large).unwrap().bytes();
+        // The cache over its size by less than the large directory: its goal (90% of the size)
+        // is met by removing it alone.
+        let rest = s.total() - large_bytes;
+        let max_bytes = (rest + 64 * 1024) / 9 * 10 + 10;
+        assert!(s.total() > max_bytes && rest <= max_bytes / 10 * 9);
+        let done = collect(&c, None, &Policy { max_bytes, min_free: 0 }, None, false, None).unwrap();
+        assert_eq!(paths(&done), std::slice::from_ref(&large), "{:?}", done);
+        assert!(small.exists() && !done.unmet, "{:?}", done);
+        let named = &recent(&c, 1)[0]["named"];
+        assert!(named[0]["why"].as_str().is_some_and(|w| w.starts_with("the bounds needed room, and nothing had used it for 1 hour")), "{}", named);
     }
 }

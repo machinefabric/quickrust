@@ -544,6 +544,11 @@ fn cmd_path(raw: &[OsString]) -> CmdResult {
     if let (Some(pid), true) = (holder, chosen.managed) {
         crate::builddir::hold(&chosen.dir, pid)?;
     }
+    // A collection removed the directory since this workspace's last command: said once, so a
+    // script asking for a program there learns why it is missing.
+    if let Some(notice) = chosen.managed.then(|| crate::builddir::take_collected(&chosen.dir)).flatten() {
+        crate::ui::note(&format!("{}: what was built there is built again by the next build", notice));
+    }
     let dir = chosen.dir.clone();
     match (what.as_deref(), name) {
         (None, None) => println!("{}", dir.display()),
@@ -1160,18 +1165,27 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     }
     if format == "json" {
         let removed: Vec<Value> = done.removed.iter().map(|r| json!({ "kind": r.kind.name(), "path": path_str(&r.path), "bytes": r.bytes, "why": r.why.to_string() })).collect();
-        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "skipped_in_use": done.skipped_in_use, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available, "free_counted": done.free_before, "kept_by_snapshots": done.kept, "cargo_left": done.cargo_left, "failed": done.failed })).unwrap_or_default());
+        println!("{}", serde_json::to_string_pretty(&json!({ "dry_run": dry_run, "before_bytes": done.before, "after_bytes": done.after, "removed": removed, "unmet": done.unmet, "left": crate::space::left_json(&done.left), "max_bytes": policy.max_bytes, "min_free": policy.min_free, "free": fs.available, "free_counted": done.free_before, "kept_by_snapshots": done.kept, "cargo_left": done.cargo_left, "failed": done.failed })).unwrap_or_default());
         return failed;
     }
+    let removed = if dry_run { "would remove" } else { "removed" };
     for r in &done.removed {
-        println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, if dry_run { "would remove" } else { "removed" }, human_bytes(r.bytes), r.kind.name(), r.path.display(), r.why);
+        println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, removed, human_bytes(r.bytes), r.kind.name(), r.path.display(), r.why);
+    }
+    // Short of its goal: what it kept, and why, in the removals' columns.
+    for l in &done.left {
+        let kept = format!("{:<w$}", "kept", w = removed.len());
+        match &l.path {
+            Some(p) => println!("{}{} {:<10} {}  {} ({})", crate::ui::INDENT, kept, human_bytes(l.bytes), l.kind.name(), p.display(), l.why),
+            None => println!("{}{} {:<10} {} x{} ({})", crate::ui::INDENT, kept, human_bytes(l.bytes), l.kind.name(), l.count, l.why),
+        }
     }
     if let Some(left) = &done.cargo_left {
         crate::ui::note(left);
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
     let kept = if done.kept > 0 { format!(" and {} removed that a snapshot still keeps", human_bytes(done.kept)) } else { String::new() };
-    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.skipped_in_use > 0 { format!(", {} in use left alone", done.skipped_in_use) } else { String::new() }));
+    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.unmet { format!(", short of its goal: {} in use left alone", done.left_count()) } else { String::new() }));
     failed
 }
 
@@ -1306,7 +1320,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
                 println!("  {:<24} {:>10}  in files two kinds share (hard links), counted once in the total", "shared", human_bytes(kinds_sum - total));
             }
             if u["unmet"] == json!(true) {
-                println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use", "short of its bounds");
+                println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use; `qrust gc --dry-run` lists it, and why", "short of its bounds");
             }
         }
         None => println!("QuickRust's cache: not counted yet, {}; it is counted in the background after the next command, or now by `qrust gc`", qrust_cache.display()),
@@ -1325,7 +1339,13 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
     for c in hc["recent_collections"].as_array().into_iter().flatten() {
         let at = util::parse_iso8601(&vstr(c, "at")).map(|t| util::human_ago(t, now)).unwrap_or_else(|| vstr(c, "at"));
         let count: u64 = c["removed"].as_array().into_iter().flatten().filter_map(|g| g["count"].as_u64()).sum();
-        println!("  {:<24} {}, {} -> {}, {} removed{}", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), count, c["cargo_left"].as_str().or(c["failed"].as_str()).map(|l| format!("; {}", l)).unwrap_or_default());
+        // A collection logged before what it kept was recorded says only that it fell short.
+        let short = match (c["unmet"] == json!(true), c["left"].as_array()) {
+            (true, Some(left)) => format!(", short of its goal with {} in use", left.iter().filter_map(|g| g["count"].as_u64()).sum::<u64>()),
+            (true, None) => ", short of its goal".to_string(),
+            (false, _) => String::new(),
+        };
+        println!("  {:<24} {}, {} -> {}, {} removed{}{}", "collected", at, c["before"].as_u64().map(human_bytes).unwrap_or_default(), c["after"].as_u64().map(human_bytes).unwrap_or_default(), count, short, c["cargo_left"].as_str().or(c["failed"].as_str()).map(|l| format!("; {}", l)).unwrap_or_default());
     }
     println!();
     // A compiler cache (sccache) besides QuickRust's own: what it is and what it did.

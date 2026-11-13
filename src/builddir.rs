@@ -239,6 +239,135 @@ pub fn held(dir: &Path) -> bool {
     entries.flatten().any(|entry| hold_of(&util::lossy(&entry.file_name())).is_some_and(|(of, holder)| of == name && crate::proc::pid_alive(holder)))
 }
 
+/// Why the managed directory `dir` is in use by a running process among `processes`, if it is:
+/// a process holds it (`hold`), runs a program from it (a test harness's binary, a server built
+/// there), or works in it or in its workspace's checkout (`checkout_of`: a shell, an editor or an
+/// agent's session there comes back to build again). A workspace that is gone has no checkout
+/// anyone works in.
+pub fn holder(dir: &Path, processes: &[crate::proc::Running]) -> Option<String> {
+    let named = |pid: u32| match processes.iter().find(|p| p.pid == pid).map(|p| p.name.as_str()).filter(|n| !n.is_empty()) {
+        Some(name) => format!("process {} ({})", pid, name),
+        None => format!("process {}", pid),
+    };
+    let (builds, name) = (dir.parent()?, util::lossy(dir.file_name()?));
+    for entry in fs::read_dir(builds).into_iter().flatten().flatten() {
+        if let Some((of, pid)) = hold_of(&util::lossy(&entry.file_name())) {
+            if of == name && crate::proc::pid_alive(pid) {
+                return Some(format!("{} holds it (`qrust path --hold-for`)", named(pid)));
+            }
+        }
+    }
+    // The system names a process's program and directory by their real paths.
+    let real = |p: &Path| fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let checkout = meta(dir).map(|(root, _, _)| root).filter(|root| root.join("Cargo.toml").is_file()).map(|root| checkout_of(&real(&root)));
+    let dir = real(dir);
+    for p in processes {
+        if let Some(exe) = p.exe.as_deref().filter(|e| within(e, &dir)) {
+            return Some(format!("{} runs {} from it", named(p.pid), exe.display()));
+        }
+    }
+    for p in processes {
+        if let Some(cwd) = p.cwd.as_deref().filter(|c| within(c, &dir)) {
+            return Some(format!("{} works in it ({})", named(p.pid), cwd.display()));
+        }
+    }
+    let checkout = checkout?;
+    processes.iter().find_map(|p| p.cwd.as_deref().filter(|c| within(c, &checkout)).map(|cwd| format!("{} works in {}, in its workspace's checkout {}", named(p.pid), cwd.display(), checkout.display())))
+}
+
+/// The checkout the workspace at `root` is part of: the top of the git working tree it is in,
+/// and above that every superproject it is a submodule of; the workspace itself when it is in
+/// no repository, or when that top would be the home directory or above it (a home kept in git
+/// is not one project).
+pub fn checkout_of(root: &Path) -> PathBuf {
+    checkout_below(root, util::home_dir().map(|h| fs::canonicalize(&h).unwrap_or(h)).as_deref())
+}
+
+/// `checkout_of`, with the home directory `home`.
+fn checkout_below(root: &Path, home: Option<&Path>) -> PathBuf {
+    let mut top: Option<&Path> = None;
+    let mut from = root;
+    while let Some(repo) = from.ancestors().find(|d| d.join(".git").exists()) {
+        top = Some(repo);
+        match repo.parent() {
+            Some(up) if is_submodule(&repo.join(".git")) => from = up,
+            _ => break,
+        }
+    }
+    match top {
+        Some(t) if t.parent().is_some() && !home.is_some_and(|h| within(h, t)) => t.to_path_buf(),
+        _ => root.to_path_buf(),
+    }
+}
+
+/// Whether the `.git` at `git` is a submodule's: a file naming its repository inside its
+/// superproject's (`gitdir: <superproject's git directory>/modules/<name>`).
+fn is_submodule(git: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(git) else {
+        return false;
+    };
+    text.lines().next().and_then(|l| l.strip_prefix("gitdir:")).is_some_and(|g| Path::new(g.trim()).components().any(|c| c.as_os_str() == "modules"))
+}
+
+/// Whether `path` is `dir` or inside it. Windows compares paths without regard to case, and
+/// writes a process's directory without the `\\?\` a real path has.
+fn within(path: &Path, dir: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let plain = |p: &Path| {
+            let s = util::lossy(p.as_os_str()).replace('/', "\\");
+            let s = match (s.strip_prefix(r"\\?\UNC\"), s.strip_prefix(r"\\?\")) {
+                (Some(unc), _) => format!(r"\\{}", unc),
+                (None, Some(local)) => local.to_string(),
+                (None, None) => s,
+            };
+            PathBuf::from(s.trim_end_matches('\\').to_lowercase())
+        };
+        plain(path).starts_with(plain(dir))
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(dir)
+    }
+}
+
+/// The format of a notice that a collection removed a build directory (`record_collected`).
+const COLLECTED_FORMAT: &str = "qrust-collected-1";
+
+/// Where the cache at `cache` keeps the notices of build directories it removed, one per
+/// directory (`<name>.json`), until its workspace's next command.
+pub fn collected_dir(cache: &Path) -> PathBuf {
+    cache.join("collected")
+}
+
+/// Records, for the next command of the workspace at `root`, that a collection of the cache at
+/// `cache` removed its build directory `dir` (`bytes` of it) at `when`, and `why`.
+pub fn record_collected(cache: &Path, dir: &Path, root: &Path, bytes: u64, why: &str, when: u64) -> std::io::Result<()> {
+    let notices = collected_dir(cache);
+    util::create_private_dir(&notices)?;
+    let name = util::lossy(dir.file_name().unwrap_or_default());
+    util::write_json_fast(&notices.join(format!("{}.json", name)), &json!({ "format": COLLECTED_FORMAT, "dir": util::path_str(dir), "workspace_root": util::path_str(root), "removed_ns": when, "bytes": bytes, "why": why }))
+}
+
+/// What the notice at `path` records: the workspace it is for, and when its directory was
+/// removed. `None` when it is not a notice.
+pub fn collected_record(path: &Path) -> Option<(PathBuf, u64)> {
+    let v = util::read_json(path).filter(|v| v["format"] == json!(COLLECTED_FORMAT))?;
+    Some((PathBuf::from(v["workspace_root"].as_str()?), v["removed_ns"].as_u64()?))
+}
+
+/// The notice that a collection removed the managed directory `dir`, said once: read, then
+/// removed. `None` when there is none.
+pub fn take_collected(dir: &Path) -> Option<String> {
+    let cache = dir.parent()?.parent()?;
+    let path = collected_dir(cache).join(format!("{}.json", util::lossy(dir.file_name()?)));
+    let v = util::read_json(&path)?;
+    let _ = fs::remove_file(&path);
+    let v = Some(v).filter(|v| v["format"] == json!(COLLECTED_FORMAT))?;
+    let when = v["removed_ns"].as_u64().map(|t| util::human_ago(t, util::now_wall_ns())).unwrap_or_default();
+    Some(format!("QuickRust's cache removed this workspace's build directory {} {} ({}; {})", dir.display(), when, util::vstr(&v, "why"), util::human_bytes(v["bytes"].as_u64().unwrap_or(0))))
+}
+
 /// Removes the hold records in `builds` whose holder is no longer running. One that cannot be
 /// removed is left for the next hold or the next collection, which read it as what it is: the
 /// record of a process that is gone holds nothing.
@@ -388,6 +517,45 @@ mod tests {
             "the records of the holder that is gone are cleared, and nothing else"
         );
         fs::remove_dir_all(builds.parent().unwrap()).unwrap();
+    }
+
+    // TEST0342: A workspaces checkout is the top of its repository and of every superproject it is a submodule of
+    #[test]
+    fn test0342_a_workspaces_checkout_is_the_top_of_its_repository_and_of_every_superproject_it_is_a_submodule_of() {
+        let tmp = std::env::temp_dir().join(format!("qrust-checkout-{}", util::new_id()));
+        let dir = |rel: &str| {
+            let d = tmp.join(rel);
+            fs::create_dir_all(&d).unwrap();
+            d
+        };
+        let git_file = |rel: &str, gitdir: &str| fs::write(tmp.join(rel).join(".git"), format!("gitdir: {}\n", gitdir)).unwrap();
+        // A superproject, a submodule in it, and a submodule of that, whose workspace is a crate
+        // below the submodule's top.
+        dir("super/.git/modules/outer/modules/inner");
+        let ws = dir("super/outer/inner/crates/app");
+        git_file("super/outer", "../.git/modules/outer");
+        git_file("super/outer/inner", "../../.git/modules/outer/modules/inner");
+        let home = dir("home");
+        assert_eq!(checkout_below(&ws, Some(&home)), tmp.join("super"));
+        // A linked worktree of the superproject is a checkout of its own, its submodules with it.
+        dir("main/.git/worktrees/card/modules/outer");
+        let linked = dir("card/outer/crates/app");
+        git_file("card", "../main/.git/worktrees/card");
+        git_file("card/outer", "../../main/.git/worktrees/card/modules/outer");
+        assert_eq!(checkout_below(&linked, Some(&home)), tmp.join("card"));
+        // A repository of its own, not a submodule: its top, not what holds it.
+        dir("super/vendored/.git");
+        let vendored = dir("super/vendored/app");
+        assert_eq!(checkout_below(&vendored, Some(&home)), tmp.join("super/vendored"));
+        // In no repository: the workspace itself.
+        let loose = dir("loose/app");
+        assert_eq!(checkout_below(&loose, Some(&home)), loose);
+        // A home kept in git is not one project: the workspace itself.
+        dir("home/.git");
+        let in_home = dir("home/work/app");
+        assert_eq!(checkout_below(&in_home, Some(&home)), in_home);
+        assert_eq!(checkout_below(&in_home, Some(&tmp.join("home/work"))), in_home, "nor is a repository holding the home");
+        fs::remove_dir_all(&tmp).unwrap();
     }
 
     // TEST0031: A variant is a plain word

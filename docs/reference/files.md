@@ -45,7 +45,7 @@ Exported reports write the cache's directory as `$QRUST_CACHE`.
 
 ## QuickRust's cache
 
-Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust keeps it within `cache.max-size` and leaves `cache.min-free` of its disk free ([Configuration](configuration.md#keys)), removing what was used least recently.
+Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust keeps it within `cache.max-size` and leaves `cache.min-free` of its disk free ([Configuration](configuration.md#keys)), removing what frees the most for how long it has gone unused ([Collection](#collection)).
 
 | Path | Content |
 |---|---|
@@ -60,9 +60,10 @@ Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust ke
 | `downloads/` | toolchain archives being downloaded (resumed after an interruption) |
 | `memo/rustc/` | each compiler's `rustc -vV`, asked once per binary |
 | `memo/roots/` | which workspace a directory belongs to, as `cargo locate-project` said (asked again when a `Cargo.toml` from there up changes) |
+| `collected/<name>-<id>.json` | that a collection removed this build directory: when, why and how much. The workspace's next command says so in a `NOTE` and removes it; it goes with its workspace, or after 30 days unread |
 | `tmp/` | what a collection is deleting; renamed here first |
 | `usage.json` | the cache's last count, the disk's free space then, and what collections removed that the volume's snapshots keep, by snapshot; a count QuickRust cannot write fails the collection, and one of an older format is no count (the next collection counts again) |
-| `gc-log.jsonl` | one line per collection (the last 200): by kind and reason, how many things went and their bytes; the build directories and program sources that went, by path; Cargo's summary, or why Cargo's downloads were left; the free space it started from and its goal |
+| `gc-log.jsonl` | one line per collection (the last 200): by kind and reason, how many things went and their bytes; the build directories and program sources that went, by path; Cargo's summary, or why Cargo's downloads were left; the free space it started from and its goal; and, when it ended short of its goal (`unmet`), what it kept and why (`left`: build directories and sources by path, the rest counted by kind and reason) |
 | `gc.lock` | held by a running collection |
 
 ### Collection
@@ -70,12 +71,28 @@ Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust ke
 A collection removes, in this order:
 
 1. whatever nothing can use any more: build directories of workspaces that are gone, drivers of toolchains that are gone, week-old unfinished downloads, month-old memos, leftovers in `tmp/`;
-2. while the cache is above `cache.max-size` or the disk below `cache.min-free`: build directories, artifact entries and sources of installed programs, least recently used first, until the cache is under 90% of `cache.max-size` and the disk has 125% of `cache.min-free` free;
+2. while the cache is above `cache.max-size` or the disk below `cache.min-free`: build directories, artifact entries and sources of installed programs, until the cache is under 90% of `cache.max-size` and the disk has 125% of `cache.min-free` free. Each is weighed by its size times the time since it was last used, and the heaviest goes first: a 4 GiB directory unused for an hour goes before a 100 MiB one unused for two, and things of one size go oldest first;
 3. crates and git checkouts downloaded into QuickRust's Cargo home, removed by Cargo itself (`cargo -Zgc clean gc`): by Cargo's usual ages at every collection and, while the bounds are still exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn. Only while no QuickRust command is running a Cargo (`~/.qrust/cargo-runs/`). Otherwise they are left for the next collection, which `qrust gc` and `qrust cache status` report. Cargo's clean deletes its records of registries it does not find in the Cargo home, such as the temporary one `cargo package` builds against, and a running Cargo that holds one of those records stops with an internal error. A command that starts while Cargo's clean runs waits for it and says so.
 
 A collection counts what it frees itself and does not measure the disk again until it ends: other programs write to the disk meanwhile, and a snapshot keeps the blocks of every file that changed before it was taken. On macOS, QuickRust lists the snapshots of the cache's APFS volume, Time Machine's hourly local snapshots among them. A removed file that last changed (by its status change time) before the newest of them is kept by it. What a collection removed that a snapshot keeps is recorded in `usage.json` under that snapshot and counted as free, before and after commands and by the next collection, while that snapshot exists. That lasts a day at most, the life of a Time Machine local snapshot. Whatever else the disk does not show was used by other programs, and the disk's own figure counts. QuickRust sees no snapshots on Linux or Windows: a cache that a btrfs or ZFS snapshot covers is collected by the disk's figure alone.
 
-Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a source an install holds; an artifact entry whose files a build directory in use links. A collection runs for minutes, so just before it removes a build directory it asks again, under the directory's lock, whether it is held or was used: a run that starts during a collection keeps what it holds. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
+Never removed: anything used in the last 15 minutes; a build directory a QuickRust command holds or a Cargo holds a lock in; a build directory a running process holds (below); a source an install holds; an artifact entry whose files a build directory in use links. A collection runs for minutes, so just before it removes a build directory it asks again, under the directory's lock, whether it is held or was used: a run that starts during a collection keeps what it holds.
+
+A running process holds a build directory, whatever its age, when it:
+
+- holds it with `qrust path --hold-for <pid>`;
+- runs a program from it (a test harness's binary, a server built there);
+- works in it, or in its workspace's checkout: the top of the git working tree the workspace is in, and above that every superproject it is a submodule of (a shell, an editor or an agent's session there will build again). Without a repository, or when that top would be the home directory or above it, the checkout is the workspace itself.
+
+QuickRust reads every process's program and working directory: `/proc` on Linux, libproc on macOS, the process list and each process's parameters on Windows. Processes it may not read (another user's, unless QuickRust runs as root) hold nothing. A collection that cannot list the processes at all removes nothing and fails.
+
+A build directory a collection removes leaves a notice in `collected/`. The workspace's next command (a build, any Cargo command, `qrust path`) says what went, when, why and how much, once:
+
+```text
+NOTE QuickRust's cache removed this workspace's build directory /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 just now (the bounds needed room, and nothing had used it for 3 hours; 4.5 MiB): what was built there is built again by the next build
+```
+
+A collection that ends short of its goal (`unmet`) lists what it kept and why: `qrust gc` prints a `kept` line for each, and `gc-log.jsonl` records them under `left`. Sizes are blocks allocated; a file with several hard links counts once and is freed with its last link.
 
 | Trigger | Collection |
 |---|---|
