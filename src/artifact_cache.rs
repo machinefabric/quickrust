@@ -605,7 +605,7 @@ impl Job {
         };
         match restore() {
             Ok(stderr) => {
-                // Recency for eviction: the least recently used entries go first.
+                // When it was last used, which the cache's collection weighs (`space`).
                 let _ = fs::File::options().write(true).open(dir.join("entry.json")).and_then(|f| f.set_modified(std::time::SystemTime::now()));
                 let built_in = util::vstr(&entry, "out_dir_env");
                 let reads_out_dir = entry["env_deps"].as_array().into_iter().flatten().any(|n| n == "OUT_DIR");
@@ -613,9 +613,10 @@ impl Job {
                 Lookup::Hit { stderr, entry: key2, foreign_out_dir }
             }
             // A damaged entry is a miss; the compilation that follows overwrites the outputs and,
-            // with the entry gone, stores it again.
+            // with the entry gone, stores it again. One that cannot be removed now is a miss all
+            // the same, and the compilation's store replaces it.
             Err(_) => {
-                discard(&self.root, &dir);
+                let _ = discard(&self.root, &dir);
                 Lookup::Miss
             }
         }
@@ -827,15 +828,19 @@ fn has_execute_permission(md: &fs::Metadata) -> bool {
 }
 
 /// Removes an entry. It is renamed away first, so a build looking it up concurrently finds it
-/// whole or not at all. Returns whether it was removed.
-/// Removes an entry, renamed away first: a build that finds it gone compiles.
-pub fn discard(root: &Path, dir: &Path) -> bool {
+/// whole or not at all, and a build that finds it gone compiles. An entry already gone is
+/// removed.
+pub fn discard(root: &Path, dir: &Path) -> std::io::Result<()> {
     let doomed = root.join("tmp").join(format!("discard-{}-{}", std::process::id(), dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-    if fs::create_dir_all(root.join("tmp")).and_then(|_| fs::rename(dir, &doomed)).is_ok() {
-        let _ = fs::remove_dir_all(&doomed);
-        return true;
+    fs::create_dir_all(root.join("tmp"))?;
+    match fs::rename(dir, &doomed) {
+        Ok(()) => {
+            let _ = fs::remove_dir_all(&doomed);
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
     }
-    false
 }
 
 /// Whether the link-input record at `record` still describes its library as it is: one that does

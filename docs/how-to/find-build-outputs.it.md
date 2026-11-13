@@ -87,15 +87,17 @@ La directory di una variante è una directory di build come le altre: viene cont
 
 ## Usa gli output di una build più a lungo della build stessa {#use-a-builds-outputs-for-longer-than-the-build}
 
-Una directory di build fa parte della cache di QuickRust, e la cache si mantiene entro i propri limiti: quando supera la sua dimensione, o il disco è a corto di spazio libero, rimuove le directory di build che non vengono usate da un po', a partire da quelle usate meno di recente. Una directory in cui un comando sta compilando non viene mai rimossa, né una usata negli ultimi 15 minuti. Questo basta per `cargo run` e `cargo test`, e per uno script che copia fuori un binario subito dopo averlo compilato.
+Una directory di build fa parte della cache di QuickRust, e la cache si mantiene entro i propri limiti: quando supera la sua dimensione, o il disco è a corto di spazio libero, rimuove le directory di build che non vengono usate da un po', a partire dalle più grandi e inutilizzate da più tempo. Una directory in cui un comando sta compilando non viene mai rimossa, né una usata negli ultimi 15 minuti, né una da cui è stato avviato un programma in esecuzione, né una nel cui checkout del workspace lavora un processo (una shell, un editor o la sessione di un agente aperti lì). Questo basta per `cargo run` e `cargo test`, per un harness di test mentre i suoi binari sono in esecuzione, e per uno script che copia fuori un binario subito dopo averlo compilato.
 
-Non basta per un programma che compila una volta e continua a usare ciò che ha compilato: un harness di test che avvia i binari dopo un'ora di esecuzione, un programma di packaging che li legge alla fine. Un programma del genere tiene la directory per tutto il tempo in cui è in esecuzione, chiedendo il percorso con il proprio id di processo:
+Non basta per un programma che compila una volta e continua a usare da un altro posto ciò che ha compilato: un harness di test fuori dal workspace che avvia i binari dopo un'ora di esecuzione, un programma di packaging che li legge alla fine. Un programma del genere tiene la directory per tutto il tempo in cui è in esecuzione, chiedendo il percorso con il proprio id di processo:
 
 ```bash
 bin=$(qrust path bin app --release --hold-for $$)
 ```
 
 Finché quel processo è in esecuzione, la cache di QuickRust considera la directory in uso. La prenotazione non va rilasciata: termina quando termina il processo, in qualunque modo termini. Chiederla di nuovo non fa danni. Con una variante di build attiva, la directory prenotata è quella della variante.
+
+Se una pulizia ha rimosso comunque la directory, il comando successivo di QuickRust nel workspace, `qrust path` compreso, lo dice in una `NOTE` con che cosa è stato rimosso, quando e perché; compila di nuovo prima di eseguirne i programmi ([Come mantenere la cache di QuickRust entro i limiti del disco](free-disk-space.md#free-space-now)).
 
 ## Pulisci la build di un workspace {#clean-a-workspaces-build}
 

@@ -244,6 +244,97 @@ pub fn parent_pid() -> u32 {
     imp::parent_pid()
 }
 
+/// A running process: its id, its name, the program it runs and its working directory, each as
+/// the system says it (`None` where it cannot be read: another user's process, or one that ended
+/// while it was asked).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Running {
+    pub pid: u32,
+    pub name: String,
+    pub exe: Option<std::path::PathBuf>,
+    pub cwd: Option<std::path::PathBuf>,
+}
+
+/// The processes running now, this one left out. `Err` when the system's list of processes
+/// cannot be read at all.
+pub fn running() -> io::Result<Vec<Running>> {
+    let me = std::process::id();
+    Ok(list_running()?.into_iter().filter(|p| p.pid != me).collect())
+}
+
+/// Linux: `/proc/<pid>/exe`, `cwd` and `comm`. A program or directory deleted since reads
+/// `<path> (deleted)`; the path is what it was.
+#[cfg(target_os = "linux")]
+fn list_running() -> io::Result<Vec<Running>> {
+    use std::os::unix::ffi::OsStrExt;
+    let link = |p: std::path::PathBuf| {
+        std::fs::read_link(p).ok().map(|l| match l.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+            Some(path) => std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path)),
+            None => l,
+        })
+    };
+    let mut out = vec![];
+    for entry in std::fs::read_dir("/proc")? {
+        let entry = entry?;
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        let p = entry.path();
+        let name = std::fs::read_to_string(p.join("comm")).map(|s| s.trim_end().to_string()).unwrap_or_default();
+        out.push(Running { pid, name, exe: link(p.join("exe")), cwd: link(p.join("cwd")) });
+    }
+    Ok(out)
+}
+
+/// macOS: libproc's list of every process, with each one's path (`proc_pidpath`), current
+/// directory (`proc_pidinfo`, `PROC_PIDVNODEPATHINFO`) and name.
+#[cfg(target_os = "macos")]
+fn list_running() -> io::Result<Vec<Running>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    if count < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // Room for the processes started since they were counted.
+    let mut pids: Vec<libc::c_int> = vec![0; count as usize + 256];
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), (pids.len() * std::mem::size_of::<libc::c_int>()) as libc::c_int) };
+    if listed < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    pids.truncate(listed as usize);
+    let until_nul = |b: &[u8]| -> Option<std::path::PathBuf> {
+        let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+        (!b.is_empty()).then(|| std::path::PathBuf::from(OsStr::from_bytes(b)))
+    };
+    let mut out = vec![];
+    for pid in pids.into_iter().filter(|&p| p > 0) {
+        let mut path = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let n = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+        let exe = if n > 0 { until_nul(&path[..n as usize]) } else { None };
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+        let got = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, (&mut info as *mut libc::proc_vnodepathinfo).cast(), size) };
+        // The directory's path: MAXPATHLEN bytes, NUL-terminated (libc declares them in rows).
+        let cwd = if got == size { until_nul(unsafe { std::slice::from_raw_parts(info.pvi_cdir.vip_path.as_ptr().cast::<u8>(), std::mem::size_of_val(&info.pvi_cdir.vip_path)) }) } else { None };
+        let mut name = [0u8; 256];
+        let n = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        let name = if n > 0 { String::from_utf8_lossy(&name[..n as usize]).into_owned() } else { String::new() };
+        out.push(Running { pid: pid as u32, name, exe, cwd });
+    }
+    Ok(out)
+}
+
+/// Windows: a snapshot of the processes, with each one's program (`QueryFullProcessImageNameW`)
+/// and current directory, read from its process parameters.
+#[cfg(windows)]
+fn list_running() -> io::Result<Vec<Running>> {
+    win::processes()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn list_running() -> io::Result<Vec<Running>> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "QuickRust cannot list the running processes on this platform"))
+}
+
 /// Signal number if a termination signal was forwarded during a `run`.
 pub fn interrupted() -> Option<i32> {
     imp::interrupted()
@@ -319,6 +410,141 @@ mod win {
             CloseHandle(h);
         }
         !asked || code == STILL_ACTIVE
+    }
+
+    // A process's parameters are read at the offsets of a 64-bit process's environment block.
+    #[cfg(not(target_pointer_width = "64"))]
+    compile_error!("QuickRust reads other processes' current directories as a 64-bit program only");
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, pid: u32) -> *mut c_void;
+        fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+        fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+        fn QueryFullProcessImageNameW(process: *mut c_void, flags: u32, name: *mut u16, size: *mut u32) -> i32;
+        fn ReadProcessMemory(process: *mut c_void, address: *const c_void, buffer: *mut c_void, size: usize, read: *mut usize) -> i32;
+    }
+
+    #[link(name = "ntdll")]
+    extern "system" {
+        fn NtQueryInformationProcess(process: *mut c_void, class: u32, info: *mut c_void, length: u32, returned: *mut u32) -> i32;
+    }
+
+    /// PROCESSENTRY32W.
+    #[repr(C)]
+    struct ProcessEntry {
+        size: u32,
+        usage: u32,
+        pid: u32,
+        default_heap: usize,
+        module: u32,
+        threads: u32,
+        parent: u32,
+        priority: i32,
+        flags: u32,
+        exe_file: [u16; 260],
+    }
+
+    /// A handle, closed when dropped.
+    struct Handle(*mut c_void);
+
+    impl Handle {
+        fn process(access: u32, pid: u32) -> Option<Handle> {
+            let h = unsafe { OpenProcess(access, 0, pid) };
+            (!h.is_null()).then_some(Handle(h))
+        }
+    }
+
+    impl Drop for Handle {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+
+    /// Every process in a snapshot of them, with its program and current directory where this
+    /// process may read them.
+    pub fn processes() -> std::io::Result<Vec<super::Running>> {
+        const TH32CS_SNAPPROCESS: u32 = 0x2;
+        const ERROR_NO_MORE_FILES: i32 = 18;
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let snapshot = Handle(snapshot);
+        let mut entry: ProcessEntry = unsafe { std::mem::zeroed() };
+        entry.size = std::mem::size_of::<ProcessEntry>() as u32;
+        let mut out = vec![];
+        let mut more = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
+        while more {
+            let name = &entry.exe_file[..entry.exe_file.iter().position(|&c| c == 0).unwrap_or(entry.exe_file.len())];
+            // Process 0 is the system's idle process.
+            if entry.pid != 0 {
+                out.push(super::Running { pid: entry.pid, name: String::from_utf16_lossy(name), exe: image(entry.pid), cwd: current_directory(entry.pid) });
+            }
+            more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+        }
+        let end = std::io::Error::last_os_error();
+        if end.raw_os_error() != Some(ERROR_NO_MORE_FILES) {
+            return Err(end);
+        }
+        Ok(out)
+    }
+
+    /// The program process `pid` runs.
+    fn image(pid: u32) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+        let h = Handle::process(PROCESS_QUERY_LIMITED_INFORMATION, pid)?;
+        let mut buf = vec![0u16; 32_768];
+        let mut len = buf.len() as u32;
+        (unsafe { QueryFullProcessImageNameW(h.0, 0, buf.as_mut_ptr(), &mut len) } != 0).then(|| std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..len as usize])))
+    }
+
+    /// The current directory of process `pid`: the `CurrentDirectory` of its process parameters
+    /// (a 32-bit process under WOW64 keeps its own, in its 32-bit parameters).
+    fn current_directory(pid: u32) -> Option<std::path::PathBuf> {
+        use std::os::windows::ffi::OsStringExt;
+        const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+        const PROCESS_VM_READ: u32 = 0x0010;
+        const PROCESS_BASIC_INFORMATION: u32 = 0;
+        const PROCESS_WOW64_INFORMATION: u32 = 26;
+        let h = Handle::process(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, pid)?;
+        let read = |address: u64, buf: &mut [u8]| -> Option<()> {
+            let mut n = 0usize;
+            (unsafe { ReadProcessMemory(h.0, address as usize as *const c_void, buf.as_mut_ptr().cast(), buf.len(), &mut n) } != 0 && n == buf.len()).then_some(())
+        };
+        let query = |class: u32, info: &mut [usize]| unsafe { NtQueryInformationProcess(h.0, class, info.as_mut_ptr().cast(), std::mem::size_of_val(info) as u32, std::ptr::null_mut()) } >= 0;
+        let mut wow64 = [0usize; 1];
+        if !query(PROCESS_WOW64_INFORMATION, &mut wow64) {
+            return None;
+        }
+        // Where the path's UTF-16 is, and its length in bytes (a UNICODE_STRING).
+        let (at, length) = if wow64[0] != 0 {
+            // PEB32.ProcessParameters at 0x10; their CurrentDirectory.DosPath at 0x24.
+            let mut p = [0u8; 4];
+            read(wow64[0] as u64 + 0x10, &mut p)?;
+            let mut s = [0u8; 8];
+            read(u32::from_le_bytes(p) as u64 + 0x24, &mut s)?;
+            (u32::from_le_bytes([s[4], s[5], s[6], s[7]]) as u64, u16::from_le_bytes([s[0], s[1]]))
+        } else {
+            // PROCESS_BASIC_INFORMATION: the environment block's address is its second word.
+            let mut basic = [0usize; 6];
+            if !query(PROCESS_BASIC_INFORMATION, &mut basic) {
+                return None;
+            }
+            // PEB.ProcessParameters at 0x20; their CurrentDirectory.DosPath at 0x38.
+            let mut p = [0u8; 8];
+            read(basic[1] as u64 + 0x20, &mut p)?;
+            let mut s = [0u8; 16];
+            read(u64::from_le_bytes(p) + 0x38, &mut s)?;
+            (u64::from_le_bytes([s[8], s[9], s[10], s[11], s[12], s[13], s[14], s[15]]), u16::from_le_bytes([s[0], s[1]]))
+        };
+        let mut bytes = vec![0u8; length as usize];
+        read(at, &mut bytes)?;
+        let wide: Vec<u16> = bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+        (!wide.is_empty()).then(|| std::path::PathBuf::from(std::ffi::OsString::from_wide(&wide)))
     }
 
     const HANDLE_FLAG_INHERIT: u32 = 1;

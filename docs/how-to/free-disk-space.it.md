@@ -2,7 +2,7 @@
 
 Questa guida ti mostra come vedere quanto spazio usa QuickRust, liberare spazio subito, impostare i limiti che QuickRust rispetta da solo e spostare la cache su un altro disco.
 
-Tutto ciò che si trova sotto `~/.qrust/cache` (directory di build, la cache degli artefatti, driver del compilatore, download) può essere ricompilato o scaricato di nuovo, e QuickRust rimuove ciò che è stato usato meno di recente ogni volta che la cache supera il suo limite di dimensione o il disco resta a corto di spazio libero. Questa guida ti serve solo quando i default non sono adatti alla tua macchina. Il modo in cui la pulizia decide è descritto in [Perché QuickRust possiede il proprio ambiente](../explanation/owning-the-environment.md).
+Tutto ciò che si trova sotto `~/.qrust/cache` (directory di build, la cache degli artefatti, driver del compilatore, download) può essere ricompilato o scaricato di nuovo, e QuickRust rimuove ciò che nulla sta usando, a partire dal più grande e inutilizzato da più tempo, ogni volta che la cache supera il suo limite di dimensione o il disco resta a corto di spazio libero. Questa guida ti serve solo quando i default non sono adatti alla tua macchina. Il modo in cui la pulizia decide è descritto in [Perché QuickRust possiede il proprio ambiente](../explanation/owning-the-environment.md).
 
 ## Vedi che cosa contiene la cache {#see-what-the-cache-holds}
 
@@ -33,13 +33,23 @@ qrust gc                    # esegue la pulizia ora, entro i limiti configurati
 qrust gc --to 5GiB          # pulisce finché la cache non occupa al massimo 5 GiB
 ```
 
-Ogni rimozione viene elencata, poi una riga riassume il tutto:
+Ogni rimozione viene elencata con il suo motivo; se la pulizia non è riuscita a riportare la cache entro i suoi limiti, ogni cosa conservata viene elencata con il motivo per cui è rimasta; poi una riga riassume il tutto:
 
 ```text
-OK   Freed 0 B: QuickRust's cache 102.8 MiB -> 102.8 MiB (at most 35.1 GiB; keeps 17.6 GiB of the disk free, 12.0 GiB free now), 22 in use left alone [9ms]
+     removed 4.5 MiB    build directories  /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 (the bounds needed room, and nothing had used it for 3 hours)
+     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/tool-f5025e19e2918129 (process 1261843 (sleep) works in /home/me/src/tool/src, in its workspace's checkout /home/me/src/tool)
+OK   Freed 4.5 MiB: QuickRust's cache 9.0 MiB -> 4.5 MiB (at most 37.6 GiB; keeps 18.8 GiB of the disk free, 153.4 GiB free now), short of its goal: 1 in use left alone [29ms]
 ```
 
-Una pulizia non rimuove mai nulla che sia stato usato negli ultimi 15 minuti, né una directory di build occupata da un comando in esecuzione o da Cargo. Se libera meno di quanto ti aspettavi, `in use left alone` indica quante voci ha dovuto conservare; eseguila di nuovo quando quelle build sono terminate.
+Una pulizia prende per primo ciò che libera di più per quanto a lungo è rimasto inutilizzato: una directory di build grande in cui nessuno compila da ore va prima di una piccola usata mezz'ora fa. Non rimuove mai nulla che sia stato usato negli ultimi 15 minuti, né una directory di build occupata da un comando in esecuzione o da Cargo, da cui è stato avviato un programma in esecuzione, o in cui lavora un processo: nella directory stessa, o in qualsiasi punto del checkout del suo workspace (una shell, un editor o la sessione di un agente aperti lì). Se libera meno di quanto ti aspettavi, le righe `kept` dicono che cosa tiene ciascuna directory; termina quei processi, o eseguila di nuovo quando quelle build sono terminate. La regola completa è in [File e directory](../reference/files.md#collection).
+
+Quando una pulizia ha rimosso la directory di build di un workspace, il comando successivo di QuickRust in quel workspace lo dice, una volta:
+
+```text
+NOTE QuickRust's cache removed this workspace's build directory /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 just now (the bounds needed room, and nothing had used it for 3 hours; 4.5 MiB): what was built there is built again by the next build
+```
+
+Compila di nuovo prima di eseguire i suoi programmi. Uno script che continua a usare i programmi di una build dopo che la build è finita prenota invece la directory ([Come trovare gli output di build senza target/](find-build-outputs.md#use-a-builds-outputs-for-longer-than-the-build)).
 
 ## Imposta i limiti {#set-the-limits}
 
@@ -53,7 +63,7 @@ min-free = "10%"     # lo spazio libero che lascia sul disco
 
 Entrambe accettano una dimensione (`500MB`, `40GiB`), una quota del disco (`10%`) oppure `auto`. I default sono `auto`: al massimo il 10% del disco, tra 10 e 100 GiB, e almeno il 5% del disco libero, tra 2 e 20 GiB. Questo file è il posto per un limite che valga sulla macchina: ogni comando eseguito come te lo legge, chiunque lo avvii (uno script, un editor, la build di un altro strumento). Per una singola shell o un job di CI, usa `QRUST_CACHE_MAX_SIZE` e `QRUST_CACHE_MIN_FREE`. `qrust policy explain` mostra quale è in vigore e da dove viene.
 
-Se il disco è condiviso con altri dati di grandi dimensioni, aumenta `min-free`; QuickRust allora restituisce spazio man mano che il disco si riempie, qualunque sia la sua dimensione. Restituisce quanto manca al disco più un quarto di `min-free`, a partire da ciò che è stato usato meno di recente, e di nuovo quando il disco ha perso quel margine. Su un disco che di solito è sotto `min-free` a causa di altri dati, abbassa `min-free` allo spazio che vuoi mantenere libero: altrimenti la cache resta più piccola della differenza.
+Se il disco è condiviso con altri dati di grandi dimensioni, aumenta `min-free`; QuickRust allora restituisce spazio man mano che il disco si riempie, qualunque sia la sua dimensione. Restituisce quanto manca al disco più un quarto di `min-free`, e di nuovo quando il disco ha perso quel margine. Su un disco che di solito è sotto `min-free` a causa di altri dati, abbassa `min-free` allo spazio che vuoi mantenere libero: altrimenti la cache resta più piccola della differenza.
 
 ## Sposta la cache su un altro disco {#move-the-cache-to-another-disk}
 

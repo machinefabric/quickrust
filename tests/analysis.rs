@@ -362,7 +362,10 @@ fn test0196_quickrusts_cache_removes_what_is_gone_then_the_least_recently_used_a
     let done = json_out(sb.qrust(&a).args(["gc", "--to", "1", "--format", "json"]));
     assert_eq!(paths(&done), paths(&dry));
     assert!(!ta.exists() && !tb.exists() && tc.exists());
-    assert!(done["skipped_in_use"].as_u64().unwrap() >= 1);
+    // Short of its goal: it says it kept the one just used, and why.
+    assert_eq!(done["unmet"], json!(true), "{}", done);
+    let kept = done["left"].as_array().unwrap().iter().find(|l| l["path"].as_str() == Some(tc.to_str().unwrap())).unwrap_or_else(|| panic!("{}", done));
+    assert!(kept["why"].as_str().unwrap().contains("nothing used in the last 15 minutes is removed"), "{}", kept);
     // A removed directory is simply built again.
     ok(sb.cargo(&a).arg("build"));
     assert_eq!(stdout(&ok(sb.cargo(&a).args(["run", "-q"]))), "3\n");
@@ -465,6 +468,33 @@ fn test0297_a_collection_leaves_cargos_downloads_while_a_quickrust_cargo_runs_an
     assert_eq!(sources(&sb.cargo_home()), 0);
     let status = stdout(&ok(sb.qrust(&p).args(["cache", "status"])));
     assert!(status.lines().any(|l| l.trim_start().starts_with("collected") && l.contains("QuickRust command was running Cargo")), "{}", status);
+}
+
+// TEST0341: A workspace whose build directory a collection removed is told so by its next command once
+#[test]
+fn test0341_a_workspace_whose_build_directory_a_collection_removed_is_told_so_by_its_next_command_once() {
+    let sb = Sandbox::new("collected-notice");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    let dir = sb.target_dir(&p);
+    assert!(dir.join("debug/p").is_file());
+    // Its record says nobody has built in it for three hours.
+    let record = dir.with_file_name(format!("{}.json", dir.file_name().unwrap().to_string_lossy()));
+    let mut r: Value = serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
+    let hours_ago = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 - 3 * 3_600 * 1_000_000_000;
+    r["last_used_ns"] = json!(hours_ago);
+    fs::write(&record, r.to_string()).unwrap();
+    let done = json_out(sb.qrust(&p).args(["gc", "--to", "1", "--format", "json"]));
+    assert!(done["removed"].as_array().unwrap().iter().any(|x| x["path"].as_str() == Some(dir.to_str().unwrap())), "{}", done);
+    assert!(!dir.exists());
+    // The workspace's next command says what went and why, instead of its programs vanishing.
+    let next = ok(sb.qrust(&p).arg("path"));
+    let said = stderr(&next);
+    assert!(said.contains("NOTE") && said.contains(&format!("removed this workspace's build directory {}", dir.display())) && said.contains("the bounds needed room"), "{}", said);
+    // Once: the build after it says nothing of it.
+    let build = ok(sb.cargo(&p).arg("build"));
+    assert!(!stderr(&build).contains("removed this workspace's build directory"), "{}", stderr(&build));
+    assert!(dir.join("debug/p").is_file());
 }
 
 // TEST0301: A command that cannot record that it runs cargo does not run it

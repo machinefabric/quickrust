@@ -87,15 +87,17 @@ A variant's directory is a build directory like any other: it is counted in Quic
 
 ## Use a build's outputs for longer than the build
 
-A build directory is part of QuickRust's cache, and the cache keeps itself within its bounds: when it is over its size, or the disk is short of free space, it removes build directories that have not been used for a while, least recently used first. A directory a command is building in is never removed, nor one used in the last 15 minutes. That is enough for `cargo run` and `cargo test`, and for a script that copies a binary out right after building it.
+A build directory is part of QuickRust's cache, and the cache keeps itself within its bounds: when it is over its size, or the disk is short of free space, it removes build directories that have not been used for a while, the largest and longest unused first. A directory a command is building in is never removed, nor one used in the last 15 minutes, nor one a running program was started from, nor one whose workspace's checkout a process works in (a shell, an editor or an agent's session open there). That is enough for `cargo run` and `cargo test`, for a test harness while its binaries run, and for a script that copies a binary out right after building it.
 
-It is not enough for a program that builds once and keeps using what it built: a test harness that starts the binaries an hour into its run, a packager that reads them at the end. Such a program holds the directory for as long as it runs, by asking for the path with its own process id:
+It is not enough for a program that builds once and keeps using what it built from somewhere else: a test harness outside the workspace that starts the binaries an hour into its run, a packager that reads them at the end. Such a program holds the directory for as long as it runs, by asking for the path with its own process id:
 
 ```bash
 bin=$(qrust path bin app --release --hold-for $$)
 ```
 
 While that process runs, QuickRust's cache treats the directory as in use. The hold needs no release: it ends when the process does, however it ends. Asking again is harmless. With a build variant in effect, the variant's directory is the one held.
+
+If a collection removed the directory all the same, the next QuickRust command in the workspace, `qrust path` included, says so in a `NOTE` with what went, when and why; build again before running its programs ([How to keep QuickRust's cache within your disk](free-disk-space.md#free-space-now)).
 
 ## Clean a workspace's build
 

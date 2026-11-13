@@ -62,6 +62,14 @@ impl<'a> Screens<'a> {
 /// `text` with what varies between runs replaced (see the module notes).
 fn normalize(text: &str, sb: &Sandbox) -> String {
     let text = text.replace(&sb.home.display().to_string(), "<home>").replace(&sb.dir.display().to_string(), "<sandbox>");
+    // QuickRust writes a path in the home directory from `~` (a sandbox under it, as with a
+    // `TMPDIR` there).
+    let home = std::env::var_os("HOME").map(PathBuf::from).map(|h| fs::canonicalize(&h).unwrap_or(h));
+    let tilde = |p: &std::path::Path| home.as_ref().and_then(|h| p.strip_prefix(h).ok()).map(|r| format!("~/{}", r.display()));
+    let text = match (tilde(&sb.home), tilde(&sb.dir)) {
+        (Some(h), Some(d)) => text.replace(&h, "<home>").replace(&d, "<sandbox>"),
+        _ => text,
+    };
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::new();
     let mut i = 0;

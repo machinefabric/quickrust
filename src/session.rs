@@ -476,6 +476,10 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         (Some(t), Some(root)) if t.managed => {
             let in_use = crate::builddir::in_use(&t.dir);
             crate::builddir::mark_used(&t.dir, root);
+            // A collection removed the directory since this workspace's last command: said once.
+            if let Some(notice) = crate::builddir::take_collected(&t.dir) {
+                crate::ui::note(&format!("{}: what was built there is built again by the next build", notice));
+            }
             Some(in_use)
         }
         _ => None,

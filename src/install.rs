@@ -14,7 +14,7 @@
 //!   dependencies are resolved afresh, and with `--locked` from the lockfile published with it
 //!   (kept aside in the copy as `.qrust-published.lock`); `--path` builds the workspace with its own
 //!   `Cargo.lock`, as `cargo build` does. A copy is locked while it is prepared and built
-//!   (`<copy>.lock`), and the cache removes copies least recently used like build directories.
+//!   (`<copy>.lock`), and the cache removes copies it does not hold as it removes build directories.
 //! - Its binaries (or `--bin`, `--example`) are put into the `bin` directory, never over one of
 //!   QuickRust's own names, nor over another package's or an unknown file without `--force`.
 //!   `installs.json` in QuickRust's home records what each package installed, for `--list`,
