@@ -24,9 +24,16 @@ use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::util::Providers;
-use rustc_session::config::{self, CrateType, OutFileName, OutputFilenames, OutputType, PrintRequest};
+use rustc_session::config::{self, OutFileName, OutputFilenames, OutputType, PrintRequest};
+#[cfg(not(qrust_rustc_ge_100))]
+use rustc_session::config::CrateType;
 use rustc_session::Session;
+#[cfg(qrust_rustc_ge_100)]
+use rustc_session::{CodegenBackendInit, EarlySession};
+#[cfg(not(qrust_rustc_ge_100))]
 use rustc_span::Symbol;
+#[cfg(qrust_rustc_ge_100)]
+use rustc_structures::CrateType;
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -137,12 +144,22 @@ impl CodegenBackend for EarlyLink {
     fn name(&self) -> &'static str {
         self.inner.name()
     }
+    #[cfg(qrust_rustc_ge_100)]
+    fn init(&mut self, sess: &EarlySession) -> CodegenBackendInit {
+        self.inner.init(sess)
+    }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn init(&self, sess: &Session) {
         self.inner.init(sess)
     }
     fn print(&self, req: &PrintRequest, out: &mut String, sess: &Session) {
         self.inner.print(req, out, sess)
     }
+    #[cfg(qrust_rustc_ge_100)]
+    fn target_config(&self, sess: &EarlySession) -> TargetConfig {
+        self.inner.target_config(sess)
+    }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn target_config(&self, sess: &Session) -> TargetConfig {
         self.inner.target_config(sess)
     }
@@ -155,12 +172,15 @@ impl CodegenBackend for EarlyLink {
     fn print_version(&self) {
         self.inner.print_version()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn replaced_intrinsics(&self) -> Vec<Symbol> {
         self.inner.replaced_intrinsics()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn fallback_intrinsics(&self) -> Vec<Symbol> {
         self.inner.fallback_intrinsics()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn thin_lto_supported(&self) -> bool {
         self.inner.thin_lto_supported()
     }

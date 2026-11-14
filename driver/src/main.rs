@@ -37,10 +37,14 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+#[cfg(qrust_rustc_ge_100)]
+extern crate rustc_structures;
 
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::svh::Svh;
-use rustc_data_structures::stable_hash::{RawDefId, RawDefPathHash, RawSpan, StableHash, StableHashControls, StableHashCtxt, StableHasher};
+use rustc_data_structures::stable_hash::{RawDefId, RawSpan, StableHash, StableHashControls, StableHashCtxt, StableHasher};
+#[cfg(not(qrust_rustc_ge_100))]
+use rustc_data_structures::stable_hash::RawDefPathHash;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, LocalDefId, LOCAL_CRATE};
 use rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId};
@@ -51,7 +55,11 @@ use rustc_hir::{BodyId, ItemLocalId};
 use rustc_middle::ty::{TyCtxt, TypeVisitableExt};
 use rustc_middle::ich::StableHashState;
 use rustc_middle::query::LocalCrate;
-use rustc_session::config::{CrateType, OutFileName, OutputType};
+use rustc_session::config::{OutFileName, OutputType};
+#[cfg(not(qrust_rustc_ge_100))]
+use rustc_session::config::CrateType;
+#[cfg(qrust_rustc_ge_100)]
+use rustc_structures::CrateType;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -268,6 +276,12 @@ impl StableHashCtxt for Positions<'_, '_, '_> {
         }
     }
 
+    #[cfg(qrust_rustc_ge_100)]
+    fn def_path_hash(&self, def_id: RawDefId) -> Fingerprint {
+        self.hcx.def_path_hash(def_id)
+    }
+
+    #[cfg(not(qrust_rustc_ge_100))]
     fn def_path_hash(&self, def_id: RawDefId) -> RawDefPathHash {
         self.hcx.def_path_hash(def_id)
     }

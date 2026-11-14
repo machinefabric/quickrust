@@ -27,13 +27,15 @@ const BINARY: &str = "qrust-rustc-driver";
 /// Releases whose compiler interface the driver's sources adapt to: the driver is built with
 /// `--cfg qrust_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
 /// between releases).
-const INTERFACE_BREAKS: &[u32] = &[99];
+const INTERFACE_BREAKS: &[u32] = &[99, 100];
 /// How a failure to get the toolchain's `rustc-dev` component begins.
 const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 /// In a driver's directory: the toolchain it was built for (`{"sysroot": …}`).
 pub const COMPILER: &str = "compiler.json";
 /// Next to where the driver would be: why it could not be built.
 const BUILD_FAILED: &str = "build-failed";
+/// Next to where the driver would be: what the compiler said when the driver did not compile.
+const COMPILER_OUTPUT: &str = "compiler-output.txt";
 /// Next to where the driver would be, while a background build runs.
 const BUILDING: &str = ".building";
 
@@ -148,21 +150,25 @@ pub fn wanted(cfg: &crate::config::Config) -> bool {
 
 /// Builds the driver for a toolchain just installed (`qrust setup`, a channel's new release),
 /// before any build uses the toolchain: the driver is part of what an artifact-cache entry is
-/// keyed by, so what builds store without it, builds with it never find. Shown as a phase. A
-/// failure is a note, not an error: the driver only saves time, and builds try again.
-pub fn prepare(tc: &crate::toolchain::Toolchain) {
+/// keyed by, so what builds store without it, builds with it never find. Shown as a phase.
+/// A failure names the driver, the release and the toolchain, and why: `qrust setup` fails with
+/// it, a channel's update notes it (builds then compile with rustc).
+pub fn prepare(tc: &crate::toolchain::Toolchain) -> Result<(), String> {
     let rustc = tc.dir.join("bin").join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
     let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
     if Compiler::of(&util::path_str(&rustc)).ok().and_then(|c| find(&c)).is_some() {
-        return;
+        return Ok(());
     }
     let mut phase = crate::ui::Phase::start();
     phase.status(&format!("Preparing QuickRust's compiler driver for Rust {}", release), true);
     match build(&rustc) {
-        Ok(_) => phase.finish(true, &format!("Compiler driver for Rust {} ready", release)),
+        Ok(_) => {
+            phase.finish(true, &format!("Compiler driver for Rust {} ready", release));
+            Ok(())
+        }
         Err(e) => {
             phase.clear_line();
-            crate::ui::notice_driver_unavailable(&e);
+            Err(format!("QuickRust's compiler driver ({}) cannot be built for Rust {}: {}", BINARY, release, e))
         }
     }
 }
@@ -184,6 +190,7 @@ pub fn build(rustc: &Path) -> Result<PathBuf, String> {
     match &result {
         Ok(_) => {
             let _ = fs::remove_file(target.join(BUILD_FAILED));
+            let _ = fs::remove_file(target.join(COMPILER_OUTPUT));
         }
         Err(e) => {
             let _ = fs::write(target.join(BUILD_FAILED), format!("{}\n", e));
@@ -251,7 +258,10 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         .map_err(|e| format!("cannot run the toolchain's cargo: {}", e))?;
     if !out.status.success() {
         let _ = fs::remove_dir_all(&work);
-        return Err(format!("the driver does not build against {}: {}", name, String::from_utf8_lossy(&out.stderr).trim()));
+        let said = String::from_utf8_lossy(&out.stderr);
+        let kept = target.join(COMPILER_OUTPUT);
+        fs::create_dir_all(target).and_then(|_| fs::write(&kept, said.as_bytes())).map_err(|e| format!("the driver does not build against {}, and its compiler output cannot be kept in {}: {}", name, kept.display(), e))?;
+        return Err(format!("it does not compile against {}: {}, the compiler's whole output is in {}", name, first_error(&said), kept.display()));
     }
     let built = work.join("target").join("release").join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
     // It must be the compiler it was built against, by its own account.
@@ -270,6 +280,21 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
     fs::copy(&built, &staged).and_then(|_| fs::rename(&staged, &exe)).map_err(|e| e.to_string())?;
     let _ = fs::remove_dir_all(&work);
     Ok(exe)
+}
+
+/// The first error a compiler's output reports, with where it is (`error[E0599]: no method named
+/// `x` found ... (src/early_link.rs:159:20)`); the output's last line when it reports none.
+fn first_error(output: &str) -> String {
+    let lines: Vec<&str> = output.lines().collect();
+    let Some(at) = lines.iter().position(|l| l.starts_with("error[") || (l.starts_with("error: ") && !l.starts_with("error: could not compile"))) else {
+        return lines.iter().rev().map(|l| l.trim()).find(|l| !l.is_empty()).unwrap_or("the toolchain's cargo failed and printed nothing").to_string();
+    };
+    let head = lines[at].trim();
+    let place = lines[at + 1..].iter().take_while(|l| !l.trim().is_empty() && !l.starts_with("error")).find_map(|l| l.trim_start().strip_prefix("--> "));
+    match place {
+        Some(p) => format!("{} ({})", head, p.trim()),
+        None => head.to_string(),
+    }
 }
 
 /// The driver at `exe`, run as the compiler at `rustc` is run: with that toolchain's libraries
@@ -303,5 +328,16 @@ mod tests {
         assert_eq!(release_minor(&vv("1.98.1")), Some(98));
         assert_eq!(release_minor(&vv("1.100.0-nightly")), Some(100));
         assert_eq!(release_minor("rustc 1.99.0\n"), None);
+    }
+
+    // TEST0341: A driver that does not compile is reported by the compiler's first error and where it is
+    #[test]
+    fn test0341_a_driver_that_does_not_compile_is_reported_by_the_first_error_and_where_it_is() {
+        let said = "error[E0407]: method `thin_lto_supported` is not a member of trait `CodegenBackend`\n   --> src/early_link.rs:164:5\n    |\n164 | /     fn thin_lto_supported(&self) -> bool {\n\nerror[E0603]: enum `CrateType` is private\n  --> src/main.rs:54:29\n\nerror: could not compile `qrust-rustc-driver` (bin \"qrust-rustc-driver\") due to 2 previous errors\n";
+        assert_eq!(first_error(said), "error[E0407]: method `thin_lto_supported` is not a member of trait `CodegenBackend` (src/early_link.rs:164:5)");
+        assert_eq!(first_error("error: linker `cc` not found\n  |\n  = note: No such file or directory (os error 2)\n\nerror: could not compile `qrust-rustc-driver` (bin \"qrust-rustc-driver\") due to 1 previous error\n"), "error: linker `cc` not found");
+        assert_eq!(first_error("error: failed to load manifest for workspace member\n"), "error: failed to load manifest for workspace member");
+        assert_eq!(first_error("warning: unused\nerror: could not compile `qrust-rustc-driver`\n"), "error: could not compile `qrust-rustc-driver`");
+        assert_eq!(first_error(""), "the toolchain's cargo failed and printed nothing");
     }
 }

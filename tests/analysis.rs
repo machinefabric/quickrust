@@ -1498,6 +1498,52 @@ fn test0221_setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
 }
 
+// TEST0339: Setup fails, naming the compiler driver, the toolchain and the first compiler error, when the driver does not compile
+#[cfg(unix)]
+#[test]
+fn test0339_setup_fails_naming_the_driver_the_toolchain_and_the_first_error_when_the_driver_does_not_compile() {
+    // A toolchain whose compiler interface the driver is not written for: its Cargo answers the
+    // driver's build as rustc 1.100.0 answered the driver written for 1.99. The sandbox's home has
+    // toolchains of its own, so linking it changes no other test's.
+    let sb = Sandbox::new("driver-setup-fails");
+    fs::remove_file(sb.home.join("toolchains")).unwrap();
+    let tc = sb.dir.join("interface-moved");
+    sb.file("interface-moved/bin/rustc", &format!("#!/bin/sh\ncase \"$1\" in\n-vV) printf 'rustc 1.100.0 (fa1ce0ffe 2026-11-09)\\nbinary: rustc\\ncommit-hash: fa1ce0ffe8c1e0b6d3c2a5c4b6e7f8091a2b3c4d\\ncommit-date: 2026-11-09\\nhost: x86_64-unknown-linux-gnu\\nrelease: 1.100.0\\nLLVM version: 21.1.0\\n' ;;\n--print=sysroot) echo '{}' ;;\n*) echo \"rustc: unexpected $*\" >&2; exit 1 ;;\nesac\n", tc.display()));
+    sb.file("interface-moved/bin/cargo", "#!/bin/sh\ncat >&2 <<'OUT'\nerror[E0432]: unresolved import `rustc_data_structures::stable_hash::RawDefPathHash`\n  --> src/main.rs:43:52\n   |\n43 | use rustc_data_structures::stable_hash::{RawDefId, RawDefPathHash, RawSpan};\n   |                                                    ^^^^^^^^^^^^^^ no `RawDefPathHash` in `stable_hash`\n\nerror[E0599]: no method named `replaced_intrinsics` found for struct `std::boxed::Box<(dyn CodegenBackend + 'static)>` in the current scope\n   --> src/early_link.rs:159:20\n\nerror: could not compile `qrust-rustc-driver` (bin \"qrust-rustc-driver\") due to 2 previous errors\nOUT\nexit 101\n");
+    sb.file("interface-moved/lib/rustlib/components", "rustc\ncargo\nrust-std-x86_64-unknown-linux-gnu\nrustc-dev\n");
+    for program in ["rustc", "cargo"] {
+        make_executable(&tc.join("bin").join(program));
+    }
+    let p = sb.package("p", "p");
+    ok(sb.qrust(&p).args(["toolchain", "link", "interface-moved"]).arg(&tc));
+    let out = run(sb.qrust(&p).args(["setup", "--toolchain", "interface-moved", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("QRUST_EARLY_CUTOFF", "auto"));
+    let err = stderr(&out);
+    assert!(!out.status.success(), "setup succeeded without the driver: {}", err);
+    assert!(!err.contains("ready"), "{}", err);
+    let fail = err.lines().find(|l| l.starts_with("FAIL")).unwrap_or_else(|| panic!("no FAIL line: {}", err));
+    assert!(fail.contains("QuickRust's compiler driver (qrust-rustc-driver) cannot be built"), "{}", fail);
+    assert!(fail.contains("against interface-moved"), "the toolchain is not named: {}", fail);
+    assert!(fail.contains("error[E0432]: unresolved import `rustc_data_structures::stable_hash::RawDefPathHash` (src/main.rs:43:52)"), "the first error is not named: {}", fail);
+    assert!(!fail.contains("E0599"), "only the first error: {}", fail);
+    let kept = fail.rsplit("the compiler's whole output is in ").next().unwrap().trim();
+    assert!(fs::read_to_string(kept).unwrap().contains("error[E0599]: no method named `replaced_intrinsics`"), "{}", kept);
+}
+
+// TEST0340: Setup builds the compiler driver on Rust 1.100
+#[test]
+fn test0340_setup_builds_the_compiler_driver_on_rust_1_100() {
+    // rustc 1.100 changed the codegen backend's interface (its initialisation, the intrinsics and
+    // ThinLTO answers), moved `CrateType` and hashes definition paths to a `Fingerprint`.
+    let sb = Sandbox::new("driver-setup-1-100");
+    let p = sb.package("p", "p");
+    let out = run(sb.qrust(&p).args(["setup", "--toolchain", "1.100.0", "--no-modify-path"]).env("HOME", sb.dir.join("user")).env("QRUST_EARLY_CUTOFF", "auto"));
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).contains("Compiler driver for Rust 1.100.0 ready"), "{}", stderr(&out));
+    let rustc = stdout(&ok(sb.qrust(&p).args(["toolchain", "which", "rustc", "--toolchain", "1.100.0"]))).trim().to_string();
+    let status = stdout(&ok(sb.qrust(&p).args(["driver", "status", "--rustc"]).arg(&rustc)));
+    assert!(status.starts_with("built:"), "{}", status);
+}
+
 // TEST0222: The compiler driver is built in the background once and then used
 #[test]
 fn test0222_the_compiler_driver_is_built_in_the_background_once_and_then_used() {

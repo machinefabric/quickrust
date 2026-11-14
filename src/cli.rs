@@ -671,9 +671,13 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
             let mut progress = crate::ui::ToolchainProgress::new("update");
             // A channel's new release gets QuickRust's compiler driver before builds use it.
             let wanted = crate::driver::wanted(&Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?);
+            // Builds compile with rustc on a toolchain the driver cannot be built for; the update
+            // says why, and goes on.
             let mut prepare = |tc: &toolchain::Toolchain| {
                 if wanted {
-                    crate::driver::prepare(tc);
+                    if let Err(e) = crate::driver::prepare(tc) {
+                        crate::ui::note(&e);
+                    }
                 }
             };
             let moved = toolchain::update(&layout, &server, only.as_deref(), &mut prepare, &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
@@ -1616,7 +1620,7 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
             }
         };
         if crate::driver::wanted(&cfg) {
-            crate::driver::prepare(&tc);
+            crate::driver::prepare(&tc)?;
         }
     }
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {
