@@ -967,12 +967,20 @@ fn remove_locked_dir(cache: &Path, dir: &Path, companions: &[PathBuf], build: bo
     let doomed = cache.join("tmp").join(format!("{}.{}", util::lossy(dir.file_name().unwrap_or_default()), std::process::id()));
     util::create_private_dir(&cache.join("tmp")).map_err(|e| e.to_string())?;
     fs::rename(dir, &doomed).map_err(|e| format!("cannot remove {}: {}", dir.display(), e))?;
-    for c in companions {
+    // Its record and its lock go with it (what stays, the scan finds as a leftover). Windows
+    // deletes no file that is open, and the lock is open while it is held: there it goes once
+    // released, below.
+    for c in companions.iter().filter(|c| !cfg!(windows) || Some(*c) != lock_path) {
         let _ = fs::remove_file(c);
     }
     // Gone from where anything looks for it: what waits for the lock (a build, a hold) need not
     // wait for gigabytes to be deleted.
     drop(ours);
+    // A command that opened the lock since holds it as its own, and it stays.
+    #[cfg(windows)]
+    if let Some(l) = lock_path {
+        let _ = fs::remove_file(l);
+    }
     let _ = fs::remove_dir_all(&doomed);
     Ok(Removed::Done)
 }
@@ -1519,7 +1527,12 @@ mod tests {
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [older.as_path(), old.as_path()]);
-        assert!(fresh.exists() && done.left_count() == 1);
+        assert!(fresh.exists() && done.left_count() == 1, "{:?}", done.left);
+        // Their records and the locks the collection took on them went with them.
+        for d in [&older, &old, &gone] {
+            let name = d.file_name().unwrap().to_string_lossy();
+            assert!(!d.with_file_name(format!("{}.json", name)).exists() && !d.with_file_name(format!("{}.lock", name)).exists(), "{}", name);
+        }
         assert!(done.after < done.before);
         assert!(usage(&c).is_some() && recent(&c, 5).len() == 2);
     }
