@@ -605,13 +605,18 @@ fn input_index(args: &[String]) -> Option<usize> {
 fn crashed(exit: &ExitInfo) -> bool {
     // 101: an internal compiler error; 127: the program could not be loaded (a driver whose
     // toolchain's libraries are gone).
-    if exit.code == Some(101) || exit.code == Some(127) {
-        return true;
-    }
-    #[cfg(unix)]
-    if let Some(sig) = exit.signal {
-        return matches!(sig, libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGABRT | libc::SIGFPE);
-    }
+    exit.code == Some(101) || exit.code == Some(127) || exit.signal.is_some_and(fatal_signal)
+}
+
+/// Whether a program ended by signal `sig` crashed, rather than was asked to stop.
+#[cfg(unix)]
+fn fatal_signal(sig: i32) -> bool {
+    matches!(sig, libc::SIGSEGV | libc::SIGBUS | libc::SIGILL | libc::SIGABRT | libc::SIGFPE)
+}
+
+/// No program ends by a signal on Windows.
+#[cfg(not(unix))]
+fn fatal_signal(_sig: i32) -> bool {
     false
 }
 

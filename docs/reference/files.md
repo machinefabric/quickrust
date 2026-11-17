@@ -84,7 +84,7 @@ A running process holds a build directory, whatever its age, when it:
 - runs a program from it (a test harness's binary, a server built there);
 - works in it, or in its workspace's checkout: the top of the git working tree the workspace is in, and above that every superproject it is a submodule of (a shell, an editor or an agent's session there will build again). Without a repository, or when that top would be the home directory or above it, the checkout is the workspace itself.
 
-QuickRust reads every process's program and working directory: `/proc` on Linux, libproc on macOS, the process list and each process's parameters on Windows. Processes it may not read (another user's, unless QuickRust runs as root) hold nothing. A collection that cannot list the processes at all removes nothing and fails.
+QuickRust reads every process's program and working directory: `/proc` on Linux, libproc on macOS, the process list and each process's parameters on Windows. It compares them with a build directory and its checkout by their real paths, so a process that names a directory through a symbolic link, a junction, a short (8.3) name or a `subst` drive holds it all the same. Processes it may not read (another user's, unless QuickRust runs as root) hold nothing. A collection that cannot list the processes at all removes nothing and fails.
 
 A build directory a collection removes leaves a notice in `collected/`. The workspace's next command (a build, any Cargo command, `qrust path`) says what went, when, why and how much, once:
 

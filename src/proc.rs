@@ -324,7 +324,9 @@ fn list_running() -> io::Result<Vec<Running>> {
 }
 
 /// Windows: a snapshot of the processes, with each one's program (`QueryFullProcessImageNameW`)
-/// and current directory, read from its process parameters.
+/// and current directory, read from its process parameters. Each is named by its real path, as
+/// Linux and macOS name them: a process names them as it was given them, which can be through a
+/// short (8.3) name, a junction or a `subst` drive.
 #[cfg(windows)]
 fn list_running() -> io::Result<Vec<Running>> {
     win::processes()
@@ -481,7 +483,7 @@ mod win {
             let name = &entry.exe_file[..entry.exe_file.iter().position(|&c| c == 0).unwrap_or(entry.exe_file.len())];
             // Process 0 is the system's idle process.
             if entry.pid != 0 {
-                out.push(super::Running { pid: entry.pid, name: String::from_utf16_lossy(name), exe: image(entry.pid), cwd: current_directory(entry.pid) });
+                out.push(super::Running { pid: entry.pid, name: String::from_utf16_lossy(name), exe: image(entry.pid).map(real), cwd: current_directory(entry.pid).map(real) });
             }
             more = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
         }
@@ -490,6 +492,12 @@ mod win {
             return Err(end);
         }
         Ok(out)
+    }
+
+    /// The real path of what a process names `path`; the path as it was named when it is gone (a
+    /// directory removed while the process works in it).
+    fn real(path: std::path::PathBuf) -> std::path::PathBuf {
+        std::fs::canonicalize(&path).unwrap_or(path)
     }
 
     /// The program process `pid` runs.

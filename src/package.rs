@@ -70,7 +70,8 @@ pub fn of(qrust: &Path) -> Result<Option<Package>, String> {
     Ok(Some(package))
 }
 
-#[cfg(test)]
+// A package manager installs QuickRust on Unix only: on Windows every marker is refused.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
@@ -84,7 +85,6 @@ mod tests {
     }
 
     // TEST0306: A marker is read only when it describes the binary beside it
-    #[cfg(unix)]
     #[test]
     fn test0306_a_marker_is_read_only_when_it_describes_the_binary_beside_it() {
         let dir = std::env::temp_dir().join(format!("qrust-package-{}", util::new_id()));

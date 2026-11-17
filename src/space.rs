@@ -2118,16 +2118,27 @@ mod tests {
         assert_eq!((line["before"].as_u64(), line["after"].as_u64()), (Some(done.before), Some(done.after)));
     }
 
+    /// Not a test: the program TEST0339 starts, which waits a minute when `QRUSTTEST_SLEEPER` is
+    /// set. This test binary is the one program a test can copy into a build directory and run on
+    /// every platform.
+    #[test]
+    #[ignore = "a program TEST0339 runs"]
+    fn sleeper() {
+        if std::env::var_os("QRUSTTEST_SLEEPER").is_some() {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
     /// A process this test started, ended when it is dropped (by its own id, whatever the test
     /// found).
-    #[cfg(unix)]
     struct Started(std::process::Child);
 
-    #[cfg(unix)]
     impl Started {
-        /// `program` sleeping for a minute in `cwd`.
+        /// `program`, this test binary or a copy of it, sleeping for a minute in `cwd` (`sleeper`).
         fn sleeping(program: &Path, cwd: &Path) -> Started {
-            Started(std::process::Command::new(program).arg("60").current_dir(cwd).stdin(std::process::Stdio::null()).spawn().unwrap())
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(["--exact", "space::tests::sleeper", "--ignored", "--quiet"]).env("QRUSTTEST_SLEEPER", "1").current_dir(cwd);
+            Started(cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap())
         }
 
         fn pid(&self) -> String {
@@ -2135,7 +2146,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     impl Drop for Started {
         fn drop(&mut self) {
             let _ = self.0.kill();
@@ -2144,7 +2154,6 @@ mod tests {
     }
 
     // TEST0339: A build directory a running process holds is never collected and an unmet collection says why
-    #[cfg(unix)]
     #[test]
     fn test0339_a_build_directory_a_running_process_holds_is_never_collected_and_an_unmet_collection_says_why() {
         let c = cache();
@@ -2163,12 +2172,12 @@ mod tests {
         let idle_dir = build_dir(&c, "idle-1", &idle, 4 * 3600, 400_000);
         // A test harness runs a program it built there; a shell works in a workspace's sources;
         // a session works at the top of the checkout the third workspace is a submodule of.
-        let program = ran_dir.join("debug/sleeper");
-        fs::copy("/bin/sleep", &program).unwrap();
+        let program = ran_dir.join("debug").join(format!("sleeper{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(std::env::current_exe().unwrap(), &program).unwrap();
         fs::create_dir_all(session.join("src")).unwrap();
         let running = Started::sleeping(&program, tmp);
-        let shell = Started::sleeping(Path::new("/bin/sleep"), &session.join("src"));
-        let agent = Started::sleeping(Path::new("/bin/sleep"), &tmp.join("checkout"));
+        let shell = Started::sleeping(&std::env::current_exe().unwrap(), &session.join("src"));
+        let agent = Started::sleeping(&std::env::current_exe().unwrap(), &tmp.join("checkout"));
         let tight = Policy { max_bytes: 1, min_free: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         assert!(ran_dir.exists() && session_dir.exists() && nested_dir.exists(), "a directory in use was collected: {:?}", done);
