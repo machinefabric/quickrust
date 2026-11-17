@@ -306,6 +306,38 @@ pub fn run(cmd: &mut Command) -> Output {
     cmd.output().unwrap_or_else(|e| panic!("could not run {:?}: {}", cmd, e))
 }
 
+/// `run`, failing the test when the command has not ended within `limit` (it is killed): for a
+/// command that, broken, would run forever.
+pub fn run_within(cmd: &mut Command, limit: std::time::Duration) -> Output {
+    use std::io::Read;
+    let mut child = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap_or_else(|e| panic!("could not run {:?}: {}", cmd, e));
+    let mut out = child.stdout.take().unwrap();
+    let mut err = child.stderr.take().unwrap();
+    let out = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = out.read_to_end(&mut b);
+        b
+    });
+    let err = std::thread::spawn(move || {
+        let mut b = Vec::new();
+        let _ = err.read_to_end(&mut b);
+        b
+    });
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() {
+            break s;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("{:?} still ran after {:?}", cmd, limit);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    Output { status, stdout: out.join().unwrap(), stderr: err.join().unwrap() }
+}
+
 pub fn ok(cmd: &mut Command) -> Output {
     let out = run(cmd);
     assert!(out.status.success(), "{:?} failed with {:?}\nstdout: {}\nstderr: {}", cmd, out.status, String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));

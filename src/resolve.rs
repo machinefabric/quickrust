@@ -427,15 +427,30 @@ pub fn self_identity() -> (PathBuf, Option<(u64, u64)>) {
     (exe, id)
 }
 
-/// Detects that the Cargo QuickRust just executed is QuickRust again (COMP-022): a linked toolchain whose
-/// `cargo` leads back to QuickRust.
-/// The guard carries the delegating process id; a legitimate nested invocation
-/// has a build script or Cargo itself as its parent instead.
-pub fn recursion_detected() -> bool {
-    let Ok(guard) = std::env::var(crate::ENV_EXEC_GUARD) else { return false };
-    let Some((pid, _session)) = guard.split_once(':') else { return false };
-    let ppid = crate::proc::parent_pid();
-    ppid != 0 && pid.parse::<u32>().ok() == Some(ppid)
+/// Marks `cmd`, which runs a toolchain's Cargo (or another of its programs), with QuickRust's
+/// session guard (`ENV_EXEC_GUARD`, COMP-022): this process's id and `why` it runs it, for the
+/// diagnostic, and the identity of the file it runs, which `recursion` compares.
+pub fn guard(cmd: &mut std::process::Command, why: &str) {
+    let ran = util::file_identity(Path::new(cmd.get_program())).map(|(a, b)| format!("{}.{}", a, b)).unwrap_or_default();
+    cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}:{}", std::process::id(), why, ran));
+}
+
+/// The refusal when the program QuickRust ran as Cargo is QuickRust again (COMP-022): a linked
+/// toolchain whose `cargo` is QuickRust, as a link or as a copy. It is exactly when this process
+/// runs the file the guard names. A QuickRust that Cargo, one of Cargo's subcommands or a build
+/// script starts runs QuickRust's own binary, never the toolchain's `cargo`, whatever its process
+/// id or its parent's: Cargo and QuickRust replace themselves with what they run (`cargo fmt` is
+/// QuickRust, then Cargo, then QuickRust's `cargo-fmt` and the toolchain's in one process), so
+/// process ids cannot tell recursion from a nested `cargo`.
+pub fn recursion() -> Option<String> {
+    let guard = std::env::var(crate::ENV_EXEC_GUARD).ok()?;
+    let (exe, id) = self_identity();
+    names(&guard, id?).then(|| format!("refusing to run Cargo: the toolchain's `cargo` ({}) is QuickRust itself (session guard {}); a linked toolchain must hold a real Cargo", exe.display(), guard))
+}
+
+/// Whether `guard` (see `guard`) names the file whose identity is `id`.
+fn names(guard: &str, id: (u64, u64)) -> bool {
+    guard.rsplit_once(':').is_some_and(|(_, ran)| !ran.is_empty() && ran == format!("{}.{}", id.0, id.1))
 }
 
 /// The rustc wrapper the user already configured, if any, with where it came from.
@@ -538,5 +553,37 @@ mod tests {
         assert_eq!(build_targets(&classify(&os(&["run"])), &files), vec!["thumbv7em-none-eabihf"]);
         assert!(build_targets(&classify(&os(&["run"])), &CargoConfigSubset::default()).is_empty());
         std::fs::remove_dir_all(&ws).unwrap();
+    }
+
+    // TEST0344: The session guard names the file run as Cargo
+    #[test]
+    fn test0344_the_session_guard_names_the_file_run_as_cargo() {
+        let guarded = |program: &Path| -> String {
+            let mut cmd = std::process::Command::new(program);
+            guard(&mut cmd, "test");
+            let value = cmd.get_envs().find(|(k, _)| *k == crate::ENV_EXEC_GUARD).and_then(|(_, v)| v).expect("the guard is set");
+            value.to_str().unwrap().to_string()
+        };
+        let (me, id) = self_identity();
+        let id = id.expect("this test's executable has an identity");
+        // QuickRust run as Cargo, by its own path or another link of the same file: what it starts
+        // runs the very file the guard names.
+        assert!(names(&guarded(&me), id));
+        let link = me.with_file_name(format!("guard-link-{}{}", std::process::id(), std::env::consts::EXE_SUFFIX));
+        let _ = std::fs::remove_file(&link);
+        std::fs::hard_link(&me, &link).unwrap();
+        let through_link = guarded(&link);
+        std::fs::remove_file(&link).unwrap();
+        assert!(names(&through_link, id), "{}", through_link);
+        // A real Cargo is another file: a QuickRust it starts (`cargo fmt` asking `cargo metadata`)
+        // is not taken for recursion.
+        let other = me.with_file_name(format!("guard-other-{}{}", std::process::id(), std::env::consts::EXE_SUFFIX));
+        std::fs::write(&other, b"not QuickRust").unwrap();
+        let elsewhere = guarded(&other);
+        std::fs::remove_file(&other).unwrap();
+        assert!(!names(&elsewhere, id), "{}", elsewhere);
+        // A program that is not there names nothing, and neither does a guard of another form.
+        assert!(!names(&guarded(&me.with_file_name("no-such-program")), id));
+        assert!(!names("4242:bypass", id));
     }
 }

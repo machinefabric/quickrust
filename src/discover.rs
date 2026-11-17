@@ -19,7 +19,8 @@ pub fn cargo_command(cfg: &Config, cwd: &Path, toolchain: Option<&str>) -> Resul
     let inv = resolve::classify(&args);
     let engine = crate::engine::for_command(&inv, cwd, cfg)?;
     let mut cmd = engine.command(&args, &inv);
-    cmd.current_dir(cwd).env(crate::ENV_EXEC_GUARD, format!("{}:discover", std::process::id())).stdin(Stdio::null());
+    cmd.current_dir(cwd).stdin(Stdio::null());
+    resolve::guard(&mut cmd, "discover");
     Ok(cmd)
 }
 

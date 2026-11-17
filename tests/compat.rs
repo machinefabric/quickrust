@@ -993,6 +993,54 @@ fn test0268_recursion_is_refused_with_a_diagnostic() {
     assert_eq!(b.status.code(), Some(2), "{}", stderr(&b));
     assert!(stderr(&b).contains("refusing to run Cargo"), "{}", stderr(&b));
     assert!(!sb.target_dir(&p).exists());
+    // A query, which QuickRust replaces itself with Cargo to run: the copy keeps QuickRust's
+    // process id, and is refused all the same instead of replacing itself with itself forever.
+    let c = run_within(sb.cargo(&p).args(["+loop", "metadata", "--format-version", "1"]), std::time::Duration::from_secs(60));
+    assert_eq!(c.status.code(), Some(2), "{}", stderr(&c));
+    assert!(stderr(&c).contains("refusing to run Cargo"), "{}", stderr(&c));
+}
+
+// TEST0343: Cargo fmt runs through QuickRust and calls Cargo back
+#[test]
+fn test0343_cargo_fmt_runs_through_quickrust_and_calls_cargo_back() {
+    // `cargo fmt` is QuickRust's `cargo-fmt` proxy running the toolchain's, which asks
+    // `cargo metadata` through `CARGO`, QuickRust again: that nested Cargo is not taken for
+    // recursion, whichever way `fmt` was asked for.
+    let sb = Sandbox::new("fmt");
+    let p = sb.package("p", "p");
+    let messy = "pub fn add(x:u32,y:u32)->u32{x+y}\n";
+    let tidy = "pub fn add(x: u32, y: u32) -> u32 {\n    x + y\n}\n";
+    sb.file("p/src/lib.rs", messy);
+    let ways: [(&str, fn(&Sandbox, &Path) -> Command); 3] = [
+        ("cargo fmt", |sb, p| {
+            let mut c = sb.cargo(p);
+            c.arg("fmt");
+            c
+        }),
+        ("qrust fmt", |sb, p| {
+            let mut c = sb.qrust(p);
+            c.arg("fmt");
+            c
+        }),
+        ("qrust upstream fmt", |sb, p| {
+            let mut c = sb.qrust(p);
+            c.args(["upstream", "fmt"]);
+            c
+        }),
+    ];
+    for (name, way) in ways {
+        let check = run_within(way(&sb, &p).arg("--check"), std::time::Duration::from_secs(120));
+        assert_eq!(check.status.code(), Some(1), "{}: {}", name, stderr(&check));
+        assert!(stdout(&check).contains(&format!("Diff in {}", p.join("src/lib.rs").display())), "{}: rustfmt reported no difference\nstdout: {}\nstderr: {}", name, stdout(&check), stderr(&check));
+        assert_eq!(fs::read_to_string(p.join("src/lib.rs")).unwrap(), messy, "{}: --check changed nothing", name);
+    }
+    for (name, way) in ways {
+        sb.file("p/src/lib.rs", messy);
+        ok(&mut way(&sb, &p));
+        assert_eq!(fs::read_to_string(p.join("src/lib.rs")).unwrap(), tidy, "{} formatted the package", name);
+        let clean = ok(way(&sb, &p).arg("--check"));
+        assert_eq!(stdout(&clean), "", "{}", name);
+    }
 }
 
 // TEST0269: An unreachable dist server is a clear error

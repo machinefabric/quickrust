@@ -8,7 +8,7 @@ behaviour is asserted.
 | Item | Status | Where |
 |---|---|---|
 | `cargo` compatibility shim; `qrust` management executable | done | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
-| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is QuickRust is refused | `src/engine.rs` · `test0268_recursion_is_refused…`, `test0269_an_unreachable_dist_server…` |
+| Recursion-safe engine (COMP-021, COMP-022) | done: the toolchain's own Cargo; a linked toolchain whose `cargo` is QuickRust is refused | `src/engine.rs` · `test0268_recursion_is_refused…`, `test0269_an_unreachable_dist_server…`, `test0343_cargo_fmt_runs_through_quickrust…` |
 | Toolchains: `+toolchain`, `RUSTUP_TOOLCHAIN`, toolchain files, default (COMP-012, COMP-020) | done: QuickRust installs and selects toolchains itself (deviation 6) | `src/toolchain/` · `qa003_*`, `test0238_toolchain_programs_run_through_quickrusts_proxies`, `test0237_builds_and_their_build_scripts_get_quickrusts_toolchain…`, `test0271_environment_reaches_build_scripts_unchanged` |
 | argv / stdin / stdout / stderr / signal forwarding, exact exit status | done | `src/proc.rs` · `qa022`, `qa023`, `test0253_stdin_and_exit_codes…` |
 | External subcommands, aliases, unknown flags | done | `qa019`, `qa020`, `qa030` |

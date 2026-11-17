@@ -410,14 +410,14 @@ fn with_overlays(args: &[OsString], inv: &Invocation, overlays: &[String]) -> Ve
 /// QuickRust's configuration is not read: the escape hatch works when it is broken.
 pub fn exec_upstream(args: Vec<OsString>) -> ! {
     let inv = resolve::classify(&args);
-    if resolve::recursion_detected() {
-        fail("refusing to run Cargo: the toolchain's `cargo` is QuickRust itself");
+    if let Some(e) = resolve::recursion() {
+        fail(&e);
     }
     let cwd = std::env::current_dir().unwrap_or_default();
     let cfg = Config::defaults();
     let engine = crate::engine::for_command(&inv, &cwd, &cfg).unwrap_or_else(|e| fail(&e));
     let mut cmd = engine.upstream_command(&args, &inv);
-    cmd.env(crate::ENV_EXEC_GUARD, format!("{}:upstream", std::process::id()));
+    resolve::guard(&mut cmd, "upstream");
     crate::relocate::keep_across_exec();
     let err = proc::exec(&mut cmd);
     fail(&format!("could not execute Cargo {}: {}", engine.cargo().display(), err))
@@ -447,8 +447,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
         None => std::env::current_dir().map_err(|e| format!("cannot determine the current directory: {}", e))?,
     };
     let mut inv = resolve::classify(&spec.args);
-    if resolve::recursion_detected() {
-        return Err(format!("refusing to run Cargo: the toolchain's `cargo` is QuickRust itself (session guard {}); a linked toolchain must hold a real Cargo", std::env::var(crate::ENV_EXEC_GUARD).unwrap_or_default()));
+    if let Some(e) = resolve::recursion() {
+        return Err(e);
     }
     let cfg = Config::load(&cwd).map_err(|e| format!("invalid QuickRust configuration: {}", e))?;
     // QuickRust installs programs itself.
@@ -488,7 +488,8 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     let shown_query = inv.family == Family::Query && spec.scenario.is_none() && !spec.stdout_to_stderr && crate::ui::rendering(&inv, &engine.targets, &spec.args, &cfg) == Rendering::Lines;
     if spec.scenario.is_none() && (inv.command.is_none() || (inv.family == Family::Query && !shown_query) || nested_upstream) {
         let mut cmd = engine.command(&spec.args, &inv);
-        cmd.current_dir(&cwd).env(crate::ENV_EXEC_GUARD, format!("{}:bypass", std::process::id()));
+        cmd.current_dir(&cwd);
+        resolve::guard(&mut cmd, "bypass");
         crate::relocate::keep_across_exec();
         let err = proc::exec(&mut cmd);
         return Err(format!("could not execute Cargo {}: {}", engine.program.display(), err));
@@ -566,7 +567,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             cmd.env_remove(k);
         }
         cmd.env(crate::ENV_SESSION, &id);
-        cmd.env(crate::ENV_EXEC_GUARD, format!("{}:{}", std::process::id(), id));
+        resolve::guard(&mut cmd, &id);
         cmd
     };
     let mut cmd = command(&args);
