@@ -53,7 +53,9 @@ fn test0232_qa001_plain_build_matches_upstream() {
     assert_eq!(fs::read(wrapped.join("Cargo.lock")).unwrap(), fs::read(native.join("Cargo.lock")).unwrap(), "lockfiles must be identical");
     // Hashes differ between the two directories (the path is part of a path package's identity),
     // so compare the shape; identical hashes are asserted in-place by `no_rebuild_when_alternating`.
-    let shape = |v: Vec<String>| v.iter().map(|f| without_hashes(f)).collect::<Vec<_>>();
+    // Sorted only once blanked: a package's units lie in folders named by those hashes, so the
+    // order of the full paths differs between the two directories.
+    let shape = |v: Vec<String>| { let mut shapes = v.iter().map(|f| without_hashes(f)).collect::<Vec<_>>(); shapes.sort(); shapes };
     assert_eq!(shape(artifacts(&sb, &wrapped)), shape(artifacts(&sb, &native)));
     assert!(!tree(&wrapped).iter().any(|f| f.contains(".qrust")), "the shim must not create files in the repository");
     assert_eq!(stdout(&ok(sb.cargo(&wrapped).args(["run", "-q"]))), "3\n");
