@@ -259,14 +259,13 @@ pub fn parse_unit(ev: &Value, sccache_active: bool, tok: &Tokenizer) -> Option<U
     u.primary = env["primary"] == json!(true);
     u.build_out_dir = env["out_dir"].as_str().map(str::to_string);
     u.source = source_kind(&u.manifest_dir).to_string();
-    u.stem = format!("{}{}", u.crate_name, extra);
-    u.id = format!("unit:{}", u.stem);
     let cwd = util::vstr(ev, "cwd");
     u.out_dir = path_str(&Path::new(&cwd).join(&u.out_dir));
+    u.stem = if extra.is_empty() { inventory::unit_name(&u.crate_name, inventory::unit_dir_hash(Path::new(&u.out_dir))) } else { format!("{}{}", u.crate_name, extra) };
+    u.id = format!("unit:{}", u.stem);
     let has = |t: &str| u.crate_types.iter().any(|c| c == t);
     let emits_link = emit.split(',').any(|e| e == "link");
-    let in_build_dir = Path::new(&u.out_dir).parent().and_then(|p| p.file_name()).map(|n| n == "build").unwrap_or(false);
-    u.kind = if u.crate_name.starts_with("build_script_") && in_build_dir {
+    u.kind = if u.crate_name.starts_with("build_script_") && inventory::is_build_script_dir(Path::new(&u.out_dir)) {
         "build-script"
     } else if test {
         "test"
@@ -439,9 +438,10 @@ pub fn load_events(dir: &Path, sccache_active: bool, tok: &Tokenizer) -> Events 
     out
 }
 
-/// Facts about one build-script execution, read from what Cargo left on disk.
-/// The script itself is never executed for analysis (SEC-022).
-pub fn inspect_build_script_run(run_dir: &Path, session_start: u64, session_end: u64) -> Option<Value> {
+/// Facts about one build-script execution, read from what Cargo left on disk (`run`, found from
+/// the run's `OUT_DIR`). The script itself is never executed for analysis (SEC-022).
+pub fn inspect_build_script_run(run: &inventory::ScriptRun, out_dir: &Path, session_start: u64, session_end: u64) -> Option<Value> {
+    let run_dir = &run.records;
     let invoked = std::fs::metadata(run_dir.join("invoked.timestamp")).ok()?;
     let started = util::mtime_ns(&invoked);
     // Cargo back-dates `output` to the invocation time, so the end of the run is taken
@@ -450,7 +450,7 @@ pub fn inspect_build_script_run(run_dir: &Path, session_start: u64, session_end:
     // Only filesystems with whole-second timestamps need slack against our nanosecond clock.
     let margin = if started % 1_000_000_000 == 0 { 1_000_000_000 } else { 0 };
     let ran = started + margin >= session_start && started <= session_end + margin;
-    let text = std::fs::read_to_string(run_dir.join("output")).unwrap_or_default();
+    let text = std::fs::read_to_string(&run.stdout).unwrap_or_default();
     let (mut rerun_files, mut rerun_env, mut link, mut other) = (Vec::new(), Vec::new(), 0u64, 0u64);
     for line in text.lines() {
         let Some(directive) = line.strip_prefix("cargo::").or_else(|| line.strip_prefix("cargo:")) else { continue };
@@ -462,7 +462,7 @@ pub fn inspect_build_script_run(run_dir: &Path, session_start: u64, session_end:
             _ => other += 1,
         }
     }
-    let out_bytes = inventory::scan_flat(&run_dir.join("out"), "build-script-output").and_then(|v| v["allocated_bytes"].as_u64());
+    let out_bytes = inventory::scan_flat(out_dir, "build-script-output").and_then(|v| v["allocated_bytes"].as_u64());
     let duration = finished.filter(|f| *f > started).map(|f| f - started);
     Some(json!({
         "run_dir": path_str(run_dir),
@@ -531,16 +531,15 @@ pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, k
 
     // Build-script executions: Cargo runs them itself, so they are reconstructed from OUT_DIR.
     let mut scripts: Vec<Value> = Vec::new();
-    let mut run_dirs: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut runs: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (i, u) in units.iter().enumerate().take(observed) {
         if let Some(out) = &u.build_out_dir {
-            if let Some(dir) = Path::new(out).parent() {
-                run_dirs.entry(path_str(dir)).or_default().push(i);
-            }
+            runs.entry(out.clone()).or_default().push(i);
         }
     }
-    for (dir, consumers) in run_dirs {
-        let Some(mut info) = inspect_build_script_run(Path::new(&dir), session_start, session_end) else { continue };
+    for (out_dir, consumers) in runs {
+        let Some(run) = inventory::script_run(Path::new(&out_dir)) else { continue };
+        let Some(mut info) = inspect_build_script_run(&run, Path::new(&out_dir), session_start, session_end) else { continue };
         let owner = &units[consumers[0]];
         let (package, version, manifest_dir, source) = (owner.package.clone(), owner.version.clone(), owner.manifest_dir.clone(), owner.source.clone());
         let compile = (0..observed).find(|&i| units[i].kind == "build-script" && units[i].package == package && units[i].manifest_dir == manifest_dir);
@@ -549,10 +548,9 @@ pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, k
         info["source"] = json!(source);
         info["compile_ns"] = json!(compile.and_then(|c| units[c].duration_ns));
         if info["ran_in_session"] == json!(true) {
-            let dir_name = Path::new(&dir).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let run = Unit {
-                id: format!("unit:run:{}", dir_name),
-                stem: format!("run:{}", dir_name),
+                id: format!("unit:run:{}", run.name),
+                stem: format!("run:{}", run.name),
                 package,
                 version,
                 source,
@@ -564,7 +562,7 @@ pub fn build_graph(mut units: Vec<Unit>, session_start: u64, session_end: u64, k
                 freshness: "ran".into(),
                 start_wall_ns: info["started_wall_ns"].as_u64(),
                 duration_ns: info["duration_ns"].as_u64(),
-                out_dir: dir.clone(),
+                out_dir: path_str(&run.records),
                 cacheability: "n/a".into(),
                 ..Default::default()
             };
@@ -1122,6 +1120,32 @@ mod tests {
         assert_eq!(g.units[g.deps[1][0].idx].stem, "a-1");
         assert_eq!(g.deps[1][0].confidence, "observed");
         assert!(g.deps[0].is_empty());
+    }
+
+    // TEST0353: Units of Cargo 1.100's layout are named like every other
+    #[test]
+    fn test0353_units_of_cargo_1_100s_layout_are_named_like_every_other() {
+        // Cargo 1.100 compiles each unit into `build/<package>/<unit hash>/out/`, a binary and a
+        // build script with no `-C extra-filename`: the directory's hash names them.
+        let per_unit = |name: &str, hash: &str, types: &str, extra_filename: bool| {
+            let mut args: Vec<String> = vec!["--crate-name".into(), name.into(), "--edition=2021".into(), "src/main.rs".into(), "--crate-type".into(), types.into(), "--emit=dep-info,link".into(), "-C".into(), "metadata=99".into()];
+            if extra_filename {
+                args.extend(["-C".to_string(), format!("extra-filename=-{}", hash)]);
+            }
+            args.extend(["--out-dir".to_string(), format!("/t/debug/build/{}/{}/out", name, hash)]);
+            let ev = json!({ "kind": "compile", "args": args, "cwd": "/w/p", "exit_code": 0, "start_wall_ns": 1000, "dur_ns": 5, "rustc": "/tc/bin/rustc", "rustc_id": { "bytes": 1, "mtime_ns": 2 },
+                             "env": { "pkg_name": name, "pkg_version": "1.0.0", "manifest_dir": "/w/p", "primary": true, "toolchain": "stable" } });
+            parse_unit(&ev, false, &tok()).unwrap()
+        };
+        let bin = per_unit("app", "47893a194327e583", "bin", false);
+        assert_eq!((bin.id.as_str(), bin.kind.as_str()), ("unit:app-47893a194327e583", "bin"));
+        let lib = per_unit("gen", "9d803df7671ef5de", "lib", true);
+        assert_eq!((lib.id.as_str(), lib.kind.as_str()), ("unit:gen-9d803df7671ef5de", "lib"));
+        let script = per_unit("build_script_build", "3befea7e73c04e02", "bin", false);
+        assert_eq!((script.id.as_str(), script.kind.as_str()), ("unit:build_script_build-3befea7e73c04e02", "build-script"));
+        // Older Cargo: every unit in `deps/` with its extra filename, build scripts in `build/<package>-<hash>/`.
+        let classic = parse_unit(&event("app", "47893a194327e583", &[], &["--crate-type", "bin"], 5, None), false, &tok()).unwrap();
+        assert_eq!((classic.id.as_str(), classic.kind.as_str()), ("unit:app-47893a194327e583", "bin"));
     }
 
     // TEST0004: Unbuilt dependencies are fresh not invented timings

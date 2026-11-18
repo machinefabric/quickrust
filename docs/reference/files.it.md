@@ -93,10 +93,12 @@ Non vengono mai rimossi: tutto ciò che è stato usato negli ultimi 15 minuti; u
 
 ## In una directory di build {#in-a-build-directory}
 
+`<outputs>` è dove Cargo scrive gli output di un'unità: `<target>/<profile>/deps/` con Cargo prima della 1.100, la directory propria dell'unità `<target>/<profile>/build/<package>/<hash>/out/` con Cargo 1.100 e successivi.
+
 | Percorso | Contenuto |
 |---|---|
-| `<target>/<profile>/deps/<unit>.qrust-svh` | l'hash dell'interfaccia di una libreria (early cut-off) |
-| `<target>/<profile>/deps/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | gli oggetti conservati di un binario e ciò da cui sono stati compilati, per ricollegarlo |
+| `<outputs>/<unit>.qrust-svh` | l'hash dell'interfaccia di una libreria (early cut-off) |
+| `<outputs>/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | gli oggetti conservati di un binario e ciò da cui sono stati compilati, per ricollegarlo |
 
 Se ne vanno insieme al resto della directory (`cargo clean`).
 

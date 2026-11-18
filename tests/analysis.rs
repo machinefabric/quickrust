@@ -272,9 +272,9 @@ fn test0194_inventory_and_its_stale_plan_are_read_only_and_conservative() {
     assert_eq!(root["gc_plan"]["candidate_bytes"], 0, "a fresh build has nothing stale");
 
     // Plant stale output: an old unreferenced unit and an old unknown file.
-    let deps = sb.target_dir(&ws).join("debug/deps");
+    let gone = sb.layout(&ws).unit_output(&sb.target_dir(&ws).join("debug"), "gone", "0123456789abcdef", "libgone-0123456789abcdef.rlib");
     let old = std::time::SystemTime::now() - std::time::Duration::from_secs(120 * 86_400);
-    for (path, size) in [(deps.join("libgone-0123456789abcdef.rlib"), 300_000usize), (sb.target_dir(&ws).join("debug/odd/dir/unknown.bin"), 50_000)] {
+    for (path, size) in [(gone, 300_000usize), (sb.target_dir(&ws).join("debug/odd/dir/unknown.bin"), 50_000)] {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, vec![0u8; size]).unwrap();
         fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
@@ -624,7 +624,8 @@ fn test0199_the_stale_plan_is_blocked_while_a_build_is_running() {
     let sb = Sandbox::new("gcrace");
     let p = sb.package("p", "p");
     ok(sb.cargo(&p).arg("build"));
-    let stale = sb.target_dir(&p).join("debug/deps/libgone-00000000.rlib");
+    let stale = sb.layout(&p).unit_output(&sb.target_dir(&p).join("debug"), "gone", "0000000000000000", "libgone-0000000000000000.rlib");
+    fs::create_dir_all(stale.parent().unwrap()).unwrap();
     fs::write(&stale, vec![0u8; 100_000]).unwrap();
     fs::File::options().write(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86_400)).unwrap();
     let marker = sb.dir.join("started");
@@ -1081,7 +1082,9 @@ fn test0211_fast_mode_keeps_stable_rejecting_unstable_features() {
     // would also accept `#![feature]`: code that upstream Cargo rejects must stay rejected.
     let sb = Sandbox::new("features");
     let p = sb.package("p", "p");
-    let gated = "#![feature(never_type)]\npub fn add(x: u32, y: u32) -> u32 { x + y }\npub fn never() -> Option<!> { None }\n";
+    // `rustc_attrs` is internal to the compiler and stays unstable in every release, and
+    // RUSTC_BOOTSTRAP alone would accept it.
+    let gated = "#![feature(rustc_attrs)]\npub fn add(x: u32, y: u32) -> u32 { x + y }\n#[rustc_dummy]\npub fn gated() {}\n";
     fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
     // An incremental rebuild (compiled here before) and a first compilation (after a clean).
     ok(sb.cargo(&p).arg("build"));
@@ -1216,7 +1219,7 @@ fn test0213_an_output_rewritten_in_place_after_it_was_stored_is_never_restored()
     assert!(cache_results(&sb).contains(&("greet".to_string(), "stored".to_string())), "{:#?}", cache_details(&sb));
     // A tool that rewrites an output in place (rather than replacing the file, as rustc and
     // the linkers do) also rewrites whatever shares that file.
-    let rlib = fs::read_dir(sb.target_dir(&app).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|x| x == "rlib")).unwrap();
+    let rlib = sb.layout(&app).unit_outputs(&sb.target_dir(&app).join("debug")).into_iter().find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|x| x == "rlib")).unwrap();
     let mut bytes = fs::read(&rlib).unwrap();
     bytes.truncate(bytes.len() / 2);
     fs::OpenOptions::new().write(true).truncate(true).open(&rlib).unwrap().write_all(&bytes).unwrap();
@@ -1337,7 +1340,7 @@ fn test0215_early_cutoff_rebuilds_what_an_edit_can_reach_and_links_the_edit() {
 
     // Kept objects are linked only as they were written: one changed since, and the binary is
     // compiled again rather than linked from it.
-    let kept = fs::read_dir(sb.target_dir(&w).join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.to_string_lossy().ends_with(".qrust-objects")).expect("the binary's objects are kept");
+    let kept = sb.layout(&w).unit_outputs(&sb.target_dir(&w).join("debug")).into_iter().find(|p| p.to_string_lossy().ends_with(".qrust-objects")).expect("the binary's objects are kept");
     let object = fs::read_dir(&kept).unwrap().next().unwrap().unwrap().path();
     let mut bytes = fs::read(&object).unwrap();
     bytes.push(0);
@@ -2006,9 +2009,10 @@ fn moved_cache_stays_warm(sb: &Sandbox, to: &std::path::Path, how: &str) {
     let before = sb.target_dir(&app);
     assert!(before.starts_with(sb.home.join("cache")));
     // The artifact cache stored the library by linking the build directory's file.
+    let layout = sb.layout(&app);
     let rlib_links = |target: &std::path::Path| {
         use std::os::unix::fs::MetadataExt;
-        let rlib = fs::read_dir(target.join("debug/deps")).unwrap().map(|e| e.unwrap().path()).find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|e| e == "rlib")).unwrap();
+        let rlib = layout.unit_outputs(&target.join("debug")).into_iter().find(|p| p.file_name().unwrap().to_string_lossy().starts_with("libgreet-") && p.extension().is_some_and(|e| e == "rlib")).unwrap();
         fs::metadata(rlib).unwrap().nlink()
     };
     let links = rlib_links(&before);

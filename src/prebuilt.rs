@@ -104,25 +104,24 @@ fn unit_inputs(filename: &Path, base: &Path, out: &mut BTreeSet<PathBuf>) {
 
 /// What decides whether Cargo reruns a local package's build script: the paths it declared
 /// (`cargo::rerun-if-changed`, a directory meaning everything beneath it), or, when it declared
-/// none, every file of the package.
-fn rerun_if_changed(out_dir: &Path, package_dir: &Path, out: &mut BTreeSet<PathBuf>) {
-    // Cargo's classic layout keeps the script's output next to `out/`; the newer one in `run/`.
-    let Some(unit) = out_dir.parent() else { return };
-    for output in [unit.join("output"), unit.join("run").join("output")] {
-        let Ok(text) = fs::read_to_string(&output) else { continue };
-        out.insert(output);
-        let mut declared = false;
-        for l in text.lines() {
-            if let Some(p) = l.strip_prefix("cargo::rerun-if-changed=").or_else(|| l.strip_prefix("cargo:rerun-if-changed=")) {
-                declared = true;
-                files_beneath(&package_dir.join(p), out);
-            }
-            declared |= l.starts_with("cargo::rerun-if-env-changed=") || l.starts_with("cargo:rerun-if-env-changed=");
+/// none, every file of the package. `None` when what the script printed is not where its Cargo
+/// keeps it (see `inventory::script_run`): then nothing tells what reruns it.
+fn rerun_if_changed(out_dir: &Path, package_dir: &Path, out: &mut BTreeSet<PathBuf>) -> Option<()> {
+    let output = crate::inventory::script_run(out_dir)?.stdout;
+    let text = fs::read_to_string(&output).ok()?;
+    out.insert(output);
+    let mut declared = false;
+    for l in text.lines() {
+        if let Some(p) = l.strip_prefix("cargo::rerun-if-changed=").or_else(|| l.strip_prefix("cargo:rerun-if-changed=")) {
+            declared = true;
+            files_beneath(&package_dir.join(p), out);
         }
-        if !declared {
-            files_beneath(package_dir, out);
-        }
+        declared |= l.starts_with("cargo::rerun-if-env-changed=") || l.starts_with("cargo:rerun-if-env-changed=");
     }
+    if !declared {
+        files_beneath(package_dir, out);
+    }
+    Some(())
 }
 
 /// `path` itself, or, for a directory, every file beneath it except build directories (they
@@ -167,7 +166,8 @@ pub struct Built<'a> {
     pub output: &'a [u8],
 }
 
-/// Records the stamp of a successful build from its Cargo messages.
+/// Records the stamp of a successful build from its Cargo messages; none, and none left of an
+/// earlier build of the command, when a local build script's inputs cannot be told.
 pub fn record(store_dir: &Path, key: &str, built: &Built) {
     let Built { messages, cwd, ws_root, cargo, units, warnings_line, output } = *built;
     let immutable: Vec<PathBuf> = vec![util::cargo_home().join("registry"), util::cargo_home().join("git")];
@@ -189,7 +189,14 @@ pub fn record(store_dir: &Path, key: &str, built: &Built) {
             }
             Some("build-script-executed") => {
                 if let (Some(out_dir), Some(dir)) = (m["out_dir"].as_str(), m["package_id"].as_str().and_then(local_package_dir)) {
-                    rerun_if_changed(Path::new(out_dir), &dir, &mut files);
+                    // A build whose script's inputs are unknown is never taken as up to date,
+                    // nor is an earlier build of the same command.
+                    if rerun_if_changed(Path::new(out_dir), &dir, &mut files).is_none() {
+                        let path = stamp_path(store_dir, key);
+                        let _ = fs::remove_file(&path);
+                        let _ = fs::remove_file(output_path(&path));
+                        return;
+                    }
                 }
             }
             _ => {}
@@ -283,6 +290,43 @@ mod tests {
         record(&store, "k", &built(None));
         fs::remove_file(ws.join("target/debug/deps/app-0123")).unwrap();
         assert_eq!(fresh(&store, "k"), None);
+        fs::remove_dir_all(&base).ok();
+    }
+
+    // TEST0352: A build script's inputs are read where its Cargo keeps them, or nothing is up to date
+    #[test]
+    fn test0352_a_build_scripts_inputs_are_read_where_its_cargo_keeps_them_or_nothing_is_up_to_date() {
+        let base = std::env::temp_dir().join(format!("qrust-prebuilt-{}", util::new_id()));
+        let (ws, store) = (base.join("ws"), base.join("store"));
+        fs::create_dir_all(ws.join("src")).unwrap();
+        fs::write(ws.join("Cargo.toml"), "[package]\nname = \"gen\"\n").unwrap();
+        fs::write(ws.join("build.rs"), "fn main() {}\n").unwrap();
+        fs::write(ws.join("data.txt"), "1\n").unwrap();
+        let package_id = format!("path+file://{}#gen@0.1.0", util::path_str(&ws));
+        let cargo = ws.join("bin/cargo");
+        // Cargo 1.100's layout: what the script printed is in the run's `run/stdout`; older
+        // Cargo's: in `output` beside `out/`.
+        for (out_dir, printed) in [(ws.join("target/debug/build/gen/0123456789abcdef/out"), ws.join("target/debug/build/gen/0123456789abcdef/run/stdout")), (ws.join("target/debug/build/gen-0123456789abcdef/out"), ws.join("target/debug/build/gen-0123456789abcdef/output"))] {
+            fs::create_dir_all(&out_dir).unwrap();
+            fs::create_dir_all(printed.parent().unwrap()).unwrap();
+            fs::write(&printed, "cargo::rerun-if-changed=data.txt\n").unwrap();
+            let messages = vec![json!({ "reason": "build-script-executed", "package_id": package_id, "out_dir": util::path_str(&out_dir) })];
+            let built = Built { messages: &messages, cwd: &ws, ws_root: Some(&ws), cargo: &cargo, units: 1, warnings_line: None, output: b"" };
+            record(&store, "k", &built);
+            assert!(fresh(&store, "k").is_some(), "{}", out_dir.display());
+            // The input the script declared.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            fs::write(ws.join("data.txt"), "2\n").unwrap();
+            assert_eq!(fresh(&store, "k"), None, "{}", out_dir.display());
+            // What the script printed is not there: nothing says what reruns it, so no build
+            // of the command is up to date, an earlier one that named none of it included.
+            let earlier = Built { messages: &[], ..built };
+            record(&store, "k", &earlier);
+            assert!(fresh(&store, "k").is_some());
+            fs::remove_file(&printed).unwrap();
+            record(&store, "k", &built);
+            assert_eq!(fresh(&store, "k"), None, "{}", out_dir.display());
+        }
         fs::remove_dir_all(&base).ok();
     }
 }

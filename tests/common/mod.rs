@@ -102,6 +102,17 @@ impl Sandbox {
         PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())
     }
 
+    /// How the Cargo of the toolchain QuickRust uses in `cwd` lays out a build directory.
+    pub fn layout(&self, cwd: &Path) -> Layout {
+        let version = stdout(&ok(self.upstream(cwd).arg("-V")));
+        let minor: u32 = version.split_whitespace().nth(1).and_then(|v| v.split('.').nth(1)).and_then(|m| m.parse().ok()).unwrap_or_else(|| panic!("`cargo -V` names no release: {}", version));
+        if minor >= 100 {
+            Layout::PerUnit
+        } else {
+            Layout::Shared
+        }
+    }
+
     /// The oracle's environment: the toolchain's own Cargo, as QuickRust runs it, without QuickRust.
     fn oracle_path(&self, cwd: &Path) -> (PathBuf, OsString) {
         let tc = self.toolchain_dir(cwd);
@@ -354,6 +365,73 @@ pub fn copy_dir(from: &Path, to: &Path) {
 pub fn git(cwd: &Path, args: &[&str]) {
     let out = Command::new("git").current_dir(cwd).args(["-c", "user.name=qrust-test", "-c", "user.email=qrust@example.invalid", "-c", "commit.gpgsign=false"]).args(args).output().expect("git is required for this test");
     assert!(out.status.success(), "git {:?} failed: {}", args, String::from_utf8_lossy(&out.stderr));
+}
+
+/// How Cargo lays out a build directory (`<target>/<profile>/`): before 1.100 the outputs of every
+/// unit it compiles share `deps/`, and a build script's run keeps `build/<package>-<hash>/`;
+/// from 1.100 on every unit has a directory of its own, `build/<package>/<unit hash>/`, its
+/// outputs in `out/` (a build script's run: what the script generated) and its records beside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Layout {
+    Shared,
+    PerUnit,
+}
+
+impl Layout {
+    /// Every output of the units Cargo compiled under `profile_dir` (what `deps/` holds in the
+    /// shared layout): not build scripts, nor what they generated.
+    pub fn unit_outputs(self, profile_dir: &Path) -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        match self {
+            Layout::Shared => {
+                assert!(!profile_dir.join("build").read_dir().into_iter().flatten().flatten().any(|e| e.path().join("fingerprint").is_dir()), "{} holds units of the per-unit layout", profile_dir.display());
+                out.extend(fs::read_dir(profile_dir.join("deps")).unwrap_or_else(|e| panic!("{}: {}", profile_dir.join("deps").display(), e)).flatten().map(|e| e.path()));
+            }
+            Layout::PerUnit => {
+                assert!(!profile_dir.join("deps").exists(), "{} holds the shared layout's deps/", profile_dir.display());
+                for unit in self.units(profile_dir) {
+                    if unit.join("run").is_dir() {
+                        continue;
+                    }
+                    for e in fs::read_dir(unit.join("out")).into_iter().flatten().flatten() {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        if !name.starts_with("build_script_") && !name.starts_with("build-script-") {
+                            out.push(e.path());
+                        }
+                    }
+                }
+            }
+        }
+        out.sort();
+        out
+    }
+
+    /// The `OUT_DIR` of every build script run under `profile_dir`.
+    pub fn script_out_dirs(self, profile_dir: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = match self {
+            Layout::Shared => fs::read_dir(profile_dir.join("build")).into_iter().flatten().flatten().map(|e| e.path().join("out")).filter(|p| p.is_dir()).collect(),
+            Layout::PerUnit => self.units(profile_dir).into_iter().filter(|u| u.join("run").is_dir()).map(|u| u.join("out")).collect(),
+        };
+        out.sort();
+        out
+    }
+
+    /// Where Cargo would have put `file`, an output of the unit `package`-`hash`.
+    pub fn unit_output(self, profile_dir: &Path, package: &str, hash: &str, file: &str) -> PathBuf {
+        match self {
+            Layout::Shared => profile_dir.join("deps").join(file),
+            Layout::PerUnit => profile_dir.join("build").join(package).join(hash).join("out").join(file),
+        }
+    }
+
+    /// The unit directories of the per-unit layout.
+    fn units(self, profile_dir: &Path) -> Vec<PathBuf> {
+        let mut units = Vec::new();
+        for package in fs::read_dir(profile_dir.join("build")).unwrap_or_else(|e| panic!("{}: {}", profile_dir.join("build").display(), e)).flatten() {
+            units.extend(fs::read_dir(package.path()).into_iter().flatten().flatten().map(|e| e.path()).filter(|u| u.join("fingerprint").is_dir()));
+        }
+        units
+    }
 }
 
 /// Builds QuickRust's compiler driver for the toolchain `cwd` uses (adding its `rustc-dev` component

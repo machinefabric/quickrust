@@ -24,8 +24,10 @@ use rustc_metadata::EncodedMetadata;
 use rustc_middle::dep_graph::WorkProductMap;
 use rustc_middle::ty::TyCtxt;
 use rustc_middle::util::Providers;
-use rustc_session::config::{self, CrateType, OutFileName, OutputFilenames, OutputType, PrintRequest};
+use crate::CrateType;
+use rustc_session::config::{self, OutFileName, OutputFilenames, OutputType, PrintRequest};
 use rustc_session::Session;
+#[cfg(not(qrust_rustc_ge_100))]
 use rustc_span::Symbol;
 use std::any::Any;
 use std::path::{Path, PathBuf};
@@ -137,12 +139,25 @@ impl CodegenBackend for EarlyLink {
     fn name(&self) -> &'static str {
         self.inner.name()
     }
+    // rustc 1.100 initializes the backend before the session exists, from the early session, and
+    // takes what was asked of it separately before (the intrinsics it replaces or falls back to,
+    // whether it supports ThinLTO) from what `init` returns.
+    #[cfg(qrust_rustc_ge_100)]
+    fn init(&mut self, sess: &rustc_session::EarlySession) -> rustc_session::CodegenBackendInit {
+        self.inner.init(sess)
+    }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn init(&self, sess: &Session) {
         self.inner.init(sess)
     }
     fn print(&self, req: &PrintRequest, out: &mut String, sess: &Session) {
         self.inner.print(req, out, sess)
     }
+    #[cfg(qrust_rustc_ge_100)]
+    fn target_config(&self, sess: &rustc_session::EarlySession) -> TargetConfig {
+        self.inner.target_config(sess)
+    }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn target_config(&self, sess: &Session) -> TargetConfig {
         self.inner.target_config(sess)
     }
@@ -155,12 +170,15 @@ impl CodegenBackend for EarlyLink {
     fn print_version(&self) {
         self.inner.print_version()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn replaced_intrinsics(&self) -> Vec<Symbol> {
         self.inner.replaced_intrinsics()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn fallback_intrinsics(&self) -> Vec<Symbol> {
         self.inner.fallback_intrinsics()
     }
+    #[cfg(not(qrust_rustc_ge_100))]
     fn thin_lto_supported(&self) -> bool {
         self.inner.thin_lto_supported()
     }

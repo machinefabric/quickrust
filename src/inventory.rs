@@ -76,6 +76,66 @@ fn is_unit_hash(c: &str) -> bool {
     c.len() == 16 && c.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// The hash of the unit whose output directory is `out_dir`, in Cargo's newer layout
+/// (`build/<package>/<unit hash>/out`).
+pub fn unit_dir_hash(out_dir: &Path) -> Option<&str> {
+    if out_dir.file_name()? != "out" {
+        return None;
+    }
+    let hash = out_dir.parent()?.file_name()?.to_str()?;
+    is_unit_hash(hash).then_some(hash)
+}
+
+/// A unit's name, `<crate name>-<hash>`, from the stem of its outputs and, in Cargo's newer
+/// layout, its directory's hash. Cargo names the outputs of a unit with `-C extra-filename`,
+/// except, from Cargo 1.100 on, a binary's (`out/app`): its directory's hash names it then.
+pub fn unit_name(stem: &str, dir_hash: Option<&str>) -> String {
+    let hashed = stem.rsplit_once('-').is_some_and(|(_, h)| is_unit_hash(h));
+    match dir_hash {
+        Some(h) if !hashed => format!("{}-{}", stem, h),
+        _ => stem.to_string(),
+    }
+}
+
+/// What Cargo keeps of one build script's run, found from the run's `OUT_DIR`. Cargo 1.100 and
+/// later give the run a unit directory of its own, `build/<package>/<unit hash>/`, with
+/// `OUT_DIR` as its `out/` and the run's records in `run/` (what the script printed in
+/// `run/stdout`); older Cargo keeps the records beside `out/` in `build/<package>-<hash>/`
+/// (what it printed in `output`).
+pub struct ScriptRun {
+    /// The directory of the run's records: `invoked.timestamp`, `stderr`, `root-output`.
+    pub records: PathBuf,
+    /// What the script printed: its directives to Cargo.
+    pub stdout: PathBuf,
+    /// The run's name in either layout, `<package>-<hash>`.
+    pub name: String,
+}
+
+/// The run whose `OUT_DIR` is `out_dir`, by where Cargo put it.
+pub fn script_run(out_dir: &Path) -> Option<ScriptRun> {
+    let unit = out_dir.parent()?;
+    let dir_name = unit.file_name()?.to_str()?;
+    if is_unit_hash(dir_name) {
+        let package = unit.parent()?.file_name()?.to_str()?;
+        let records = unit.join("run");
+        Some(ScriptRun { stdout: records.join("stdout"), records, name: format!("{}-{}", package, dir_name) })
+    } else {
+        Some(ScriptRun { records: unit.to_path_buf(), stdout: unit.join("output"), name: dir_name.to_string() })
+    }
+}
+
+/// Whether `out_dir`, a unit's output directory, is where Cargo puts a build script it compiles:
+/// `build/<package>-<hash>/` before Cargo 1.100, `build/<package>/<unit hash>/out/` from it on
+/// (where every unit has such a directory, and a build script is told apart by its crate name).
+pub fn is_build_script_dir(out_dir: &Path) -> bool {
+    let name = |p: Option<&Path>| p.and_then(Path::file_name).and_then(|n| n.to_str()).map(str::to_string);
+    let parent = out_dir.parent();
+    if name(parent).as_deref() == Some("build") {
+        return true;
+    }
+    name(Some(out_dir)).as_deref() == Some("out") && name(parent).is_some_and(|h| is_unit_hash(&h)) && name(parent.and_then(Path::parent).and_then(Path::parent)).as_deref() == Some("build")
+}
+
 /// In Cargo's newer layout a unit has a directory of its own, `build/<package>/<unit hash>/`
 /// holding `fingerprint/`, `out/` and, for a build script's run, `run/`. Returns the length of
 /// the unit directory's path and the part of it `rel` is in.
@@ -86,8 +146,10 @@ fn unit_dir<'a>(rel: &[&'a str], build: usize) -> Option<(usize, &'a str)> {
 
 /// Category of a compiler output by its name: what `deps/` holds in Cargo's classic layout and a
 /// unit's `out/` in the newer one.
-fn artifact(name: &str, ext: &str, known: &Knowledge) -> (&'static str, String) {
-    let stem = artifact_stem(name);
+/// `dir_hash` is the unit directory's hash in the newer layout.
+fn artifact(name: &str, ext: &str, dir_hash: Option<&str>, known: &Knowledge) -> (&'static str, String) {
+    let stem = unit_name(artifact_stem(name), dir_hash);
+    let stem = stem.as_str();
     let cat = match ext {
         // A library's interface hash, written by QuickRust's compiler driver beside its metadata.
         "rmeta" | "qrust-svh" => "metadata",
@@ -118,8 +180,9 @@ pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) ->
         return ("debug", rel[..rel.len().min(3)].join("/"));
     }
     // A binary's objects, kept by QuickRust's compiler driver for relinking.
-    if let Some(unit) = rel.iter().find_map(|c| c.strip_suffix(".qrust-objects")) {
-        return ("relink", format!("unit:{}", unit));
+    if let Some(at) = rel.iter().position(|c| c.ends_with(".qrust-objects")) {
+        let hash = (at >= 2 && rel[at - 1] == "out").then(|| rel[at - 2]).filter(|h| is_unit_hash(h));
+        return ("relink", format!("unit:{}", unit_name(rel[at].strip_suffix(".qrust-objects").unwrap_or(""), hash)));
     }
     if let Some(i) = rel.iter().take(3).position(|c| LAYOUT_DIRS.contains(c)) {
         let prefix = rel[..=i].join("/");
@@ -137,7 +200,7 @@ pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) ->
                         "run" => ("build-script-output", unit),
                         _ if run_units.contains(&unit) => ("build-script-output", unit),
                         _ if name.starts_with("build_script_") || name.starts_with("build-script-") => ("build-script-binary", unit),
-                        _ => artifact(name, ext, known),
+                        _ => artifact(name, ext, Some(rel[i + 2]), known),
                     };
                 }
                 let group = format!("{}/{}", prefix, sub);
@@ -149,7 +212,7 @@ pub fn classify(rel: &[&str], known: &Knowledge, run_units: &HashSet<String>) ->
                     ("build-script-output", group)
                 }
             }
-            _ => artifact(name, ext, known),
+            _ => artifact(name, ext, None, known),
         };
     }
     if rel.first() == Some(&"doc") || rel.get(1) == Some(&"doc") {
@@ -595,6 +658,43 @@ mod tests {
         assert_eq!(gen("libnative.a"), "build-script-output");
         assert_eq!(gen("bindings.rs"), "build-script-output");
         assert_eq!(classify(&["debug", "build", "memchr", h, "out", "libmemchr.rlib"], &Knowledge::default(), &runs).0, "dependency");
+    }
+
+    // TEST0351: A build script's run is found where its Cargo keeps it
+    #[test]
+    fn test0351_a_build_scripts_run_is_found_where_its_cargo_keeps_it() {
+        // Cargo 1.100 and later: the run is a unit of its own, its records in `run/`.
+        let h = "0123456789abcdef";
+        let run = script_run(Path::new(&format!("/t/debug/build/gen/{h}/out"))).unwrap();
+        assert_eq!((run.records, run.stdout, run.name), (PathBuf::from(format!("/t/debug/build/gen/{h}/run")), PathBuf::from(format!("/t/debug/build/gen/{h}/run/stdout")), format!("gen-{h}")));
+        // Older Cargo: the records beside `out/`.
+        let run = script_run(Path::new("/t/debug/build/gen-3befea7e73c04e02/out")).unwrap();
+        assert_eq!((run.records, run.stdout, run.name), (PathBuf::from("/t/debug/build/gen-3befea7e73c04e02"), PathBuf::from("/t/debug/build/gen-3befea7e73c04e02/output"), "gen-3befea7e73c04e02".to_string()));
+        // Where Cargo compiles build scripts, in either layout, and where it compiles anything else.
+        assert!(is_build_script_dir(Path::new(&format!("/t/debug/build/gen/{h}/out"))));
+        assert!(is_build_script_dir(Path::new("/t/debug/build/gen-3befea7e73c04e02")));
+        assert!(!is_build_script_dir(Path::new("/t/debug/deps")));
+        assert!(!is_build_script_dir(Path::new(&format!("/t/debug/build/gen/{h}/run"))));
+        assert!(!is_build_script_dir(Path::new("/t/debug/build/gen/not-a-hash/out")));
+        assert!(!is_build_script_dir(Path::new(&format!("/t/debug/other/gen/{h}/out"))));
+    }
+
+    // TEST0354: A binary of Cargo 1.100's layout is grouped by its unit
+    #[test]
+    fn test0354_a_binary_of_cargo_1_100s_layout_is_grouped_by_its_unit() {
+        // Its outputs carry no hash (`out/app`); its unit directory's does, as analysis names it.
+        let h = "47893a194327e583";
+        let group = |rel: &str| classify(&rel.split('/').collect::<Vec<_>>(), &Knowledge::default(), &HashSet::new());
+        assert_eq!(group(&format!("debug/build/app/{h}/out/app")), ("final", format!("unit:app-{h}")));
+        assert_eq!(group(&format!("debug/build/app/{h}/out/app.d")), ("fingerprint", format!("unit:app-{h}")));
+        assert_eq!(group(&format!("debug/build/app/{h}/out/app.rlink")), ("relink", format!("unit:app-{h}")));
+        assert_eq!(group(&format!("debug/build/app/{h}/out/app.qrust-objects/app.abc.rcgu.o")), ("relink", format!("unit:app-{h}")));
+        // A library is named by its extra filename, the same hash.
+        assert_eq!(group("debug/build/gen/9d803df7671ef5de/out/libgen-9d803df7671ef5de.rlib"), ("dependency", "unit:gen-9d803df7671ef5de".to_string()));
+        // And in the older layout, as before.
+        assert_eq!(group("debug/deps/app-0123.qrust-objects/app-0123.abc.rcgu.o"), ("relink", "unit:app-0123".to_string()));
+        assert_eq!(unit_name("app", None), "app");
+        assert_eq!(unit_name(&format!("app-{h}"), Some(h)), format!("app-{h}"));
     }
 
     // TEST0059: A scan tells a build scripts generated files from a units outputs

@@ -48,8 +48,13 @@ use std::path::{Path, PathBuf};
 const FORMAT: &str = "qrust-artifact-cache-3";
 
 /// How far past the start of a crate's metadata root its crate hash may lie: the root begins
-/// with the target triple (or a whole JSON target specification), then the hash.
+/// with the target triple (or a whole JSON target specification), then the hash. Metadata format
+/// 10 and older (rustc 1.99 and older) keep the crate hash there.
 const ROOT_HEADER_WINDOW: u64 = 64 * 1024;
+/// Metadata format 11 (rustc 1.100) keeps the crate hash at a fixed place in the file's header,
+/// after the positions of its hashed and unhashed roots (two 64-bit little-endian numbers).
+const HEADER_CRATE_HASH_FORMAT: u8 = 11;
+const HEADER_CRATE_HASH_AT: usize = 24;
 
 /// One cacheable compilation, prepared before rustc runs.
 pub struct Job {
@@ -285,29 +290,40 @@ impl MirInlining {
 /// The interface hash of the crate whose metadata is at `artifact` (its `.rmeta`, or its `.rlib`
 /// through the metadata written beside it), as QuickRust's compiler driver recorded it next to the
 /// metadata (`lib<crate><extra>.qrust-svh`), when that metadata carries it. The metadata is what
-/// dependents compile against, so the record counts only if the metadata's own root names the
-/// same crate hash: a record left by an earlier compilation, or a metadata file written by
-/// another compiler since, is not this crate's interface.
+/// dependents compile against, so the record counts only if the metadata itself names the same
+/// crate hash where its format keeps it: a record left by an earlier compilation, or a metadata
+/// file written by another compiler since, is not this crate's interface. Neither is metadata of
+/// a format newer than QuickRust knows, whose crate hash it cannot find.
 fn interface_identity(artifact: &Path) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let name = artifact.file_name()?.to_str()?;
     let stem = name.strip_suffix(".rmeta").or_else(|| name.strip_suffix(".rlib"))?;
     let rmeta = artifact.with_file_name(format!("{}.rmeta", stem));
     let svh = u128::from_str_radix(fs::read_to_string(artifact.with_file_name(format!("{}.qrust-svh", stem))).ok()?.trim(), 16).ok()?;
+    // The crate hash is encoded as its sixteen little-endian bytes.
+    let hash = svh.to_le_bytes();
     // `rust\0\0\0` and the format version, then the root's position (64-bit little-endian).
     let mut f = fs::File::open(&rmeta).ok()?;
-    let mut head = [0u8; 16];
-    f.read_exact(&mut head).ok()?;
+    let mut head = [0u8; HEADER_CRATE_HASH_AT + 16];
+    f.read_exact(&mut head[..16]).ok()?;
     if &head[..7] != b"rust\0\0\0" {
         return None;
     }
-    let root = u64::from_le_bytes(head[8..].try_into().ok()?);
-    f.seek(SeekFrom::Start(root)).ok()?;
-    let mut window = Vec::new();
-    f.take(ROOT_HEADER_WINDOW).read_to_end(&mut window).ok()?;
-    // The crate hash is encoded as its sixteen little-endian bytes.
-    let hash = svh.to_le_bytes();
-    window.windows(hash.len()).any(|w| w == hash).then(|| format!("{:032x}", svh))
+    let carried = match head[7] {
+        HEADER_CRATE_HASH_FORMAT => {
+            f.read_exact(&mut head[16..]).ok()?;
+            head[HEADER_CRATE_HASH_AT..] == hash
+        }
+        format if format < HEADER_CRATE_HASH_FORMAT => {
+            let root = u64::from_le_bytes(head[8..16].try_into().ok()?);
+            f.seek(SeekFrom::Start(root)).ok()?;
+            let mut window = Vec::new();
+            f.take(ROOT_HEADER_WINDOW).read_to_end(&mut window).ok()?;
+            window.windows(hash.len()).any(|w| w == hash)
+        }
+        _ => false,
+    };
+    carried.then(|| format!("{:032x}", svh))
 }
 
 /// Content digest of a directory tree: relative names and file contents, sorted.
@@ -955,6 +971,44 @@ mod tests {
         assert_eq!(interface_identity(&path), None);
         fs::write(&path, &rmeta).unwrap();
         fs::remove_file(&record).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    // TEST0350: Metadata of rustc 1.100 carries the interface hash in its header
+    #[test]
+    fn test0350_metadata_of_rustc_1_100_carries_the_interface_hash_in_its_header() {
+        let dir = std::env::temp_dir().join(format!("qrust-iface-{}", util::new_id()));
+        fs::create_dir_all(&dir).unwrap();
+        let svh: u128 = 0x0123_4567_89ab_cdef_fedc_ba98_7654_3210;
+        // Metadata format 11 as rustc 1.100 lays it out: header, the hashed and unhashed roots'
+        // positions, the crate hash, the compiler's version, …, the root (target triple, no hash).
+        let header = |format: u8, hash: u128| {
+            let mut rmeta = b"rust\0\0\0".to_vec();
+            rmeta.push(format);
+            rmeta.extend_from_slice(&200u64.to_le_bytes());
+            rmeta.extend_from_slice(&300u64.to_le_bytes());
+            rmeta.extend_from_slice(&hash.to_le_bytes());
+            rmeta.extend_from_slice(b"\x0crustc 1.100.0");
+            rmeta.resize(200, 0xaa);
+            rmeta.extend_from_slice(b"\x1ax86_64-unknown-linux-gnu");
+            rmeta.resize(400, 0xbb);
+            rmeta
+        };
+        let path = dir.join("libdep-0123.rmeta");
+        let record = dir.join("libdep-0123.qrust-svh");
+        fs::write(&record, format!("{:032x}\n", svh)).unwrap();
+        fs::write(&path, header(11, svh)).unwrap();
+        assert_eq!(interface_identity(&path), Some(format!("{:032x}", svh)));
+        assert_eq!(interface_identity(&dir.join("libdep-0123.rlib")), Some(format!("{:032x}", svh)));
+        // The metadata's own hash is another one (rustc hashed the metadata itself, or another compilation wrote it).
+        fs::write(&path, header(11, svh ^ 1)).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        // Metadata of a format QuickRust does not know: its crate hash is nowhere QuickRust knows to look.
+        fs::write(&path, header(12, svh)).unwrap();
+        assert_eq!(interface_identity(&path), None);
+        // Cut short before the hash.
+        fs::write(&path, &header(11, svh)[..30]).unwrap();
         assert_eq!(interface_identity(&path), None);
         fs::remove_dir_all(&dir).ok();
     }

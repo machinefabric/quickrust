@@ -37,10 +37,12 @@ extern crate rustc_metadata;
 extern crate rustc_middle;
 extern crate rustc_session;
 extern crate rustc_span;
+#[cfg(qrust_rustc_ge_100)]
+extern crate rustc_structures;
 
 use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::svh::Svh;
-use rustc_data_structures::stable_hash::{RawDefId, RawDefPathHash, RawSpan, StableHash, StableHashControls, StableHashCtxt, StableHasher};
+use rustc_data_structures::stable_hash::{RawDefId, RawSpan, StableHash, StableHashControls, StableHashCtxt, StableHasher};
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{DefId, LocalDefId, LOCAL_CRATE};
 use rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId};
@@ -51,7 +53,12 @@ use rustc_hir::{BodyId, ItemLocalId};
 use rustc_middle::ty::{TyCtxt, TypeVisitableExt};
 use rustc_middle::ich::StableHashState;
 use rustc_middle::query::LocalCrate;
-use rustc_session::config::{CrateType, OutFileName, OutputType};
+use rustc_session::config::{OutFileName, OutputType};
+// rustc 1.100 moved the crate types into `rustc_structures`.
+#[cfg(qrust_rustc_ge_100)]
+use rustc_structures::CrateType;
+#[cfg(not(qrust_rustc_ge_100))]
+use rustc_session::config::CrateType;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;
 
@@ -83,6 +90,12 @@ impl rustc_driver::Callbacks for Callbacks {
             }));
         }
         if self.interface_hash {
+            // rustc 1.100 hashes the metadata it encodes, and the HIR of every body, into the
+            // crate hash it writes there, unless told to take it from the `crate_hash` query.
+            #[cfg(qrust_rustc_ge_100)]
+            {
+                config.opts.unstable_opts.metadata_crate_hash = false;
+            }
             config.override_queries = Some(|_, providers| {
                 let _ = STOCK_CRATE_HASH.set(providers.queries.crate_hash);
                 providers.queries.crate_hash = interface_hash;
@@ -173,6 +186,13 @@ fn position_observable(tcx: TyCtxt<'_>, def_id: LocalDefId, private: &HashMap<Lo
     let Some(part) = part else { return true };
     !(def_id == owner || part.defs.contains(&def_id) || (tcx.local_parent(def_id) == owner && tcx.def_kind(def_id) == DefKind::LifetimeParam))
 }
+
+/// What a hashing context answers for a definition's path hash: from rustc 1.100 the fingerprint
+/// itself, before it a 16-byte stand-in for `DefPathHash`.
+#[cfg(qrust_rustc_ge_100)]
+type DefPathHashOf = Fingerprint;
+#[cfg(not(qrust_rustc_ge_100))]
+type DefPathHashOf = rustc_data_structures::stable_hash::RawDefPathHash;
 
 /// How `Positions` hashes a span.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -268,7 +288,7 @@ impl StableHashCtxt for Positions<'_, '_, '_> {
         }
     }
 
-    fn def_path_hash(&self, def_id: RawDefId) -> RawDefPathHash {
+    fn def_path_hash(&self, def_id: RawDefId) -> DefPathHashOf {
         self.hcx.def_path_hash(def_id)
     }
 

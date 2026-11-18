@@ -85,7 +85,8 @@ and listed in `toolchain.capabilities`; nothing depends on them.
 
 5. **Build-script run time is taken from files Cargo writes around the run**
    (`invoked.timestamp`, then `stderr` / `root-output`). Cargo back-dates
-   `output` to the invocation time, so it cannot be used.
+   what the script printed (`output`, or `run/stdout` from Cargo 1.100) to the
+   invocation time, so it cannot be used.
 
 6. **QuickRust manages the toolchains (decision of 2026-10-12), not rustup (COMP-020).** The
    specification resolves an upstream Cargo through `PATH` and rustup. QuickRust instead

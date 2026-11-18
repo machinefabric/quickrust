@@ -93,10 +93,12 @@ Never removed: anything used in the last 15 minutes; a build directory a QuickRu
 
 ## In a build directory
 
+`<outputs>` is where Cargo writes a unit's outputs: `<target>/<profile>/deps/` with Cargo before 1.100, the unit's own `<target>/<profile>/build/<package>/<hash>/out/` with Cargo 1.100 and later.
+
 | Path | Content |
 |---|---|
-| `<target>/<profile>/deps/<unit>.qrust-svh` | a library's interface hash (early cut-off) |
-| `<target>/<profile>/deps/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | a binary's kept objects and what they were compiled from, for relinking |
+| `<outputs>/<unit>.qrust-svh` | a library's interface hash (early cut-off) |
+| `<outputs>/<unit>.rlink`, `<unit>.qrust-objects/`, `<unit>.qrust-relink` | a binary's kept objects and what they were compiled from, for relinking |
 
 They go with the rest of the directory (`cargo clean`).
 

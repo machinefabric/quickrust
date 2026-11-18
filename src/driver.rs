@@ -27,7 +27,7 @@ const BINARY: &str = "qrust-rustc-driver";
 /// Releases whose compiler interface the driver's sources adapt to: the driver is built with
 /// `--cfg qrust_rustc_ge_<minor>` for each one its compiler is (rustc's internal interface changes
 /// between releases).
-const INTERFACE_BREAKS: &[u32] = &[99];
+const INTERFACE_BREAKS: &[u32] = &[99, 100];
 /// How a failure to get the toolchain's `rustc-dev` component begins.
 const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 /// In a driver's directory: the toolchain it was built for (`{"sysroot": …}`).

@@ -13,9 +13,32 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Artifact names with Cargo's own hashes: equal sets mean Cargo selected and built the same units.
-fn artifacts(target: &Path) -> Vec<String> {
-    tree(target).into_iter().filter(|f| f.contains("/deps/") && (f.ends_with(".rlib") || f.ends_with(".rmeta") || !f.rsplit('/').next().unwrap().contains('.'))).collect()
+/// The libraries, metadata and programs Cargo compiled for the workspace at `cwd`, by their paths
+/// in its target directory, which carry Cargo's own unit hashes: equal sets mean Cargo selected
+/// and built the same units.
+fn artifacts(sb: &Sandbox, cwd: &Path) -> Vec<String> {
+    let (layout, target) = (sb.layout(cwd), sb.target_dir(cwd));
+    let profile = target.join("debug");
+    let found: Vec<String> = layout.unit_outputs(&profile).into_iter().filter(|f| f.is_file()).map(|f| f.strip_prefix(&target).unwrap().to_string_lossy().into_owned()).filter(|f| f.ends_with(".rlib") || f.ends_with(".rmeta") || !f.rsplit('/').next().unwrap().contains('.')).collect();
+    assert!(!found.is_empty(), "no compiled units in {}", profile.display());
+    found
+}
+
+/// A path with every Cargo unit hash (sixteen hexadecimal digits) in it blanked.
+fn without_hashes(path: &str) -> String {
+    let mut out = String::new();
+    let mut run = String::new();
+    for c in path.chars().chain(std::iter::once('/')) {
+        if c.is_ascii_hexdigit() {
+            run.push(c);
+            continue;
+        }
+        out.push_str(if run.len() == 16 { "#" } else { &run });
+        run.clear();
+        out.push(c);
+    }
+    out.pop();
+    out
 }
 
 // TEST0232: Qa001 plain build matches upstream
@@ -30,8 +53,8 @@ fn test0232_qa001_plain_build_matches_upstream() {
     assert_eq!(fs::read(wrapped.join("Cargo.lock")).unwrap(), fs::read(native.join("Cargo.lock")).unwrap(), "lockfiles must be identical");
     // Hashes differ between the two directories (the path is part of a path package's identity),
     // so compare the shape; identical hashes are asserted in-place by `no_rebuild_when_alternating`.
-    let shape = |v: Vec<String>| v.into_iter().map(|f| f.rsplit_once('-').map(|(n, _)| n.to_string()).unwrap_or(f)).collect::<Vec<_>>();
-    assert_eq!(shape(artifacts(&sb.target_dir(&wrapped))), shape(artifacts(&sb.target_dir(&native))));
+    let shape = |v: Vec<String>| v.iter().map(|f| without_hashes(f)).collect::<Vec<_>>();
+    assert_eq!(shape(artifacts(&sb, &wrapped)), shape(artifacts(&sb, &native)));
     assert!(!tree(&wrapped).iter().any(|f| f.contains(".qrust")), "the shim must not create files in the repository");
     assert_eq!(stdout(&ok(sb.cargo(&wrapped).args(["run", "-q"]))), "3\n");
 }
@@ -44,12 +67,12 @@ fn test0233_no_rebuild_when_alternating_with_upstream() {
     let sb = Sandbox::new("alternate");
     let ws = sb.workspace("ws");
     ok(sb.cargo(&ws).arg("build").env("QRUST_MODE", "compat"));
-    let before = artifacts(&sb.target_dir(&ws));
+    let before = artifacts(&sb, &ws);
     let up = ok(sb.upstream(&ws).arg("build"));
     assert!(!stderr(&up).contains("Compiling"), "upstream rebuilt after a shim build:\n{}", stderr(&up));
     let again = ok(sb.cargo(&ws).arg("build").env("QRUST_MODE", "compat"));
     assert!(!stderr(&again).contains("Compiling"), "shim rebuilt after an upstream build:\n{}", stderr(&again));
-    assert_eq!(artifacts(&sb.target_dir(&ws)), before);
+    assert_eq!(artifacts(&sb, &ws), before);
 }
 
 // TEST0234: Fast mode and upstream keep separate artifacts instead of rebuilding each other
@@ -139,7 +162,7 @@ fn test0237_builds_and_their_build_scripts_get_quickrusts_toolchain_and_cargo_ho
     sb.file("p/build.rs", "fn main() {\n    let out = std::env::var(\"OUT_DIR\").unwrap();\n    let get = |k: &str| std::env::var(k).unwrap_or_default();\n    let nested = std::process::Command::new(get(\"CARGO\")).arg(\"-V\").output().unwrap();\n    std::fs::write(format!(\"{out}/env.txt\"), format!(\"{}\\n{}\\n{}\\n{}\\n{}\", get(\"RUSTUP_TOOLCHAIN\"), get(\"CARGO_HOME\"), get(\"RUSTC\"), String::from_utf8_lossy(&nested.stdout).trim(), get(\"CARGO\"))).unwrap();\n}\n");
     let stable = sb.toolchain_dir(&p);
     ok(sb.cargo(&p).arg("build").env("CARGO_HOME", sb.dir.join("theirs")));
-    let env_file = fs::read_dir(sb.target_dir(&p).join("debug/build")).unwrap().flatten().map(|e| e.path().join("out/env.txt")).find(|f| f.is_file()).expect("the build script ran");
+    let env_file = sb.layout(&p).script_out_dirs(&sb.target_dir(&p).join("debug")).into_iter().map(|o| o.join("env.txt")).find(|f| f.is_file()).expect("the build script ran");
     let lines: Vec<String> = fs::read_to_string(env_file).unwrap().lines().map(str::to_string).collect();
     assert_eq!(lines[0], stable.file_name().unwrap().to_string_lossy(), "nested toolchain programs are pinned to the build's toolchain");
     assert_eq!(lines[1], sb.cargo_home().display().to_string(), "QuickRust's Cargo home, whatever the environment says");
@@ -485,10 +508,10 @@ fn test0246_qa005_features_reach_rustc_unchanged() {
     let report = sb.report(&p, "latest");
     let lib = report["units"].as_array().unwrap().iter().find(|u| u["kind"] == "lib").unwrap();
     assert_eq!(lib["features"], serde_json::json!(["a", "b"]));
-    let before = artifacts(&sb.target_dir(&p));
+    let before = artifacts(&sb, &p);
     let up = ok(sb.upstream(&p).args(["build", "--features", "a,b"]));
     assert!(!stderr(&up).contains("Compiling"), "upstream considers the shim's build stale:\n{}", stderr(&up));
-    assert_eq!(artifacts(&sb.target_dir(&p)), before);
+    assert_eq!(artifacts(&sb, &p), before);
     ok(sb.cargo(&p).args(["build", "--all-features"]));
     ok(sb.cargo(&p).args(["build", "--no-default-features"]));
 }
@@ -671,9 +694,9 @@ fn test0255_qa016_cargo_clean_keeps_exact_upstream_semantics() {
     // Selective clean removes the package's artifacts and nothing else.
     let a = ok(sb.cargo(&ws).args(["clean", "-p", "util"]));
     assert!(stderr(&a).contains("Removed"), "{}", stderr(&a));
-    let after = tree(&sb.target_dir(&ws));
-    assert!(!after.iter().any(|f| f.contains("/deps/libutil-")));
-    assert!(after.iter().any(|f| f.contains("/deps/libgen-")));
+    let after: Vec<String> = sb.layout(&ws).unit_outputs(&sb.target_dir(&ws).join("debug")).iter().map(|f| f.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    assert!(!after.iter().any(|f| f.starts_with("libutil-")), "{:?}", after);
+    assert!(after.iter().any(|f| f.starts_with("libgen-")), "{:?}", after);
     ok(sb.cargo(&ws).arg("clean"));
     assert!(!sb.target_dir(&ws).exists());
     assert_eq!(sb.sessions().pop().unwrap()["command"]["family"], "clean");
@@ -1205,7 +1228,7 @@ fn main() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let outer = fs::read_to_string(p.join("make-flags.txt")).unwrap();
     let outer_auth = outer.split_whitespace().find_map(|f| f.strip_prefix("--jobserver-auth=").or_else(|| f.strip_prefix("--jobserver-fds="))).unwrap_or_else(|| panic!("make set no jobserver: {}", outer)).to_string();
-    let seen = fs::read_dir(sb.target_dir(&p).join("debug/build")).unwrap().filter_map(|e| fs::read_to_string(e.ok()?.path().join("out/jobserver-auth")).ok()).next().expect("the build script recorded its jobserver");
+    let seen = sb.layout(&p).script_out_dirs(&sb.target_dir(&p).join("debug")).into_iter().find_map(|o| fs::read_to_string(o.join("jobserver-auth")).ok()).expect("the build script recorded its jobserver");
     assert_eq!(seen, outer_auth, "Cargo used its own jobserver instead of make's");
 }
 
@@ -1225,10 +1248,10 @@ fn test0276_quickrusts_compiler_driver_builds_byte_for_byte_what_rustc_builds() 
         let _ = fs::remove_dir_all(&target);
         ok(sb.upstream(&ws).arg("build").env("RUSTC", compiler).env("CARGO_INCREMENTAL", "0"));
         let mut out = std::collections::BTreeMap::new();
-        for e in fs::read_dir(target.join("debug/deps")).unwrap().flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
+        for f in sb.layout(&ws).unit_outputs(&target.join("debug")) {
+            let name = f.file_name().unwrap().to_string_lossy().into_owned();
             if !name.ends_with(".d") {
-                out.insert(name, fs::read(e.path()).unwrap());
+                assert!(out.insert(name, fs::read(&f).unwrap()).is_none(), "two units wrote {}", f.display());
             }
         }
         out

@@ -85,7 +85,8 @@ telemetria di rete / I/O su disco. Le funzionalità nightly vengono rilevate ed 
 
 5. **Il tempo di esecuzione degli script di build si ricava dai file che Cargo scrive attorno
    all'esecuzione** (`invoked.timestamp`, poi `stderr` / `root-output`). Cargo retrodata
-   `output` al momento dell'invocazione, quindi non può essere usato.
+   ciò che lo script ha stampato (`output`, o `run/stdout` da Cargo 1.100) al momento
+   dell'invocazione, quindi non può essere usato.
 
 6. **È QuickRust a gestire le toolchain (decisione del 2026-10-12), non rustup (COMP-020).** La
    specifica risolve un Cargo upstream tramite `PATH` e rustup. QuickRust invece
