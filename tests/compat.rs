@@ -1325,3 +1325,117 @@ fn test0316_cargo_run_for_the_configured_target_runs_the_program_once_with_its_r
     // `qrust path bin` names it too.
     assert_eq!(stdout(&ok(sb.qrust(&p).args(["path", "bin", "p"]))).trim(), bin.display().to_string());
 }
+
+/// Wall-clock nanoseconds now.
+fn now_ns() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+}
+
+/// When the last count of the sandbox's cache was made.
+fn counted_ns(sb: &Sandbox) -> Option<u64> {
+    serde_json::from_slice::<Value>(&fs::read(sb.home.join("cache/usage.json")).ok()?).ok()?["scanned_ns"].as_u64()
+}
+
+// TEST0348: A build with cache.gc off starts no collection that is due, and the next build without it starts it
+#[test]
+fn test0348_a_build_with_cache_gc_off_starts_no_collection_that_is_due_and_the_next_build_without_it_starts_it() {
+    let sb = Sandbox::new("gc-off");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    // The last count is two days old: a collection is due after the next command.
+    let cache = sb.home.join("cache");
+    let stale = now_ns() - 2 * 86_400 * 1_000_000_000;
+    fs::write(cache.join("usage.json"), serde_json::json!({ "format": 3, "scanned_ns": stale, "total_bytes": 0, "free_at_scan": 0, "kept_by_snapshots": [], "counted": true, "unmet": false }).to_string()).unwrap();
+    let _ = fs::remove_file(cache.join("gc.log"));
+    sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 { y + x }\n");
+    ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_GC", "off"));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!cache.join("gc.log").exists(), "a collection was started");
+    assert_eq!(counted_ns(&sb), Some(stale), "the cache was collected");
+    // Set in the configuration too.
+    sb.file("qrust-home/config.toml", "[cache]\ngc = \"off\"\n");
+    ok(sb.cargo(&p).arg("build"));
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!cache.join("gc.log").exists() && counted_ns(&sb) == Some(stale), "a collection was started");
+    // The collection stayed due: the next build that allows one starts it.
+    fs::remove_file(sb.home.join("config.toml")).unwrap();
+    ok(sb.cargo(&p).arg("build"));
+    assert!(cache.join("gc.log").exists(), "no collection was started");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while counted_ns(&sb) == Some(stale) {
+        assert!(std::time::Instant::now() < deadline, "the collection did not count the cache: {}", fs::read_to_string(cache.join("gc.log")).unwrap_or_default());
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    // Any other value is refused, by its name.
+    let out = run(sb.cargo(&p).arg("build").env("QRUST_CACHE_GC", "later"));
+    assert!(!out.status.success() && stderr(&out).contains("QRUST_CACHE_GC"), "{}", stderr(&out));
+}
+
+/// How many entries the directory `dir` holds; none when it is gone.
+fn entry_count(dir: &Path) -> usize {
+    fs::read_dir(dir).map(|rd| rd.count()).unwrap_or(0)
+}
+
+/// Sets when `path` last changed to `secs` ago.
+fn changed_ago(path: &Path, secs: u64) {
+    fs::File::open(path).unwrap().set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(secs)).unwrap();
+}
+
+// TEST0349: A collection ended part way leaves the cache sound, and the next collections finish what it began
+#[test]
+fn test0349_a_collection_ended_part_way_leaves_the_cache_sound_and_the_next_collections_finish_what_it_began() {
+    let sb = Sandbox::new("gc-ended");
+    let p = sb.package("p", "p");
+    ok(sb.cargo(&p).arg("build"));
+    let cache = sb.home.join("cache");
+    const FILES: usize = 4000;
+    // Build directories of workspaces that are gone, and compiler drivers of toolchains that are
+    // gone, each of many files, unused for two hours: a collection removes all of them.
+    let used = now_ns() - 2 * 3600 * 1_000_000_000;
+    let mut builds = vec![];
+    for i in 0..6 {
+        let d = cache.join(format!("builds/gone{}-0123456789abcdef", i));
+        fs::create_dir_all(&d).unwrap();
+        for f in 0..FILES {
+            fs::write(d.join(format!("f{}", f)), b"x").unwrap();
+        }
+        fs::write(d.with_file_name(format!("gone{}-0123456789abcdef.json", i)), serde_json::json!({ "format": "qrust-build-dir-1", "workspace_root": sb.dir.join(format!("gone{}", i)), "created_ns": used, "last_used_ns": used }).to_string()).unwrap();
+        builds.push(d);
+    }
+    let mut drivers = vec![];
+    for i in 0..6 {
+        let d = cache.join(format!("drivers/0123456789ab-x86_64-unknown-linux-gnu-gone{}", i));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("compiler.json"), serde_json::json!({ "sysroot": sb.dir.join(format!("toolchain-gone{}", i)) }).to_string()).unwrap();
+        for f in 1..FILES {
+            fs::write(d.join(format!("f{}", f)), b"x").unwrap();
+        }
+        changed_ago(&d, 2 * 3600);
+        drivers.push(d);
+    }
+    // The collection is ended while it removes a driver.
+    let mut gc = sb.qrust(&p).arg("gc").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    loop {
+        assert!(gc.try_wait().unwrap().is_none(), "the collection ended before it was caught removing a driver");
+        if drivers.iter().any(|d| entry_count(d) < FILES) {
+            break;
+        }
+    }
+    gc.kill().unwrap();
+    gc.wait().unwrap();
+    let partial: Vec<(String, usize)> = builds.iter().chain(&drivers).map(|d| (d.display().to_string(), entry_count(d))).filter(|(_, n)| *n != 0 && *n != FILES).collect();
+    assert!(entry_count(&cache.join("tmp")) > 0 || !partial.is_empty(), "nothing was being removed when the collection ended");
+    // Every directory is whole where it was, or gone from there.
+    assert!(partial.is_empty(), "left part way where they were, with so many of their {} files: {:?}", FILES, partial);
+    // The cache is sound: the workspace builds and runs as it did, and the next collection runs.
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "3\n");
+    ok(sb.qrust(&p).arg("gc"));
+    assert!(builds.iter().chain(&drivers).all(|d| !d.exists()), "the next collection left what nothing can use");
+    // What the ended one left in `tmp` goes once nothing can be removing it any more.
+    for e in fs::read_dir(cache.join("tmp")).unwrap().flatten() {
+        changed_ago(&e.path(), 2 * 3600);
+    }
+    ok(sb.qrust(&p).arg("gc"));
+    assert_eq!(entry_count(&cache.join("tmp")), 0, "{:?}", fs::read_dir(cache.join("tmp")).unwrap().flatten().map(|e| e.file_name()).collect::<Vec<_>>());
+    assert_eq!(stdout(&ok(sb.cargo(&p).args(["run", "-q"]))), "3\n");
+}

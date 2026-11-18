@@ -60,9 +60,20 @@
 //! below the free space (as `free` counts it), above the size by the free space it has lost since
 //! the last count, or a day after that count; but not within 15 minutes of one that could not get
 //! within the bounds (a disk others fill), when nothing more has become removable. It then runs
-//! `qrust gc --background` detached, at the lowest priority.
+//! `qrust gc --background` detached, at the lowest priority. With `cache.gc = "off"` it starts
+//! nothing: the collection stays due, and the next command that allows one starts it.
 //! When the disk is nearly full (a quarter of the free space QuickRust keeps) a command collects
 //! first, for at most ten seconds. `qrust gc` collects now.
+//!
+//! A collection can be ended at any point and leaves the cache sound. Every removal renames the
+//! thing away first (into the cache's `tmp`), so what is not gone from its place is whole; what a
+//! removal left in `tmp` goes at a later collection. The count and the log are replaced whole. Its
+//! locks are the kernel's, released when it ends. Cargo's clean deletes a download file by file,
+//! and Cargo takes an extracted source or a checkout whose marker survives for whole: so a
+//! collection marks that Cargo's clean is under way (`.cleaning`, next to `CargoRuns`' lock), and
+//! Cargo's clean holds that lock too, inherited, until it ends. Whoever next takes the lock finds
+//! the mark of a clean that did not finish, and removes every download it touched before
+//! anything runs Cargo (`finish_cargo_clean`).
 
 use crate::config::Config;
 use crate::util;
@@ -479,7 +490,9 @@ pub fn downloads() -> Option<Downloads> {
 ///
 /// Cargo's own clean (`cargo -Zgc clean gc`) runs only while it holds the lock and no process
 /// is registered (`idle`); a command that starts meanwhile waits for it, as it waits for Cargo's
-/// package lock.
+/// package lock. Cargo's clean holds the lock too, inherited, so a collection ended while it runs
+/// still keeps commands waiting until it ends; and it is marked (`CLEANING`) until it has ended
+/// whole, so whoever takes the lock next finishes one that did not (`finish_cargo_clean`).
 #[derive(Clone, Debug)]
 pub struct CargoRuns {
     dir: PathBuf,
@@ -487,6 +500,16 @@ pub struct CargoRuns {
 
 /// This process's record, while it has one.
 static REGISTERED: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Next to `CargoRuns`' lock while Cargo's clean may be removing downloads: when it began, and the
+/// Cargo home it cleans.
+const CLEANING: &str = ".cleaning";
+/// The format of `CLEANING`.
+const CLEANING_FORMAT: u64 = 1;
+/// A directory changed this long before Cargo's clean began counts as changed by it: file systems
+/// keep modification times as coarsely as two seconds (FAT), and a removal that finishes needlessly
+/// costs only a download extracted again.
+const CLEANING_SLACK_NS: u64 = 2_000_000_000;
 
 impl CargoRuns {
     pub fn current() -> CargoRuns {
@@ -497,18 +520,27 @@ impl CargoRuns {
         self.dir.join(".lock")
     }
 
-    /// Records process `pid`; `waiting` is called first when a collection holds the lock.
-    fn register(&self, pid: u32, waiting: impl FnOnce()) -> io::Result<PathBuf> {
-        let _lock = match util::ExclusiveLock::try_acquire(&self.lock())? {
+    fn cleaning(&self) -> PathBuf {
+        self.dir.join(CLEANING)
+    }
+
+    /// Records process `pid`; `waiting` is called first when a collection holds the lock. A clean
+    /// of Cargo's downloads that did not finish is finished first: this process is about to run
+    /// Cargo, which would take a download it left half removed for whole.
+    fn register(&self, pid: u32, waiting: impl FnOnce()) -> Result<PathBuf, String> {
+        let lock = self.lock();
+        let unrecorded = |e: io::Error| format!("cannot record in {} that this command runs Cargo, and a collection could remove Cargo's records under it: {}", self.dir.display(), e);
+        let _lock = match util::ExclusiveLock::try_acquire(&lock).map_err(unrecorded)? {
             Some(l) => l,
             None => {
                 waiting();
-                util::ExclusiveLock::acquire(&self.lock())?
+                util::ExclusiveLock::acquire(&lock).map_err(unrecorded)?
             }
         };
+        finish_cargo_clean(&self.cleaning())?;
         self.running();
         let record = self.dir.join(pid.to_string());
-        fs::write(&record, b"")?;
+        fs::write(&record, b"").map_err(unrecorded)?;
         Ok(record)
     }
 
@@ -528,12 +560,87 @@ impl CargoRuns {
     }
 
     /// The lock, held, when no registered process is running: Cargo's clean may run while it is
-    /// held. Otherwise the processes that are.
-    fn idle(&self) -> io::Result<Result<util::ExclusiveLock, Vec<u32>>> {
-        let lock = util::ExclusiveLock::acquire(&self.lock())?;
+    /// held. Otherwise the processes that are. A clean that did not finish is finished first.
+    fn idle(&self) -> Result<Result<util::ExclusiveLock, Vec<u32>>, String> {
+        let lock = util::ExclusiveLock::acquire(&self.lock()).map_err(|e| format!("cannot take the lock {}: {}", self.lock().display(), e))?;
+        finish_cargo_clean(&self.cleaning())?;
         let running = self.running();
         Ok(if running.is_empty() { Ok(lock) } else { Err(running) })
     }
+}
+
+/// Finishes a clean of Cargo's downloads that did not end whole: its mark (`CLEANING`) is still
+/// there. The caller holds `CargoRuns`' lock, which Cargo's clean held to its end, so it no longer
+/// runs. Cargo removes a download file by file and takes one whose marker file survived for whole,
+/// so every download it may have begun to remove (an extracted source, a checkout, a clone, an
+/// index: any directory of it changed since the clean began) is removed whole, then the mark.
+/// Cargo downloads or extracts again what a build needs. One ended in turn leaves the mark, and
+/// the next finishes it.
+fn finish_cargo_clean(mark: &Path) -> Result<(), String> {
+    let text = match fs::read(mark) {
+        Ok(t) => t,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("cannot read {}, which says whether Cargo's clean of its downloads ended part way: {}", mark.display(), e)),
+    };
+    let v: Value = serde_json::from_slice(&text).map_err(|e| format!("{} is not a record of Cargo's clean of its downloads: {}", mark.display(), e))?;
+    let (true, Some(began), Some(home)) = (v["format"] == json!(CLEANING_FORMAT), v["began_ns"].as_u64(), v["cargo_home"].as_str()) else {
+        return Err(format!("{} is not a record of Cargo's clean of its downloads of format {}: {}", mark.display(), CLEANING_FORMAT, String::from_utf8_lossy(&text).trim()));
+    };
+    let since = began.saturating_sub(CLEANING_SLACK_NS);
+    for download in cargo_downloads(Path::new(home)) {
+        if changed_since(&download, since).map_err(|e| format!("cannot read {}, which Cargo's clean of its downloads may have begun to remove: {}", download.display(), e))? {
+            match fs::remove_dir_all(&download) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(format!("cannot remove {}, which Cargo's clean of its downloads began to remove: {}", download.display(), e)),
+            }
+        }
+    }
+    fs::remove_file(mark).map_err(|e| format!("cannot remove {}: {}", mark.display(), e))
+}
+
+/// The downloads in the Cargo home at `home` that Cargo's clean removes whole, each a directory:
+/// extracted sources (`registry/src/<index>/<package>`), indexes (`registry/index/<index>`), git
+/// clones (`git/db/<repository>`) and checkouts (`git/checkouts/<repository>/<revision>`). The
+/// `.crate` files are single files, removed at once.
+fn cargo_downloads(home: &Path) -> Vec<PathBuf> {
+    let dirs = |p: PathBuf| entries(&p).into_iter().filter(|e| fs::symlink_metadata(e).is_ok_and(|m| m.is_dir())).collect::<Vec<_>>();
+    let mut out = vec![];
+    for group in dirs(home.join("registry/src")).into_iter().chain(dirs(home.join("git/checkouts"))) {
+        out.extend(dirs(group));
+    }
+    out.extend(dirs(home.join("registry/index")));
+    out.extend(dirs(home.join("git/db")));
+    out
+}
+
+/// Whether `dir`, or any directory in it, changed at `since` (wall-clock nanoseconds) or later:
+/// removing an entry changes the directory it was in. One that went missing while it was read
+/// changed.
+fn changed_since(dir: &Path, since: u64) -> io::Result<bool> {
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let md = match fs::symlink_metadata(&d) {
+            Ok(m) => m,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(e),
+        };
+        if util::mtime_ns(&md) >= since {
+            return Ok(true);
+        }
+        let list = match fs::read_dir(&d) {
+            Ok(l) => l,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+            Err(e) => return Err(e),
+        };
+        for entry in list {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                stack.push(entry.path());
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// Records that this process runs Cargo with QuickRust's Cargo home, once (see `CargoRuns`).
@@ -543,7 +650,7 @@ pub fn running_cargo() -> Result<(), String> {
         return Ok(());
     }
     let runs = CargoRuns::current();
-    let record = runs.register(std::process::id(), || crate::ui::note("waiting for QuickRust to finish collecting Cargo's downloads")).map_err(|e| format!("cannot record in {} that this command runs Cargo, and a collection could remove Cargo's records under it: {}", runs.dir.display(), e))?;
+    let record = runs.register(std::process::id(), || crate::ui::note("waiting for QuickRust to finish collecting Cargo's downloads"))?;
     *registered = Some(record);
     Ok(())
 }
@@ -587,7 +694,7 @@ fn oldest_download_ns(d: &Downloads) -> Option<u64> {
 
 /// Cargo's collection of the downloads in `d.cargo_home`: what was not used for `max_age`, or by
 /// Cargo's own ages. Cargo's summary line, and the bytes it says it removed (or would).
-fn cargo_gc(d: &Downloads, max_age: Option<&str>, dry_run: bool) -> Result<(String, u64), String> {
+fn cargo_gc(d: &Downloads, lock: &util::ExclusiveLock, max_age: Option<&str>, dry_run: bool) -> Result<(String, u64), String> {
     let mut c = crate::engine::toolchain_program(&d.cargo);
     c.args(["-Zgc", "clean", "gc"]).env("CARGO_HOME", &d.cargo_home).env("RUSTC_BOOTSTRAP", "1").env("CARGO_TERM_COLOR", "never").current_dir(&d.cargo_home).stdin(std::process::Stdio::null());
     if dry_run {
@@ -596,7 +703,13 @@ fn cargo_gc(d: &Downloads, max_age: Option<&str>, dry_run: bool) -> Result<(Stri
     if let Some(age) = max_age {
         c.arg(format!("--max-download-age={}", age));
     }
-    let out = c.output().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?;
+    c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    // It holds the lock the collection holds (see `CargoRuns`), until it ends.
+    let child = {
+        let _inherited = lock.inherited_by(&mut c).map_err(|e| format!("cannot share the lock of Cargo's clean with {}: {}", d.cargo.display(), e))?;
+        c.spawn().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?
+    };
+    let out = child.wait_with_output().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?;
     let err = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
         return Err(format!("Cargo could not collect its downloads: {}", err.lines().find(|l| l.contains("error")).unwrap_or(err.trim())));
@@ -1023,13 +1136,28 @@ fn remove(cache: &Path, unit: &Unit) -> Result<Removed, String> {
         _ => {
             let md = fs::symlink_metadata(&unit.path).map_err(|e| e.to_string());
             let r = match md {
-                Ok(m) if m.is_dir() => fs::remove_dir_all(&unit.path),
+                Ok(m) if m.is_dir() => remove_dir_away(cache, &unit.path),
                 Ok(_) => fs::remove_file(&unit.path),
                 Err(_) => return Ok(Removed::Done),
             };
             r.map(|_| Removed::Done).map_err(|e| format!("cannot remove {}: {}", unit.path.display(), e))
         }
     }
+}
+
+/// Removes the directory `dir` of the cache at `cache`: renamed into the cache's `tmp` first, so
+/// that a removal ended part way leaves it whole where it was, or gone from there (and what is
+/// left in `tmp` goes at a later collection). One already in a `tmp` is a leftover nothing looks
+/// for, and is removed where it is.
+fn remove_dir_away(cache: &Path, dir: &Path) -> io::Result<()> {
+    if dir.parent().is_some_and(|p| p.file_name().is_some_and(|n| n == "tmp")) {
+        return fs::remove_dir_all(dir);
+    }
+    let tmp = cache.join("tmp");
+    util::create_private_dir(&tmp)?;
+    let doomed = tmp.join(format!("{}.{}", util::lossy(dir.file_name().unwrap_or_default()), util::new_id()));
+    fs::rename(dir, &doomed)?;
+    fs::remove_dir_all(&doomed)
 }
 
 /// Collects the cache at `cache`, and the downloads of `downloads` (see the module notes).
@@ -1171,21 +1299,41 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     // while no Cargo QuickRust started runs (see `CargoRuns`).
     if let (Some(d), None, None) = (downloads, deadline, &out.failed) {
         match d.runs.idle() {
-            Err(e) => out.failed = Some(format!("Cargo's downloads were not collected: cannot read which commands run Cargo ({}): {}", d.runs.dir.display(), e)),
+            Err(e) => out.failed = Some(format!("Cargo's downloads were not collected: {}", e)),
             Ok(Err(running)) => out.cargo_left = Some(format!("Cargo's downloads were left: {} QuickRust command{} running Cargo (process {})", running.len(), if running.len() == 1 { " was" } else { "s were" }, running.iter().map(u32::to_string).collect::<Vec<_>>().join(", "))),
-            Ok(Ok(_idle)) => {
-                // Cargo's home stays in QuickRust's home when the cache moves to another disk:
-                // its downloads count towards the cache's size, and free none of that disk.
-                let frees_disk = same_volume(cache, &d.cargo_home);
-                let (freed, summary, failed) = collect_downloads(d, registry_before + git_before, &goal, total, available, frees_disk, now, dry_run);
-                total = total.saturating_sub(freed);
-                if frees_disk {
-                    available = available.saturating_add(freed);
+            Ok(Ok(idle)) => {
+                // Marked until Cargo's clean has ended whole (see `CargoRuns`).
+                let mark = d.runs.cleaning();
+                let marked = if dry_run { Ok(()) } else { util::write_json_fast(&mark, &json!({ "format": CLEANING_FORMAT, "began_ns": util::now_wall_ns(), "cargo_home": util::path_str(&d.cargo_home) })).map_err(|e| format!("Cargo's downloads were not collected: cannot mark in {} that Cargo's clean runs: {}", mark.display(), e)) };
+                match marked {
+                    Err(e) => out.failed = Some(e),
+                    Ok(()) => {
+                        // Cargo's home stays in QuickRust's home when the cache moves to another disk:
+                        // its downloads count towards the cache's size, and free none of that disk.
+                        let frees_disk = same_volume(cache, &d.cargo_home);
+                        let (freed, summary, cargo_failed) = collect_downloads(d, &idle, registry_before + git_before, &goal, total, available, frees_disk, now, dry_run);
+                        total = total.saturating_sub(freed);
+                        if frees_disk {
+                            available = available.saturating_add(freed);
+                        }
+                        if freed > 0 {
+                            out.removed.push(Removal { kind: Kind::Registry, path: d.cargo_home.clone(), bytes: freed, why: Why::Cargo(summary) });
+                        }
+                        out.failed = cargo_failed;
+                        // A Cargo that failed may have stopped part way through a download: what
+                        // it began is removed now. One that ended whole leaves nothing to finish.
+                        let ended = if dry_run {
+                            Ok(())
+                        } else if out.failed.is_some() {
+                            finish_cargo_clean(&mark)
+                        } else {
+                            fs::remove_file(&mark).map_err(|e| format!("cannot remove {}: {}", mark.display(), e))
+                        };
+                        if let Err(e) = ended {
+                            failed(&mut out, e);
+                        }
+                    }
                 }
-                if freed > 0 {
-                    out.removed.push(Removal { kind: Kind::Registry, path: d.cargo_home.clone(), bytes: freed, why: Why::Cargo(summary) });
-                }
-                out.failed = failed;
             }
         }
     }
@@ -1239,10 +1387,10 @@ fn same_volume(a: &Path, b: &Path) -> bool {
 /// then by each of CARGO_AGES while the bounds need room, with the cache at `total` and the disk's
 /// free space at `available` (a dry run goes by what Cargo says it would remove); none that cannot
 /// remove anything. What it removes adds to the disk's free space only when `frees_disk` (the
-/// downloads are on the cache's disk). What it freed, Cargo's last summary, and why it stopped if
-/// Cargo failed.
+/// downloads are on the cache's disk). Each Cargo holds `lock`, `CargoRuns`' lock the collection
+/// holds, until it ends. What it freed, Cargo's last summary, and why it stopped if Cargo failed.
 #[allow(clippy::too_many_arguments)]
-fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, available: u64, frees_disk: bool, now: u64, dry_run: bool) -> (u64, String, Option<String>) {
+fn collect_downloads(d: &Downloads, lock: &util::ExclusiveLock, before: u64, goal: &Goal, total: u64, available: u64, frees_disk: bool, now: u64, dry_run: bool) -> (u64, String, Option<String>) {
     let measured = |d: &Downloads| {
         let (r, g) = download_bytes(d);
         r + g
@@ -1261,7 +1409,7 @@ fn collect_downloads(d: &Downloads, before: u64, goal: &Goal, total: u64, availa
         if !may_remove(age_ns) {
             continue;
         }
-        match cargo_gc(d, age, dry_run) {
+        match cargo_gc(d, lock, age, dry_run) {
             Ok((s, would)) => {
                 summary = s;
                 after = if dry_run { before.saturating_sub(would) } else { measured(d) };
@@ -1370,9 +1518,14 @@ fn collecting_in(cache: &Path) -> bool {
     lock.is_file() && matches!(util::ExclusiveLock::try_acquire(&lock), Ok(None))
 }
 
-/// After a command: starts `qrust gc --background` when a collection is due. Errors (no free
-/// space to count, no process to start) are the command's to report as a note, never to fail on.
+/// After a command: starts `qrust gc --background` when a collection is due, unless `cache.gc` is
+/// off. A collection that is due stays due: whether one is is asked again from the last count
+/// after every command, so the next command that allows one starts it. Errors (no free space to
+/// count, no process to start) are the command's to report as a note, never to fail on.
 pub fn after_command(cfg: &Config, qrust: &Path) -> Result<bool, String> {
+    if cfg.str("cache.gc") == "off" {
+        return Ok(false);
+    }
     let cache = util::cache_dir();
     let volume = cache_volume(&cache)?;
     if !due(&cache, &policy(cfg, &volume.space), &volume, util::now_wall_ns()) {
@@ -2228,5 +2381,137 @@ mod tests {
         assert!(small.exists() && !done.unmet, "{:?}", done);
         let named = &recent(&c, 1)[0]["named"];
         assert!(named[0]["why"].as_str().is_some_and(|w| w.starts_with("the bounds needed room, and nothing had used it for 1 hour")), "{}", named);
+    }
+
+    /// Every directory in `root`, `root` too, last changed `secs` ago.
+    fn age_dirs(root: &Path, secs: u64) {
+        for e in fs::read_dir(root).unwrap().flatten() {
+            if e.file_type().unwrap().is_dir() {
+                age_dirs(&e.path(), secs);
+            }
+        }
+        age(root, secs);
+    }
+
+    /// Downloads in the Cargo home `home` as Cargo leaves them, each with a file: extracted sources
+    /// and a checkout with their markers, an index, a clone, a `.crate`; all made an hour ago.
+    fn cargo_downloads_made(home: &Path) -> Vec<PathBuf> {
+        let made = vec![
+            home.join("registry/src/index-1/whole-1.0.0"),
+            home.join("registry/src/index-1/half-1.0.0"),
+            home.join("git/checkouts/repo-1/abcdef0"),
+            home.join("registry/index/index-1"),
+            home.join("git/db/repo-1"),
+        ];
+        for d in &made {
+            file(&d.join("src/lib.rs"), 10);
+            file(&d.join("src/more.rs"), 10);
+            file(&d.join(".cargo-ok"), 8);
+        }
+        file(&home.join("registry/cache/index-1/whole-1.0.0.crate"), 10);
+        age_dirs(home, 3600);
+        made
+    }
+
+    /// The mark of Cargo's clean of the downloads in `home`, begun now.
+    fn mark_cleaning(runs: &CargoRuns, home: &Path) {
+        util::create_private_dir(&runs.dir).unwrap();
+        util::write_json(&runs.cleaning(), &json!({ "format": CLEANING_FORMAT, "began_ns": util::now_wall_ns(), "cargo_home": util::path_str(home) })).unwrap();
+    }
+
+    // TEST0345: A clean of Cargo's downloads ended part way is finished before anything runs Cargo
+    #[test]
+    fn test0345_a_clean_of_cargos_downloads_ended_part_way_is_finished_before_anything_runs_cargo() {
+        let c = cache();
+        let home = c.parent().unwrap();
+        let cargo_home = home.join("cargo");
+        let made = cargo_downloads_made(&cargo_home);
+        let runs = CargoRuns { dir: home.join("cargo-runs") };
+        // Cargo's clean began on a source and a checkout, removing their files deepest first, and
+        // was ended: their markers survive, and Cargo would take them for whole.
+        mark_cleaning(&runs, &cargo_home);
+        fs::remove_file(made[1].join("src/more.rs")).unwrap();
+        fs::remove_file(made[2].join("src/lib.rs")).unwrap();
+        let record = runs.register(std::process::id(), || panic!("nothing holds the lock")).unwrap();
+        assert!(!made[1].exists() && !made[2].exists(), "a download Cargo's clean began to remove stays");
+        for d in [&made[0], &made[3], &made[4]] {
+            assert!(d.join("src/lib.rs").is_file() && d.join("src/more.rs").is_file() && d.join(".cargo-ok").is_file(), "{} lost files", d.display());
+        }
+        assert!(cargo_home.join("registry/cache/index-1/whole-1.0.0.crate").is_file());
+        assert!(!runs.cleaning().exists(), "the mark of a finished clean stays");
+        fs::remove_file(record).unwrap();
+        // So is one found when a collection is about to run Cargo's clean again.
+        mark_cleaning(&runs, &cargo_home);
+        fs::remove_file(made[4].join("src/more.rs")).unwrap();
+        assert!(runs.idle().unwrap().is_ok());
+        assert!(!made[4].exists() && made[0].join("src/more.rs").is_file() && made[3].join("src/more.rs").is_file());
+        assert!(!runs.cleaning().exists());
+        // A mark that is not one stops whoever would run Cargo, and says which file it is.
+        fs::write(runs.cleaning(), b"{\"format\":1}").unwrap();
+        let e = runs.register(std::process::id(), || {}).unwrap_err();
+        assert!(e.contains(&util::path_str(&runs.cleaning())) && e.contains("is not a record of Cargo's clean"), "{}", e);
+    }
+
+    // TEST0346: A Cargo clean that fails part way leaves no download half removed, and one that ends whole leaves no mark
+    #[cfg(unix)]
+    #[test]
+    fn test0346_a_cargo_clean_that_fails_part_way_leaves_no_download_half_removed_and_one_that_ends_whole_leaves_no_mark() {
+        let c = cache();
+        let home = c.parent().unwrap();
+        let cargo_home = home.join("cargo");
+        let made = cargo_downloads_made(&cargo_home);
+        age(&cargo_home.join("registry/cache/index-1/whole-1.0.0.crate"), 60 * 86_400);
+        // A Cargo whose clean removes one file of a source, then fails.
+        let cargo = home.join("cargo-bin");
+        fs::write(&cargo, format!("#!/bin/sh\nrm '{}'\necho 'error: the package cache is broken' >&2\nexit 101\n", made[1].join("src/more.rs").display())).unwrap();
+        fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let d = Downloads { cargo_home: cargo_home.clone(), cargo: cargo.clone(), runs: CargoRuns { dir: home.join("cargo-runs") } };
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
+        assert!(done.failed.as_deref().is_some_and(|e| e.contains("the package cache is broken")), "{:?}", done);
+        assert!(!made[1].exists(), "the source Cargo's clean began to remove stays");
+        assert!(made.iter().filter(|m| **m != made[1]).all(|m| m.join("src/more.rs").is_file()));
+        assert!(!d.runs.cleaning().exists());
+        // A clean that ends whole leaves its downloads to Cargo, and no mark.
+        fs::write(&cargo, format!("#!/bin/sh\nrm -r '{}'\necho '     Removed 3 files, 30B total' >&2\n", made[2].display())).unwrap();
+        let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
+        assert!(done.failed.is_none(), "{:?}", done);
+        assert!(!made[2].exists() && made[0].join("src/more.rs").is_file() && made[3].join("src/more.rs").is_file());
+        assert!(!d.runs.cleaning().exists());
+    }
+
+    // TEST0347: Cargo's clean holds the collection's lock until it ends, though the collection ended first
+    #[test]
+    fn test0347_cargos_clean_holds_the_collections_lock_until_it_ends_though_the_collection_ended_first() {
+        let c = cache();
+        let lock_path = c.join("cargo-runs/.lock");
+        let sleeper = || {
+            #[cfg(unix)]
+            let mut cmd = std::process::Command::new("sleep");
+            #[cfg(unix)]
+            cmd.arg("60");
+            #[cfg(windows)]
+            let mut cmd = std::process::Command::new("ping");
+            #[cfg(windows)]
+            cmd.args(["-n", "60", "127.0.0.1"]);
+            cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd
+        };
+        let lock = util::ExclusiveLock::acquire(&lock_path).unwrap();
+        let mut cmd = sleeper();
+        let mut cargo = {
+            let _inherited = lock.inherited_by(&mut cmd).unwrap();
+            cmd.spawn().unwrap()
+        };
+        // A process started afterwards does not get it.
+        let mut other = sleeper().spawn().unwrap();
+        // The collection ends; its Cargo runs on.
+        drop(lock);
+        assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_none(), "the lock went with the collection while its Cargo ran");
+        cargo.kill().unwrap();
+        cargo.wait().unwrap();
+        assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_some(), "the lock stayed held after Cargo ended");
+        other.kill().unwrap();
+        other.wait().unwrap();
     }
 }

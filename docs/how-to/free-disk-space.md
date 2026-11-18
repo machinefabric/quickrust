@@ -65,6 +65,20 @@ Both take a size (`500MB`, `40GiB`), a share of the disk (`10%`) or `auto`. The 
 
 If the disk is shared with other large data, raise `min-free`; QuickRust then gives space back as the disk fills up, whatever its own size. It gives back what the disk is short of and a quarter of `min-free` more, and again when the disk has lost that margin. On a disk that is usually below `min-free` because of other data, lower `min-free` to what you want kept free: the cache otherwise stays smaller by the difference.
 
+## Keep a script's builds from starting a collection
+
+After a command, QuickRust may start a collection in a process of its own, which goes on after the command has ended. A test harness that builds with QuickRust and then checks that its tests left no process running sees that collection as one of theirs. Set `QRUST_CACHE_GC=off` for those builds:
+
+```sh
+QRUST_CACHE_GC=off qrust build
+```
+
+A build with it starts no collection. A collection that was due stays due, and the next command run without it starts it, so the cache is still kept within its limits. A disk nearly full is still collected before a command, inside it, which leaves nothing behind. To turn the background collection off on a machine, put `gc = "off"` under `[cache]` in `~/.qrust/config.toml`, and run `qrust gc` yourself.
+
+Three other things QuickRust does in the background have switches of their own: `QRUST_EARLY_CUTOFF=off` (building the compiler driver for [early cut-off](../explanation/early-cutoff.md), which those builds then do without), `QRUST_TOOLCHAIN_AUTO_UPDATE=off` and `QRUST_SELF_UPDATE_CHECK=off`. A build with all four set leaves no process running behind it.
+
+Ending a collection part way, by a signal or by ending its process tree, never leaves the cache broken ([Ending a collection](../reference/files.md#ending-a-collection)).
+
 ## Move the cache to another disk
 
 When the disk `~/.qrust` is on is short of space, or a faster one is attached, move the cache there:

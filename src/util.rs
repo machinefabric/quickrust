@@ -436,6 +436,37 @@ impl ExclusiveLock {
         }
     }
 
+    /// Shares this lock with the process `cmd` starts: the lock is then held until both this
+    /// process and that one have ended, so whoever waits for it waits for that process too, even
+    /// when this one ends first. Unix: the child keeps the lock's descriptor across `exec` (the
+    /// same open file, whose `flock` is released when its last descriptor closes). Windows: the
+    /// handle is inheritable while the returned guard lives, so `cmd` is spawned while it does and
+    /// the guard dropped right after; every process started meanwhile inherits it.
+    pub fn inherited_by(&self, cmd: &mut std::process::Command) -> io::Result<Inherited<'_>> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            use std::os::unix::process::CommandExt;
+            let fd = self._file.as_raw_fd();
+            unsafe {
+                cmd.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            Ok(Inherited { _lock: self })
+        }
+        #[cfg(windows)]
+        {
+            let _ = cmd;
+            win_lock::set_inherit(&self._file, true)?;
+            Ok(Inherited { _lock: self })
+        }
+    }
+
     pub fn acquire(path: &Path) -> io::Result<ExclusiveLock> {
         if let Some(dir) = path.parent() {
             create_private_dir(dir)?;
@@ -466,6 +497,43 @@ impl ExclusiveLock {
                 }
             }
         }
+    }
+}
+
+/// While it lives, the process a command starts inherits the lock it was made for
+/// (`ExclusiveLock::inherited_by`). On Windows, dropping it makes the handle private again.
+pub struct Inherited<'a> {
+    _lock: &'a ExclusiveLock,
+}
+
+#[cfg(windows)]
+impl Drop for Inherited<'_> {
+    fn drop(&mut self) {
+        // A handle that stays inheritable would reach every process started later; that cannot be
+        // undone afterwards, so it is not ignored.
+        if let Err(e) = win_lock::set_inherit(&self._lock._file, false) {
+            panic!("cannot make the lock's handle private again: {}", e);
+        }
+    }
+}
+
+#[cfg(windows)]
+mod win_lock {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+    }
+
+    const HANDLE_FLAG_INHERIT: u32 = 0x1;
+
+    pub fn set_inherit(file: &std::fs::File, inherit: bool) -> std::io::Result<()> {
+        if unsafe { SetHandleInformation(file.as_raw_handle(), HANDLE_FLAG_INHERIT, if inherit { HANDLE_FLAG_INHERIT } else { 0 }) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 

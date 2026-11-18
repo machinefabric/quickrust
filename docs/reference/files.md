@@ -18,7 +18,7 @@ QuickRust creates its directories with mode 0700. Paths below use the default ho
 | `~/.qrust/workspaces/<id>/` | per workspace: `workspace.json` (its root), `sessions/` (run records), `events/` (raw rustc events and stored output), `runs/` (analysed reports), `index/units.json` (last known unit fingerprints), `benchmarks/`, `remediations/`, `restore/` (journals of benchmark edits in progress) | history is lost |
 | `~/.qrust/workspaces/<id>/prebuilt/` | stamps of builds that succeeded in a terminal: the files each depended on, with sizes and times (at most 32 per workspace) | the next build asks Cargo |
 | `~/.qrust/active/` | one file per running session | only while no QuickRust command runs |
-| `~/.qrust/cargo-runs/` | one empty file per QuickRust process that may be running a Cargo with QuickRust's Cargo home, named by its process id, and the `.lock` they are written under. A toolchain program QuickRust runs by its name (`rust-analyzer`, `rustfmt`, …) has none: a Cargo it runs is QuickRust's `cargo`, which has its own, so an editor's rust-analyzer does not keep Cargo's clean from running; a collection runs Cargo's clean only while none of them is running ([Collection](#collection)). A file whose process is gone holds nothing and is removed by the next command or collection. A command that cannot write its file stops before it runs Cargo | only while no QuickRust command runs |
+| `~/.qrust/cargo-runs/` | one empty file per QuickRust process that may be running a Cargo with QuickRust's Cargo home, named by its process id, and the `.lock` they are written under. A toolchain program QuickRust runs by its name (`rust-analyzer`, `rustfmt`, …) has none: a Cargo it runs is QuickRust's `cargo`, which has its own, so an editor's rust-analyzer does not keep Cargo's clean from running; a collection runs Cargo's clean only while none of them is running ([Collection](#collection)). A file whose process is gone holds nothing and is removed by the next command or collection. A command that cannot write its file stops before it runs Cargo. `.cleaning` is there while a collection runs Cargo's clean: when it began and which Cargo home it cleans ([Ending a collection](#ending-a-collection)) | only while no QuickRust command runs |
 | `~/.qrust/linker/ld` | a link to the `wild` in use ([Fast mode](fast-mode.md#linker)) | recreated by the next build |
 | `~/.qrust/self-update.json` | what the checks for a newer QuickRust found ([Update QuickRust](../how-to/install.md#know-when-there-is-a-new-release)): when the last one started, the registry and channel it read, the newest release there, why the last one did not finish if it did not, and when a newer release was last told; read by builds, `qrust self check` and `qrust doctor` | a check starts after the next build |
 | `~/.qrust/self-update.log` | the output of the last background check | written again by the next one |
@@ -61,7 +61,7 @@ Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust ke
 | `memo/rustc/` | each compiler's `rustc -vV`, asked once per binary |
 | `memo/roots/` | which workspace a directory belongs to, as `cargo locate-project` said (asked again when a `Cargo.toml` from there up changes) |
 | `collected/<name>-<id>.json` | that a collection removed this build directory: when, why and how much. The workspace's next command says so in a `NOTE` and removes it; it goes with its workspace, or after 30 days unread |
-| `tmp/` | what a collection is deleting; renamed here first |
+| `tmp/` | what a collection is deleting; renamed here first. What a collection that was ended left here goes at a later collection, once it is an hour old |
 | `usage.json` | the cache's last count, the disk's free space then, and what collections removed that the volume's snapshots keep, by snapshot; a count QuickRust cannot write fails the collection, and one of an older format is no count (the next collection counts again) |
 | `gc-log.jsonl` | one line per collection (the last 200): by kind and reason, how many things went and their bytes; the build directories and program sources that went, by path; Cargo's summary, or why Cargo's downloads were left; the free space it started from and its goal; and, when it ended short of its goal (`unmet`), what it kept and why (`left`: build directories and sources by path, the rest counted by kind and reason) |
 | `gc.lock` | held by a running collection |
@@ -96,11 +96,20 @@ A collection that ends short of its goal (`unmet`) lists what it kept and why: `
 
 | Trigger | Collection |
 |---|---|
-| after every command, when the disk is below `cache.min-free` (counting what collections removed that the volume's snapshots keep), the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds | `qrust gc --background`, detached, at the lowest priority |
+| after every command, when the disk is below `cache.min-free` (counting what collections removed that the volume's snapshots keep), the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds | `qrust gc --background`, detached, at the lowest priority; nothing with `cache.gc = "off"`, and the collection stays due for the next command |
 | before a command, when the disk is below a quarter of `cache.min-free` (counted the same way) | in the command, for at most ten seconds, with a `NOTE`; Cargo's downloads are left alone |
 | `qrust gc` | now |
 
 `qrust cache status` shows the last count and recent collections; `qrust gc --dry-run` lists what a collection would remove.
+
+### Ending a collection
+
+A collection can be ended at any point, by a signal, by closing its terminal or by ending its process tree, and the cache stays sound:
+
+- Everything it removes from QuickRust's cache is renamed into `tmp/` first. What has not gone from its place is whole; what was left in `tmp/` goes at a later collection, once it is an hour old.
+- `usage.json` and `gc-log.jsonl` are replaced whole. A collection ended before it wrote its count leaves the last count, so the collection is still due after the next command.
+- `gc.lock` and the lock in `~/.qrust/cargo-runs/` are released by the operating system when the process holding them ends.
+- Cargo's clean deletes a download file by file, and Cargo takes an extracted source or a checkout whose marker file is still there for whole. A collection writes `~/.qrust/cargo-runs/.cleaning` before it runs Cargo's clean and removes it once Cargo's clean has ended whole. Cargo's clean holds the lock in `~/.qrust/cargo-runs/` until it ends, even when the collection that started it ended first, and a command that would run Cargo waits for it. The next command that runs Cargo, or the next collection, finds `.cleaning` and first removes every download Cargo's clean may have begun to remove: an extracted source, a checkout, a git clone or an index, any directory of which changed since the clean began. Cargo downloads or extracts again what a build needs. When Cargo's clean fails, the collection does this itself.
 
 ## Toolchain programs inside a toolchain
 

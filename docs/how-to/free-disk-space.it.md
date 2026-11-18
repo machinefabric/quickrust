@@ -65,6 +65,20 @@ Entrambe accettano una dimensione (`500MB`, `40GiB`), una quota del disco (`10%`
 
 Se il disco è condiviso con altri dati di grandi dimensioni, aumenta `min-free`; QuickRust allora restituisce spazio man mano che il disco si riempie, qualunque sia la sua dimensione. Restituisce quanto manca al disco più un quarto di `min-free`, e di nuovo quando il disco ha perso quel margine. Su un disco che di solito è sotto `min-free` a causa di altri dati, abbassa `min-free` allo spazio che vuoi mantenere libero: altrimenti la cache resta più piccola della differenza.
 
+## Impedisci alle build di uno script di avviare una raccolta {#keep-a-scripts-builds-from-starting-a-collection}
+
+Dopo un comando, QuickRust può avviare una raccolta in un processo proprio, che continua dopo la fine del comando. Un harness di test che compila con QuickRust e poi controlla che i suoi test non abbiano lasciato processi in esecuzione vede quella raccolta come uno dei loro. Imposta `QRUST_CACHE_GC=off` per quelle build:
+
+```sh
+QRUST_CACHE_GC=off qrust build
+```
+
+Una build con questa variabile non avvia alcuna raccolta. Una raccolta che era dovuta resta dovuta, e il comando successivo eseguito senza la variabile la avvia, così la cache resta comunque entro i suoi limiti. Un disco quasi pieno viene comunque raccolto prima di un comando, al suo interno, il che non lascia nulla dopo di sé. Per disattivare la raccolta in background su una macchina, metti `gc = "off"` sotto `[cache]` in `~/.qrust/config.toml`, ed esegui `qrust gc` tu stesso.
+
+Altre tre cose che QuickRust fa in background hanno interruttori propri: `QRUST_EARLY_CUTOFF=off` (la compilazione del driver del compilatore per l'[early cut-off](../explanation/early-cutoff.md), di cui quelle build fanno allora a meno), `QRUST_TOOLCHAIN_AUTO_UPDATE=off` e `QRUST_SELF_UPDATE_CHECK=off`. Una build con tutte e quattro impostate non lascia alcun processo in esecuzione dopo di sé.
+
+Interrompere una raccolta a metà, con un segnale o terminando il suo albero di processi, non lascia mai la cache rotta ([Interrompere una raccolta](../reference/files.md#ending-a-collection)).
+
 ## Sposta la cache su un altro disco {#move-the-cache-to-another-disk}
 
 Quando il disco su cui si trova `~/.qrust` è a corto di spazio, o ne è collegato uno più veloce, sposta lì la cache:
