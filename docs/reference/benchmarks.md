@@ -114,4 +114,4 @@ The result also lists each setting's known effect on the built program (`dimensi
 
 ## qrust-bench
 
-`qrust-bench` (in `bench/`) is a separate harness that measures QuickRust against upstream Cargo on pinned real projects and computes the speed index. Its workloads, scenarios, tiers and records are described in [benchmarks/README.md](../../benchmarks/README.md); results are in [benchmarks/PROGRESS.md](../../benchmarks/PROGRESS.md).
+`qrust-bench` (in `bench/`) is a separate harness that measures QuickRust against upstream Cargo on pinned real projects and computes the speed index. It measures on Linux and macOS. On any other platform, Windows included, it builds and refuses to run: `FAIL qrust-bench measures on Linux and macOS only: it cannot measure on <platform>`, with exit status 1. Its workloads, scenarios, tiers and records are described in [benchmarks/README.md](../../benchmarks/README.md); results are in [benchmarks/PROGRESS.md](../../benchmarks/PROGRESS.md).

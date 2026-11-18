@@ -114,4 +114,4 @@ Il risultato elenca anche l'effetto noto di ogni impostazione sul programma comp
 
 ## qrust-bench {#qrust-bench}
 
-`qrust-bench` (in `bench/`) è un harness separato che misura QuickRust rispetto al Cargo upstream su progetti reali fissati a una versione e calcola lo speed index. I suoi carichi di lavoro, scenari, livelli e record sono descritti in [benchmarks/README.md](../../benchmarks/README.md); i risultati sono in [benchmarks/PROGRESS.md](../../benchmarks/PROGRESS.md).
+`qrust-bench` (in `bench/`) è un harness separato che misura QuickRust rispetto al Cargo upstream su progetti reali fissati a una versione e calcola lo speed index. Misura su Linux e macOS. Su qualsiasi altra piattaforma, Windows compreso, si compila e rifiuta di eseguire: `FAIL qrust-bench measures on Linux and macOS only: it cannot measure on <platform>`, con stato di uscita 1. I suoi carichi di lavoro, scenari, livelli e record sono descritti in [benchmarks/README.md](../../benchmarks/README.md); i risultati sono in [benchmarks/PROGRESS.md](../../benchmarks/PROGRESS.md).

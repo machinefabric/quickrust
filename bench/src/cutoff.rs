@@ -21,7 +21,7 @@
 //! the cut-off restores.
 
 use crate::workload::{self, Workload};
-use crate::{fail, Ctx};
+use crate::index::{fail, Ctx};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -179,13 +179,10 @@ fn outputs(target: &Path) -> BTreeMap<String, PathBuf> {
                 }
                 continue;
             }
-            #[cfg(unix)]
             let executable = {
                 use std::os::unix::fs::PermissionsExt;
                 md.permissions().mode() & 0o111 != 0
             };
-            #[cfg(not(unix))]
-            let executable = name.ends_with(".exe");
             if md.is_file() && (name.ends_with(".rlib") || name.ends_with(".rmeta") || executable) {
                 out.insert(p.strip_prefix(target).unwrap_or(&p).to_string_lossy().into_owned(), p);
             }
@@ -231,7 +228,7 @@ pub fn gate(ctx: &Ctx, workloads: &[Workload], edits: usize, seed: u64) -> (Valu
             let home = base.join(name);
             let _ = fs::remove_dir_all(&home);
             ctx.sealed.qrust_home(&home).unwrap_or_else(|e| fail(&e));
-            crate::copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy QuickRust's compiler driver: {}", e)));
+            crate::index::copy_tree(drivers, &home.join("cache/drivers")).unwrap_or_else(|e| fail(&format!("cannot copy QuickRust's compiler driver: {}", e)));
             if name != "home-incremental" {
                 fs::write(home.join("config.toml"), "[fast]\nfrontend-threads = \"off\"\nlinker = \"off\"\n").unwrap_or_else(|e| fail(&e.to_string()));
             }

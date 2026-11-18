@@ -10,7 +10,11 @@ target/release/qrust-bench run --quick --record --note "what changed"  # every i
 target/release/qrust-bench run --full --record                   # checkpoint, ~30 min
 ```
 
-(`target/` is wherever your Cargo puts build output.) Two tiers:
+(`target/` is wherever your Cargo puts build output.) It measures on Linux and macOS, where it reads the CPU time and peak
+memory of each command's whole process tree as the system accounts them. On any other platform,
+Windows included, `qrust-bench` builds and refuses to run, naming the platforms it measures on.
+
+Two tiers:
 
 - **Quick**, every iteration: the `qrust` workload; `cargo` vs `qrust`; `cold-build no-op
   edit-leaf edit-core rebuild-after-clean second-checkout`; 3 repetitions, no warm-up;

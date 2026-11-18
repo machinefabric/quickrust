@@ -8,7 +8,7 @@
 //! the gate.
 
 use crate::workload::{self, Workload};
-use crate::{fail, Ctx, Variant};
+use crate::index::{fail, Ctx, Variant};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
