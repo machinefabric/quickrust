@@ -705,10 +705,7 @@ fn cargo_gc(d: &Downloads, lock: &util::ExclusiveLock, max_age: Option<&str>, dr
     }
     c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     // It holds the lock the collection holds (see `CargoRuns`), until it ends.
-    let child = {
-        let _inherited = lock.inherited_by(&mut c).map_err(|e| format!("cannot share the lock of Cargo's clean with {}: {}", d.cargo.display(), e))?;
-        c.spawn().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?
-    };
+    let child = lock.spawn_holding(&mut c).map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?;
     let out = child.wait_with_output().map_err(|e| format!("cannot run {}: {}", d.cargo.display(), e))?;
     let err = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
@@ -2501,11 +2498,7 @@ mod tests {
         let c = cache();
         let lock_path = c.join("cargo-runs/.lock");
         let lock = util::ExclusiveLock::acquire(&lock_path).unwrap();
-        let mut cmd = waiting_command();
-        let mut cargo = {
-            let _inherited = lock.inherited_by(&mut cmd).unwrap();
-            cmd.spawn().unwrap()
-        };
+        let mut cargo = lock.spawn_holding(&mut waiting_command()).unwrap();
         // A process started afterwards does not get it.
         let mut other = waiting_command().spawn().unwrap();
         // The collection ends; its Cargo runs on.
@@ -2539,11 +2532,7 @@ mod tests {
                 })
             };
             beginning.recv().unwrap();
-            let mut cmd = waiting_command();
-            let mut cargo = {
-                let _inherited = lock.inherited_by(&mut cmd).unwrap();
-                cmd.spawn().unwrap()
-            };
+            let mut cargo = lock.spawn_holding(&mut waiting_command()).unwrap();
             starter.join().unwrap();
             drop(lock);
             cargo.kill().unwrap();

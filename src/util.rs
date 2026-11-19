@@ -436,13 +436,16 @@ impl ExclusiveLock {
         }
     }
 
-    /// Shares this lock with the process `cmd` starts: the lock is then held until both this
+    /// Starts `cmd`, its process holding this lock too: the lock is then held until both this
     /// process and that one have ended, so whoever waits for it waits for that process too, even
-    /// when this one ends first. Unix: the child keeps the lock's descriptor across `exec` (the
-    /// same open file, whose `flock` is released when its last descriptor closes). Windows: the
-    /// handle is inheritable while the returned guard lives, so `cmd` is spawned while it does and
-    /// the guard dropped right after; every process started meanwhile inherits it.
-    pub fn inherited_by(&self, cmd: &mut std::process::Command) -> io::Result<Inherited<'_>> {
+    /// when this one ends first. Only that process gets it, whatever other threads start
+    /// meanwhile. Unix: the child keeps the lock's descriptor across its `exec` (the same open
+    /// file, whose `flock` is released when its last descriptor closes); the descriptor stays
+    /// close-on-exec everywhere else. Windows: the handle is duplicated into the child's process
+    /// once it is started (the same open file, unshared, closed when its last handle is); until
+    /// then this process holds it, so only this process ending in those few instructions leaves
+    /// the child without it. A child that cannot be given it is ended, and the error returned.
+    pub fn spawn_holding(&self, cmd: &mut std::process::Command) -> io::Result<std::process::Child> {
         #[cfg(unix)]
         {
             use std::os::unix::io::AsRawFd;
@@ -457,13 +460,17 @@ impl ExclusiveLock {
                     Ok(())
                 });
             }
-            Ok(Inherited { _lock: self })
+            cmd.spawn()
         }
         #[cfg(windows)]
         {
-            let _ = cmd;
-            win_lock::set_inherit(&self._file, true)?;
-            Ok(Inherited { _lock: self })
+            let mut child = cmd.spawn()?;
+            if let Err(e) = win_lock::give(&self._file, &child) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io::Error::new(e.kind(), format!("cannot give the process it started the lock: {}", e)));
+            }
+            Ok(child)
         }
     }
 
@@ -500,23 +507,6 @@ impl ExclusiveLock {
     }
 }
 
-/// While it lives, the process a command starts inherits the lock it was made for
-/// (`ExclusiveLock::inherited_by`). On Windows, dropping it makes the handle private again.
-pub struct Inherited<'a> {
-    _lock: &'a ExclusiveLock,
-}
-
-#[cfg(windows)]
-impl Drop for Inherited<'_> {
-    fn drop(&mut self) {
-        // A handle that stays inheritable would reach every process started later; that cannot be
-        // undone afterwards, so it is not ignored.
-        if let Err(e) = win_lock::set_inherit(&self._lock._file, false) {
-            panic!("cannot make the lock's handle private again: {}", e);
-        }
-    }
-}
-
 #[cfg(windows)]
 mod win_lock {
     use std::ffi::c_void;
@@ -524,13 +514,17 @@ mod win_lock {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
+        fn GetCurrentProcess() -> *mut c_void;
+        fn DuplicateHandle(source_process: *mut c_void, source: *mut c_void, target_process: *mut c_void, target: *mut *mut c_void, access: u32, inherit: i32, options: u32) -> i32;
     }
 
-    const HANDLE_FLAG_INHERIT: u32 = 0x1;
+    const DUPLICATE_SAME_ACCESS: u32 = 0x2;
 
-    pub fn set_inherit(file: &std::fs::File, inherit: bool) -> std::io::Result<()> {
-        if unsafe { SetHandleInformation(file.as_raw_handle(), HANDLE_FLAG_INHERIT, if inherit { HANDLE_FLAG_INHERIT } else { 0 }) } == 0 {
+    /// Puts a handle to `file` in `child`'s process. Nothing there names it: it is held, not
+    /// used, and Windows closes it when that process ends. Not inheritable, so it goes no further.
+    pub fn give(file: &std::fs::File, child: &std::process::Child) -> std::io::Result<()> {
+        let mut theirs: *mut c_void = std::ptr::null_mut();
+        if unsafe { DuplicateHandle(GetCurrentProcess(), file.as_raw_handle(), child.as_raw_handle(), &mut theirs, 0, 0, DUPLICATE_SAME_ACCESS) } == 0 {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
