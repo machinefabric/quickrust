@@ -2480,31 +2480,34 @@ mod tests {
         assert!(!d.runs.cleaning().exists());
     }
 
+    /// A command that waits a minute and says nothing, on every platform: a Cargo's clean that runs
+    /// on, or a process started beside one.
+    fn waiting_command() -> std::process::Command {
+        #[cfg(unix)]
+        let mut cmd = std::process::Command::new("sleep");
+        #[cfg(unix)]
+        cmd.arg("60");
+        #[cfg(windows)]
+        let mut cmd = std::process::Command::new("ping");
+        #[cfg(windows)]
+        cmd.args(["-n", "60", "127.0.0.1"]);
+        cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        cmd
+    }
+
     // TEST0347: Cargo's clean holds the collection's lock until it ends, though the collection ended first
     #[test]
     fn test0347_cargos_clean_holds_the_collections_lock_until_it_ends_though_the_collection_ended_first() {
         let c = cache();
         let lock_path = c.join("cargo-runs/.lock");
-        let sleeper = || {
-            #[cfg(unix)]
-            let mut cmd = std::process::Command::new("sleep");
-            #[cfg(unix)]
-            cmd.arg("60");
-            #[cfg(windows)]
-            let mut cmd = std::process::Command::new("ping");
-            #[cfg(windows)]
-            cmd.args(["-n", "60", "127.0.0.1"]);
-            cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-            cmd
-        };
         let lock = util::ExclusiveLock::acquire(&lock_path).unwrap();
-        let mut cmd = sleeper();
+        let mut cmd = waiting_command();
         let mut cargo = {
             let _inherited = lock.inherited_by(&mut cmd).unwrap();
             cmd.spawn().unwrap()
         };
         // A process started afterwards does not get it.
-        let mut other = sleeper().spawn().unwrap();
+        let mut other = waiting_command().spawn().unwrap();
         // The collection ends; its Cargo runs on.
         drop(lock);
         assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_none(), "the lock went with the collection while its Cargo ran");
@@ -2513,5 +2516,39 @@ mod tests {
         assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_some(), "the lock stayed held after Cargo ended");
         other.kill().unwrap();
         other.wait().unwrap();
+    }
+
+    // TEST0356: A process another thread starts while Cargo's clean is given the lock does not get it
+    #[test]
+    fn test0356_a_process_another_thread_starts_while_cargos_clean_is_given_the_lock_does_not_get_it() {
+        let c = cache();
+        let lock_path = c.join("cargo-runs/.lock");
+        // What the other thread starts runs on after each Cargo has ended, holding whatever it got.
+        let others = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        for round in 0..5 {
+            let lock = util::ExclusiveLock::acquire(&lock_path).unwrap();
+            let (began, beginning) = std::sync::mpsc::channel();
+            let starter = {
+                let others = others.clone();
+                std::thread::spawn(move || {
+                    began.send(()).unwrap();
+                    for _ in 0..8 {
+                        let started = Started(waiting_command().spawn().unwrap());
+                        others.lock().unwrap().push(started);
+                    }
+                })
+            };
+            beginning.recv().unwrap();
+            let mut cmd = waiting_command();
+            let mut cargo = {
+                let _inherited = lock.inherited_by(&mut cmd).unwrap();
+                cmd.spawn().unwrap()
+            };
+            starter.join().unwrap();
+            drop(lock);
+            cargo.kill().unwrap();
+            cargo.wait().unwrap();
+            assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_some(), "round {}: a process started beside Cargo's clean holds the lock after Cargo ended", round);
+        }
     }
 }
