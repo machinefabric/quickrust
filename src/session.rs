@@ -472,7 +472,7 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
     // made first would be lost to a removal this command then waits out.
     let _in_use = match (&engine.target, &engine.workspace_root) {
         (Some(t), Some(root)) if t.managed => {
-            let in_use = crate::builddir::in_use(&t.dir);
+            let in_use = crate::builddir::in_use(&t.dir)?;
             crate::builddir::mark_used(&t.dir, root);
             // A collection removed the directory since this workspace's last command: said once.
             if let Some(notice) = crate::builddir::take_collected(&t.dir) {

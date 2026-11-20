@@ -36,12 +36,13 @@ qrust gc --to 5GiB          # pulisce finché la cache non occupa al massimo 5 G
 Ogni rimozione viene elencata con il suo motivo; se la pulizia non è riuscita a riportare la cache entro i suoi limiti, ogni cosa conservata viene elencata con il motivo per cui è rimasta; poi una riga riassume il tutto:
 
 ```text
-     removed 4.5 MiB    build directories  /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 (the bounds needed room, and nothing had used it for 3 hours)
-     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/tool-f5025e19e2918129 (process 1261843 (sleep) works in /home/me/src/tool/src, in its workspace's checkout /home/me/src/tool)
-OK   Freed 4.5 MiB: QuickRust's cache 9.0 MiB -> 4.5 MiB (at most 37.6 GiB; keeps 18.8 GiB of the disk free, 153.4 GiB free now), short of its goal: 1 in use left alone [29ms]
+     removed 4.5 MiB    build directories  /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 (the bounds needed room, and nothing had used it for 2 days)
+     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/srv-3c1d8e0b7a924f61 (process 799375 (sleep) works in /home/me/src/srv/src, in its workspace's checkout /home/me/src/srv)
+     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/tool-f5025e19e2918129 (the work in hand: used 2 hours ago, within the 8 hours of cache.working-window)
+OK   Freed 4.5 MiB: QuickRust's cache 13.5 MiB -> 9.0 MiB (at most 5.0 MiB; keeps 2.0 GiB of the disk free, 6.6 GiB free now), short of its goal: 2 kept, in use or within the working window [7ms]
 ```
 
-Una pulizia prende per primo ciò che libera di più per quanto a lungo è rimasto inutilizzato: una directory di build grande in cui nessuno compila da ore va prima di una piccola usata mezz'ora fa. Non rimuove mai nulla che sia stato usato negli ultimi 15 minuti, né una directory di build occupata da un comando in esecuzione o da Cargo, da cui è stato avviato un programma in esecuzione, o in cui lavora un processo: nella directory stessa, o in qualsiasi punto del checkout del suo workspace (una shell, un editor o la sessione di un agente aperti lì). Se libera meno di quanto ti aspettavi, le righe `kept` dicono che cosa tiene ciascuna directory; termina quei processi, o eseguila di nuovo quando quelle build sono terminate. La regola completa è in [File e directory](../reference/files.md#collection).
+Una pulizia prende per primo ciò che libera di più per quanto a lungo è rimasto inutilizzato: una directory di build grande in cui nessuno compila da ore va prima di una piccola usata mezz'ora fa. Non rimuove mai nulla che sia stato usato negli ultimi 15 minuti, né una directory di build occupata da un comando in esecuzione o da Cargo, da cui è stato avviato un programma in esecuzione, o in cui lavora un processo: nella directory stessa, o in qualsiasi punto del checkout del suo workspace (una shell, un editor o la sessione di un agente aperti lì). Né rimuove il lavoro in corso per tenere la cache sotto la sua dimensione: una directory di build il cui workspace esiste ancora e in cui si è compilato nelle ultime 8 ore resta finché il disco non resta a corto di spazio libero o finché non chiedi lo spazio con `qrust gc --to` (vedi [Lascia spazio alle build che girano insieme](#leave-room-for-builds-that-run-at-once)). Se libera meno di quanto ti aspettavi, le righe `kept` dicono che cosa tiene ciascuna directory; termina quei processi, o eseguila di nuovo quando quelle build sono terminate. La regola completa è in [File e directory](../reference/files.md#collection).
 
 Quando una pulizia ha rimosso la directory di build di un workspace, il comando successivo di QuickRust in quel workspace lo dice, una volta:
 
@@ -64,6 +65,20 @@ min-free = "10%"     # lo spazio libero che lascia sul disco
 Entrambe accettano una dimensione (`500MB`, `40GiB`), una quota del disco (`10%`) oppure `auto`. I default sono `auto`: al massimo il 10% del disco, tra 10 e 100 GiB, e almeno il 5% del disco libero, tra 2 e 20 GiB. Questo file è il posto per un limite che valga sulla macchina: ogni comando eseguito come te lo legge, chiunque lo avvii (uno script, un editor, la build di un altro strumento). Per una singola shell o un job di CI, usa `QRUST_CACHE_MAX_SIZE` e `QRUST_CACHE_MIN_FREE`. `qrust policy explain` mostra quale è in vigore e da dove viene.
 
 Se il disco è condiviso con altri dati di grandi dimensioni, aumenta `min-free`; QuickRust allora restituisce spazio man mano che il disco si riempie, qualunque sia la sua dimensione. Restituisce quanto manca al disco più un quarto di `min-free`, e di nuovo quando il disco ha perso quel margine. Su un disco che di solito è sotto `min-free` a causa di altri dati, abbassa `min-free` allo spazio che vuoi mantenere libero: altrimenti la cache resta più piccola della differenza.
+
+## Lascia spazio alle build che girano insieme {#leave-room-for-builds-that-run-at-once}
+
+Su una macchina dove più workspace compilano insieme, come un server di build che esegue un branch in ogni worktree, ogni workspace ha una propria directory di build, spesso di decine di GiB. Finché una di esse è il lavoro in corso (il suo workspace esiste ancora, e un comando l'ha usata entro `cache.working-window`), `cache.max-size` non la rimuove. Così la build di un workspace non butta via quella di un altro tra una build e l'altra, e nessuna parte a freddo perché le altre hanno riempito la cache. A limitarle è il disco, tramite `cache.min-free`.
+
+1. Controlla che il disco su cui si trova la cache abbia spazio per le directory di build in uso nello stesso momento, più `cache.min-free`. `qrust cache status` mostra lo spazio libero e i limiti. Se non basta, [sposta la cache](#move-the-cache-to-another-disk) su un disco che lo abbia: su un disco troppo piccolo, lo spazio libero prende anche il lavoro in corso, prima il più grande e inutilizzato da più tempo.
+2. Se un workspace aspetta spesso più di 8 ore tra due build e deve conservare la sua directory di build, allunga la finestra in `~/.qrust/config.toml`:
+
+   ```toml
+   [cache]
+   working-window = "24h"
+   ```
+
+   Accetta `off` oppure una durata con la sua unità (`90m`, `8h`). `working-window = "off"` rimette ogni directory di build sotto `cache.max-size`.
 
 ## Impedisci alle build di uno script di avviare una raccolta {#keep-a-scripts-builds-from-starting-a-collection}
 

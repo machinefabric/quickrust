@@ -89,7 +89,7 @@ pub const PROTECTED_NS: u64 = 15 * 60 * 1_000_000_000;
 const DAY_NS: u64 = 24 * 3_600 * 1_000_000_000;
 pub const USAGE: &str = "usage.json";
 /// The format of `USAGE`; a count of another is no count, and the next collection writes one.
-const USAGE_FORMAT: u64 = 3;
+const USAGE_FORMAT: u64 = 4;
 const LOG: &str = "gc-log.jsonl";
 const LOG_KEEP: usize = 200;
 /// The format of a line of `LOG`; lines of another are not read, and are dropped at the next write.
@@ -228,11 +228,14 @@ pub fn fs_space(path: &Path) -> io::Result<FsSpace> {
     Ok(FsSpace { total, available })
 }
 
-/// The bounds in force: the cache's most, and the disk's least free.
+/// The bounds in force: the cache's most, and the disk's least free; and the working window, within
+/// which a build directory of a workspace that is still there is the work in hand, kept above
+/// the size (0: no window).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Policy {
     pub max_bytes: u64,
     pub min_free: u64,
+    pub working_window_ns: u64,
 }
 
 /// `auto`, a share (`15%`) or bytes, as `Kind::Space` validated it, for a filesystem of `total`.
@@ -247,7 +250,18 @@ fn resolve_space(raw: &str, total: u64, auto: (f64, u64, u64)) -> u64 {
 }
 
 pub fn policy(cfg: &Config, fs: &FsSpace) -> Policy {
-    Policy { max_bytes: resolve_space(cfg.str("cache.max-size"), fs.total, (10.0, 10, 100)), min_free: resolve_space(cfg.str("cache.min-free"), fs.total, (5.0, 2, 20)) }
+    let working_window_ns = match cfg.str("cache.working-window") {
+        "off" => 0,
+        w => crate::config::duration_ns(w).expect("`cache.working-window` is validated on load"),
+    };
+    Policy { max_bytes: resolve_space(cfg.str("cache.max-size"), fs.total, (10.0, 10, 100)), min_free: resolve_space(cfg.str("cache.min-free"), fs.total, (5.0, 2, 20)), working_window_ns }
+}
+
+/// A length of time as `Why` and `Left` say it: `8 hours`, `90 minutes`, `600 seconds`.
+fn span(ns: u64) -> String {
+    let s = ns / 1_000_000_000;
+    let (n, unit) = if s > 0 && s % 3_600 == 0 { (s / 3_600, "hour") } else if s > 0 && s % 60 == 0 { (s / 60, "minute") } else { (s, "second") };
+    format!("{} {}{}", n, unit, if n == 1 { "" } else { "s" })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -940,8 +954,12 @@ pub struct Collected {
     /// When it ended short of its goal (`unmet`): what it kept, and why.
     pub left: Vec<Left>,
     pub stopped_early: bool,
-    /// The bounds were still exceeded at the end: everything else was in use or too recent.
+    /// The bounds were still exceeded at the end: everything else was in use, too recent, or the
+    /// work in hand (within the working window).
     pub unmet: bool,
+    /// When it ended short of its goal and the working window kept some of what it left: when
+    /// the first of those leaves the window.
+    pub window_ends: Option<u64>,
     /// What it and the collections before it removed that the volume's snapshots keep: counted
     /// as free while they do (see `Kept`).
     pub kept: u64,
@@ -1025,6 +1043,9 @@ struct Count {
     kept: Vec<Kept>,
     /// The collection could not get within the bounds.
     unmet: bool,
+    /// When the first build directory the working window kept above the size leaves it, if the
+    /// window kept one.
+    window_ends_ns: Option<u64>,
 }
 
 impl Count {
@@ -1034,7 +1055,11 @@ impl Count {
             return None;
         }
         let kept = v["kept_by_snapshots"].as_array()?.iter().map(Kept::of).collect::<Option<Vec<Kept>>>()?;
-        Some(Count { scanned_ns: v["scanned_ns"].as_u64()?, total_bytes: v["total_bytes"].as_u64()?, free_at_scan: v["free_at_scan"].as_u64()?, kept, unmet: v["unmet"].as_bool()? })
+        let window_ends_ns = match v.get("window_ends_ns")? {
+            Value::Null => None,
+            t => Some(t.as_u64()?),
+        };
+        Some(Count { scanned_ns: v["scanned_ns"].as_u64()?, total_bytes: v["total_bytes"].as_u64()?, free_at_scan: v["free_at_scan"].as_u64()?, kept, unmet: v["unmet"].as_bool()?, window_ends_ns })
     }
 
     /// What it records as kept that still counts on `volume`, `now`.
@@ -1255,8 +1280,11 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
             }
         }
     }
-    // 2: while the bounds are exceeded, what frees the most for how long it has gone unused.
+    // 2: while the bounds are exceeded, what frees the most for how long it has gone unused; the
+    // work in hand last, and only for the disk's free space or the size `qrust gc --to` asks for.
     let mut goal = goal(policy, total, available);
+    // What the working window yields to: never `cache.max-size` alone.
+    let working_goal = Goal { max_total: max_total.unwrap_or(u64::MAX), min_free: goal.min_free };
     if let Some(m) = max_total {
         goal.max_total = goal.max_total.min(m);
     }
@@ -1272,18 +1300,33 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     // goal is met with the fewest removals, and of what was used about as long ago, the largest
     // goes first. Ties go oldest first.
     candidates.sort_by_key(|u| (std::cmp::Reverse(u.bytes() as u128 * now.saturating_sub(u.last_used_ns) as u128), u.last_used_ns, u.path.clone()));
+    // The work in hand: a build directory whose workspace is still there, used within the working
+    // window. Removing it for the size alone would only have its next build make it again, cold.
+    let working = |u: &Unit| u.kind == Kind::Build && u.workspace.is_some() && u.last_used_ns + policy.working_window_ns > now;
+    let (in_window, idle): (Vec<Unit>, Vec<Unit>) = candidates.into_iter().partition(|u| working(u));
+    // The earliest a directory the window keeps leaves it.
+    let mut window_ends: Option<u64> = None;
     // An artifact entry most of whose bytes are files something staying links (a build
-    // directory in use, or a link from outside the cache) is kept: removing it would lose it and
-    // gain little space. (A build directory is not: what it has of its own, incremental state
-    // above all, is freed, and its outputs come back from the artifact cache.)
-    let linked: std::collections::HashSet<(u64, u64)> = staying.iter().flat_map(|u| u.shared.iter().map(|(id, _, _)| *id)).chain(scan.links.map.iter().filter(|(_, c)| c.in_cache < c.nlink).map(|(id, _)| *id)).collect();
+    // directory in use or the work in hand, or a link from outside the cache) is kept: removing it
+    // would lose it and gain little space. (A build directory is not: what it has of its own,
+    // incremental state above all, is freed, and its outputs come back from the artifact cache.)
+    let linked: std::collections::HashSet<(u64, u64)> = staying.iter().chain(&in_window).flat_map(|u| u.shared.iter().map(|(id, _, _)| *id)).chain(scan.links.map.iter().filter(|(_, c)| c.in_cache < c.nlink).map(|(id, _)| *id)).collect();
     let mostly_linked = |u: &Unit| {
         let freeable = u.own_bytes + u.shared.iter().filter(|(id, _, _)| !linked.contains(id)).map(|(_, b, _)| b).sum::<u64>();
         freeable * 2 < u.bytes()
     };
-    for u in candidates {
-        if out.failed.is_some() || (total <= goal.max_total && available >= goal.min_free) {
+    for (u, worked) in idle.into_iter().map(|u| (u, false)).chain(in_window.into_iter().map(|u| (u, true))) {
+        if out.failed.is_some() {
             break;
+        }
+        let bound = if worked { &working_goal } else { &goal };
+        if total <= bound.max_total && available >= bound.min_free {
+            if worked {
+                let ends = u.last_used_ns + policy.working_window_ns;
+                window_ends = Some(window_ends.map_or(ends, |e| e.min(ends)));
+                leave(&mut out.left, &u, format!("the work in hand: used {}, within the {} of cache.working-window", util::human_ago(u.last_used_ns, now), span(policy.working_window_ns)), "used within the working window");
+            }
+            continue;
         }
         if deadline.is_some_and(|d| Instant::now() >= d) {
             out.stopped_early = true;
@@ -1351,6 +1394,9 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
     }
     out.after = total;
     out.unmet = total > goal.max_total || available < goal.min_free;
+    // Over the size only for the work in hand: due again for the size once it grows or its first
+    // directory leaves the window (`due`).
+    out.window_ends = window_ends.filter(|_| out.unmet);
     // What it kept matters when it fell short: within its goal, what it left was not needed.
     if !out.unmet {
         out.left.clear();
@@ -1367,7 +1413,7 @@ fn collect_on(cache: &Path, downloads: Option<&Downloads>, policy: &Policy, max_
             let (r, g) = download_bytes(d);
             by_kind.insert(Kind::Registry.name().to_string(), json!({ "count": 2, "bytes": r + g }));
         }
-        let usage = json!({ "format": USAGE_FORMAT, "scanned_ns": now, "total_bytes": total, "free_at_scan": end.space.available, "kept_by_snapshots": kept.iter().map(Kept::json).collect::<Vec<Value>>(), "fs_total": end.space.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet });
+        let usage = json!({ "format": USAGE_FORMAT, "scanned_ns": now, "total_bytes": total, "free_at_scan": end.space.available, "kept_by_snapshots": kept.iter().map(Kept::json).collect::<Vec<Value>>(), "fs_total": end.space.total, "max_bytes": policy.max_bytes, "min_free": policy.min_free, "by_kind": by_kind, "counted": true, "unmet": out.unmet, "window_ends_ns": out.window_ends });
         // A count that is not written would forget what the snapshots keep, and the next
         // collection would remove as much again: the collection fails with it.
         if let Err(e) = util::write_json_fast(&cache.join(USAGE), &usage) {
@@ -1514,7 +1560,14 @@ pub fn due(cache: &Path, policy: &Policy, volume: &Volume, now: u64) -> bool {
         None => cache.exists(),
         Some(c) => {
             let lost = c.free_at_scan.saturating_sub(volume.space.available);
-            c.total_bytes + lost > policy.max_bytes || c.scanned_ns + DAY_NS <= now
+            // Held above the size by the work in hand: due for the size again once the cache has
+            // grown by a tenth of it (the room a collection leaves below it), or once the first of
+            // that work leaves the window.
+            let room = match c.window_ends_ns {
+                Some(ends) if now < ends => lost > policy.max_bytes / 10,
+                _ => true,
+            };
+            (room && c.total_bytes + lost > policy.max_bytes) || c.scanned_ns + DAY_NS <= now
         }
     }
 }
@@ -1571,7 +1624,7 @@ fn before_command_in(cfg: &Config, cache: &Path) -> Option<Result<Collected, Str
     let empty = ["builds", "artifacts", "drivers", "src"].iter().all(|d| !cache.join(d).exists());
     if empty && count(&cache).is_none() {
         if let Ok(fs) = cache_volume(&cache).map(|v| v.space) {
-            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "kept_by_snapshots": [], "counted": false, "unmet": false })));
+            let _ = util::create_private_dir(&cache).and_then(|_| util::write_json_fast(&cache.join(USAGE), &json!({ "format": USAGE_FORMAT, "scanned_ns": util::now_wall_ns(), "total_bytes": 0, "free_at_scan": fs.available, "kept_by_snapshots": [], "counted": false, "unmet": false, "window_ends_ns": null })));
         }
     }
     if !cache.exists() {
@@ -1639,6 +1692,8 @@ mod tests {
         assert_eq!(resolve_space("auto", 1000 * GIB, (10.0, 10, 100)), 100 * GIB);
         assert_eq!(resolve_space("auto", 50 * GIB, (10.0, 10, 100)), 10 * GIB, "at least the floor");
         assert_eq!(resolve_space("auto", 300 * GIB, (10.0, 10, 100)), 30 * GIB);
+        let fs = FsSpace { total: 377 * GIB, available: 54 * GIB };
+        assert_eq!(policy(&Config::defaults(), &fs).working_window_ns, 8 * 3_600 * 1_000_000_000, "a working day by default");
         assert_eq!(resolve_space("25%", 200 * GIB, (10.0, 10, 100)), 50 * GIB);
         assert_eq!(resolve_space("12345", 200 * GIB, (10.0, 10, 100)), 12345);
     }
@@ -1678,7 +1733,7 @@ mod tests {
         age(&c.join("downloads/abc.tar.xz.part"), 8 * 86_400);
         file(&c.join("downloads/fresh.tar.xz.part"), 10);
         // Within its size and with free disk: only what nothing can use goes.
-        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 };
         let dry = collect(&c, None, &roomy, None, true, None).unwrap();
         assert!(gone.exists(), "a dry run removes nothing");
         let done = collect(&c, None, &roomy, None, false, None).unwrap();
@@ -1688,7 +1743,7 @@ mod tests {
         assert!(!gone.exists() && !gone.with_file_name("gone-1.json").exists());
         assert!(old.exists() && older.exists() && fresh.exists() && c.join("downloads/fresh.tar.xz.part").exists());
         // Over its size: the least recently used first, never what was used in the last minutes.
-        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let tight = Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [older.as_path(), old.as_path()]);
@@ -1736,7 +1791,7 @@ mod tests {
         for r in [&ours, &theirs, &unreadable] {
             age(r, 2 * 3600);
         }
-        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, None, &roomy, None, false, None).unwrap();
         let mut removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         removed.sort();
@@ -1766,7 +1821,7 @@ mod tests {
         let (mine, theirs) = (held.with_file_name(format!("a-1.hold-{}", std::process::id())), held.with_file_name(format!("a-1.hold-{}", gone)));
         assert!(mine.is_file() && theirs.is_file());
         age(&theirs, 3600);
-        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let tight = Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         // The older of the two stays, held; the other goes; and so does the record of a holder
         // that is gone.
@@ -1791,11 +1846,11 @@ mod tests {
         let d = c.join("builds/a-1");
         crate::builddir::mark_used_in(&c.join("builds"), &d, &a);
         assert!(!d.exists() && d.with_file_name("a-1.json").exists());
-        collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert!(d.with_file_name("a-1.json").exists(), "the record of a directory about to be made was removed");
         // An old one, whose directory never came, goes.
         age(&d.with_file_name("a-1.json"), 2 * 3600);
-        collect(&c, None, &Policy { max_bytes: u64::MAX, min_free: 0 }, None, false, None).unwrap();
+        collect(&c, None, &Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert!(!d.with_file_name("a-1.json").exists());
     }
 
@@ -1807,12 +1862,82 @@ mod tests {
         let a = workspace(&c, "a");
         let held = build_dir(&c, "a-1", &a, 5 * 3600, 1000);
         let building = build_dir(&c, "a-2", &a, 5 * 3600, 1000);
-        let _in_use = crate::builddir::in_use(&held);
+        let _in_use = crate::builddir::in_use(&held).unwrap();
         file(&building.join("debug/.cargo-lock"), 0);
         let _cargo = util::ExclusiveLock::acquire(&building.join("debug/.cargo-lock")).unwrap();
-        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert!(done.removed.is_empty() && done.left_count() == 2, "{:?}", done);
         assert!(held.exists() && building.exists());
+    }
+
+    /// Three card builds sharing a machine, each its own workspace: one a QuickRust command started
+    /// nine hours ago still holds (a long test run), one built two hours ago, and one left two days
+    /// ago; with the command's hold, which ends when it is dropped.
+    fn three_cards(c: &Path) -> (PathBuf, PathBuf, PathBuf, crate::builddir::InUse) {
+        let (a, b, d) = (workspace(c, "a"), workspace(c, "b"), workspace(c, "d"));
+        let running = build_dir(c, "a-1", &a, 9 * 3600, 900_000);
+        let recent = build_dir(c, "b-1", &b, 2 * 3600, 900_000);
+        let idle = build_dir(c, "d-1", &d, 2 * 86_400, 300_000);
+        let build = crate::builddir::in_use(&running).unwrap();
+        (running, recent, idle, build)
+    }
+
+    const EIGHT_HOURS_NS: u64 = 8 * 3_600 * 1_000_000_000;
+
+    // TEST0362: Over its size a collection keeps a running build and the work in hand, and removes what was left idle
+    #[test]
+    fn test0362_over_its_size_a_collection_keeps_a_running_build_and_the_work_in_hand_and_removes_what_was_left_idle() {
+        let c = cache();
+        let (running, recent, idle, _build) = three_cards(&c);
+        let policy = Policy { max_bytes: 1_000_000, min_free: 0, working_window_ns: EIGHT_HOURS_NS };
+        let done = collect(&c, None, &policy, None, false, None).unwrap();
+        assert_eq!(paths(&done), [idle.clone()], "{:?}", done);
+        assert!(running.exists() && recent.exists() && !idle.exists());
+        // Still above its size, and it says why each stays.
+        assert!(done.unmet);
+        let why = |d: &Path| done.left.iter().find(|l| l.path.as_deref() == Some(d)).map(|l| l.why.clone()).unwrap_or_default();
+        assert_eq!(why(&running), "a QuickRust command is using it");
+        assert_eq!(why(&recent), "the work in hand: used 2 hours ago, within the 8 hours of cache.working-window");
+        // Not collected again for the size while that is all that holds it: only once the cache
+        // has grown by a tenth of its size, or the work in hand has left the window.
+        let now = util::now_wall_ns();
+        let at_scan = usage(&c).unwrap()["free_at_scan"].as_u64().unwrap();
+        let disk = |available: u64| vol(1 << 40, available, &[]);
+        assert!(!due(&c, &policy, &disk(at_scan), now + PROTECTED_NS));
+        assert!(!due(&c, &policy, &disk(at_scan - policy.max_bytes / 10), now + PROTECTED_NS));
+        assert!(due(&c, &policy, &disk(at_scan - policy.max_bytes / 10 - 1), now + PROTECTED_NS), "grown by more than a tenth of its size");
+        assert!(due(&c, &policy, &disk(at_scan), now + 6 * 3_600 * 1_000_000_000), "the work in hand has left the window");
+        // Without a working window the size takes the work in hand too, never the running build.
+        let done = collect(&c, None, &Policy { working_window_ns: 0, ..policy }, None, false, None).unwrap();
+        assert_eq!(paths(&done), [recent.clone()], "{:?}", done);
+        assert!(running.exists());
+    }
+
+    // TEST0363: The work in hand goes for the disk's free space or the size `qrust gc --to` asks for, after what was left idle, and a running build stays
+    #[cfg(unix)]
+    #[test]
+    fn test0363_the_work_in_hand_goes_for_the_free_space_or_gc_to_after_what_was_left_idle_and_a_running_build_stays() {
+        // The disk is short of its free space by more than what was left idle frees.
+        let c = cache();
+        let (running, recent, idle, _build) = three_cards(&c);
+        let policy = Policy { max_bytes: u64::MAX, min_free: 1_000_000, working_window_ns: EIGHT_HOURS_NS };
+        let disk = std::cell::Cell::new(0);
+        let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &[])).unwrap();
+        assert_eq!(paths(&done), [idle.clone(), recent.clone()], "{:?}", done);
+        assert!(running.exists() && done.unmet);
+        assert_eq!(done.window_ends, None, "the window kept nothing");
+        // `qrust gc --to`: the size asked for takes the work in hand too, after what was left idle.
+        let c = cache();
+        let (running, recent, idle, _build) = three_cards(&c);
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: EIGHT_HOURS_NS };
+        let done = collect(&c, None, &roomy, Some(1), false, None).unwrap();
+        assert_eq!(paths(&done), [idle.clone(), recent.clone()], "{:?}", done);
+        assert!(running.exists());
+        // Within its bounds, with the window: nothing of the three goes.
+        let c = cache();
+        let (running, recent, idle, _build) = three_cards(&c);
+        let done = collect(&c, None, &roomy, None, false, None).unwrap();
+        assert!(done.removed.is_empty() && running.exists() && recent.exists() && idle.exists(), "{:?}", done);
     }
 
     // TEST0320: A directory held or built in after the scan stays
@@ -1886,7 +2011,7 @@ mod tests {
         age(&stray, 2 * 3600);
         let counted = scan(&c, util::now_wall_ns(), None).by_kind();
         assert!(counted.iter().any(|&(k, n, b)| k == Kind::Source && n == 2 && b >= 100_000), "{:?}", counted);
-        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [part.as_path(), stray.as_path(), old.as_path(), build.as_path()]);
         assert!(!old.exists() && !copy_lock(&old).exists());
@@ -1918,7 +2043,7 @@ mod tests {
         assert!(first.is_none() || first.as_ref().is_some_and(|r| r.is_ok()));
         let u = usage(&cache).expect("counted");
         assert_eq!((u["total_bytes"].as_u64(), u["counted"].as_bool()), (Some(0), Some(false)));
-        let p = Policy { max_bytes: u64::MAX / 4, min_free: 0 };
+        let p = Policy { max_bytes: u64::MAX / 4, min_free: 0, working_window_ns: 0 };
         let v = Volume { space: FsSpace { total: u64::MAX / 2, available: u["free_at_scan"].as_u64().unwrap() }, snapshots: vec![] };
         assert!(!due(&cache, &p, &v, util::now_wall_ns()), "not due right after its first count");
     }
@@ -1927,17 +2052,17 @@ mod tests {
     #[test]
     fn test0123_a_collection_is_due_below_the_free_space_above_the_size_or_a_day_after_the_count() {
         let c = cache();
-        let p = Policy { max_bytes: 1000, min_free: 100 };
+        let p = Policy { max_bytes: 1000, min_free: 100, working_window_ns: 0 };
         let now = util::now_wall_ns();
         assert!(due(&c, &p, &vol(10_000, 5_000, &[]), now), "never counted");
-        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000, "kept_by_snapshots": [], "unmet": false })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 4, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 5_000, "kept_by_snapshots": [], "unmet": false, "window_ends_ns": null })).unwrap();
         assert!(!due(&c, &p, &vol(10_000, 5_000, &[]), now));
         assert!(due(&c, &p, &vol(10_000, 50, &[]), now), "below the free space");
         assert!(due(&c, &p, &vol(10_000, 4_800, &[]), now), "200 bytes lost since the count: past the size");
         assert!(due(&c, &p, &vol(10_000, 5_000, &[]), now + DAY_NS), "a day later");
         // A collection that could not get within the bounds is not repeated before what it left
         // can have become removable.
-        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "kept_by_snapshots": [], "unmet": true })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 4, "scanned_ns": now, "total_bytes": 900, "free_at_scan": 50, "kept_by_snapshots": [], "unmet": true, "window_ends_ns": null })).unwrap();
         assert!(!due(&c, &p, &vol(10_000, 50, &[]), now + PROTECTED_NS - 1));
         assert!(due(&c, &p, &vol(10_000, 50, &[]), now + PROTECTED_NS));
     }
@@ -1973,7 +2098,7 @@ mod tests {
         let d = build_dir(&c, "w-1", &ws, 60, 0);
         fs::remove_file(d.join("debug/deps/libx.rlib")).unwrap();
         fs::hard_link(&entry, d.join("debug/deps/libx.rlib")).unwrap();
-        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let tight = Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         assert!(done.removed.is_empty() && entry.exists(), "the entry went for nothing: {:?}", done);
         assert!(done.unmet);
@@ -1981,6 +2106,9 @@ mod tests {
         // Once the build directory may go too, both go, the older first.
         let used = util::now_wall_ns() - 3 * 3600 * 1_000_000_000;
         util::write_json(&d.with_file_name("w-1.json"), &json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(&ws), "created_ns": used, "last_used_ns": used })).unwrap();
+        // Within the working window the build directory is the work in hand, and keeps the entry.
+        let done = collect(&c, None, &Policy { working_window_ns: 8 * 3_600 * 1_000_000_000, ..tight }, None, false, None).unwrap();
+        assert!(done.removed.is_empty() && entry.exists() && d.exists(), "{:?}", done);
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         let removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
         assert_eq!(removed, [c.join("artifacts/e/k1").as_path(), d.as_path()]);
@@ -2036,7 +2164,7 @@ mod tests {
         // third; the floor's goal (a quarter above it) is that much more again.
         let short = b[0].1 + b[1].1 + b[2].1 / 2;
         let m = (2 * short).div_ceil(5);
-        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m, working_window_ns: 0 };
         let disk = std::cell::Cell::new(short);
         let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert_eq!(paths(&done), [b[0].0.clone(), b[1].0.clone(), b[2].0.clone()], "not just the shortfall: {:?}", done);
@@ -2058,9 +2186,9 @@ mod tests {
         let c = cache();
         let now = util::now_wall_ns();
         let (older, newer) = (now - 3_600 * 1_000_000_000, now - 60 * 1_000_000_000);
-        let p = Policy { max_bytes: u64::MAX, min_free: 1000 };
+        let p = Policy { max_bytes: u64::MAX, min_free: 1000, working_window_ns: 0 };
         let kept = json!([{ "snapshot_ns": older, "removed_ns": now, "bytes": 400 }, { "snapshot_ns": newer, "removed_ns": now, "bytes": 100 }]);
-        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": kept, "unmet": false })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 4, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": kept, "unmet": false, "window_ends_ns": null })).unwrap();
         let v = |available, snapshots: &[u64]| vol(1 << 40, available, snapshots);
         assert_eq!(free(&c, &v(800, &[older, newer]), now), 1300);
         assert!(!due(&c, &p, &v(800, &[older, newer]), now));
@@ -2078,11 +2206,11 @@ mod tests {
         // collection is due to count again.
         util::write_json(&c.join(USAGE), &json!({ "format": 2, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unseen_bytes": 400, "unmet": false })).unwrap();
         assert_eq!((free(&c, &v(800, &[older]), now), usage(&c)), (800, None));
-        assert!(due(&c, &Policy { max_bytes: u64::MAX, min_free: 0 }, &v(5000, &[]), now));
+        assert!(due(&c, &Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 }, &v(5000, &[]), now));
         // So is one that lacks a field, or whose record of what is kept is not one.
-        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unmet": false })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 4, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "unmet": false, "window_ends_ns": null })).unwrap();
         assert_eq!(usage(&c), None);
-        util::write_json(&c.join(USAGE), &json!({ "format": 3, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": [{ "bytes": 4 }], "unmet": false })).unwrap();
+        util::write_json(&c.join(USAGE), &json!({ "format": 4, "scanned_ns": now, "total_bytes": 0, "free_at_scan": 800, "kept_by_snapshots": [{ "bytes": 4 }], "unmet": false, "window_ends_ns": null })).unwrap();
         assert_eq!(usage(&c), None);
     }
 
@@ -2095,7 +2223,7 @@ mod tests {
         let snap = [snapshot_now()];
         let short = b[0].1 + b[1].1 + b[2].1 / 2;
         let m = (2 * short).div_ceil(5);
-        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m, working_window_ns: 0 };
         let disk = std::cell::Cell::new(short);
         let first = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert_eq!(paths(&first).len(), 3);
@@ -2119,7 +2247,7 @@ mod tests {
         let b = six_builds(&c);
         let short = b[0].1 + b[1].1 + b[2].1 / 2;
         let m = (2 * short).div_ceil(5);
-        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * m, working_window_ns: 0 };
         // Other processes write as much as the collection frees: the disk never gains, and the
         // volume has no snapshot.
         let disk = std::cell::Cell::new(short);
@@ -2152,7 +2280,7 @@ mod tests {
         let bytes = |dirs: &[PathBuf]| dirs.iter().map(|d| s.units.iter().find(|u| &u.path == d).unwrap().bytes()).sum::<u64>();
         let disk = std::cell::Cell::new(1 << 30);
         let snapshots = [earlier, newest];
-        let done = collect_on(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None, &fixed_volume(&disk, &snapshots)).unwrap();
+        let done = collect_on(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None, &fixed_volume(&disk, &snapshots)).unwrap();
         assert_eq!(paths(&done).len(), 6, "{:?}", done);
         assert_eq!(done.kept, bytes(&before), "{} of {} written before the snapshot", done.kept, bytes(&before));
         assert!(bytes(&after) > 0);
@@ -2222,7 +2350,7 @@ mod tests {
         fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let d = Downloads { cargo_home, cargo, runs: CargoRuns { dir: home.join("cargo-runs") } };
         let mine = d.runs.register(std::process::id(), || {}).unwrap();
-        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
         assert!(!asked.exists(), "Cargo's clean ran while a Cargo did: {:?}", fs::read_to_string(&asked));
         assert!(done.cargo_left.as_deref().is_some_and(|l| l.contains(&std::process::id().to_string())), "{:?}", done);
@@ -2253,7 +2381,7 @@ mod tests {
         let short = b[0].1 + b[1].1 / 2;
         let disk = std::cell::Cell::new(short);
         let snap = [snapshot_now()];
-        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5), working_window_ns: 0 };
         let done = collect_on(&c, Some(&d), &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("the package cache is broken")), "{:?}", done);
         assert!(!gone.exists() && !b[0].0.exists() && b[5].0.exists());
@@ -2276,7 +2404,7 @@ mod tests {
         file(&part, 50_000);
         age(&part, 8 * 86_400);
         file(&c.join("tmp"), 0);
-        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("tmp") || e.contains("exists")), "{:?}", done);
         assert_eq!(paths(&done), [part]);
         assert!(b.iter().all(|(d, _)| d.exists()));
@@ -2284,7 +2412,7 @@ mod tests {
         assert!(line["failed"].is_string() && line["removed"].as_array().unwrap().len() == 1, "{}", line);
         assert_eq!(usage(&c).unwrap()["total_bytes"].as_u64(), Some(done.after));
         // A collection that fails before it removes anything is logged too.
-        let again = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let again = collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert!(again.failed.is_some() && again.removed.is_empty(), "{:?}", again);
         let lines = recent(&c, 5);
         assert!(lines.len() == 2 && lines[1]["failed"].is_string() && lines[1]["removed"] == json!([]), "{:?}", lines);
@@ -2300,7 +2428,7 @@ mod tests {
         let short = b[0].1 / 2;
         let disk = std::cell::Cell::new(short);
         let snap = [snapshot_now()];
-        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5) };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 4 * (2 * short).div_ceil(5), working_window_ns: 0 };
         let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &snap)).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("cannot record the count")), "{:?}", done);
         assert!(!b[0].0.exists());
@@ -2324,7 +2452,7 @@ mod tests {
         let d = build_dir(&c, "w-1", &ws, 3 * 3600, 1000);
         // A line as collections wrote them before: every removal by path.
         fs::write(c.join(LOG), "{\"at\":\"2026-10-21T09:26:39.766Z\",\"before\":1,\"after\":0,\"removed\":[{\"kind\":\"artifact cache\",\"path\":\"/x\",\"bytes\":1,\"why\":\"used least recently\"}]}\n").unwrap();
-        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert_eq!(done.removed.len(), 301);
         let text = fs::read_to_string(c.join(LOG)).unwrap();
         assert_eq!(text.lines().count(), 1, "a line of the old format stayed: {}", text);
@@ -2412,7 +2540,7 @@ mod tests {
         let running = Started::sleeping(&program, tmp);
         let shell = Started::sleeping(&std::env::current_exe().unwrap(), &session.join("src"));
         let agent = Started::sleeping(&std::env::current_exe().unwrap(), &tmp.join("checkout"));
-        let tight = Policy { max_bytes: 1, min_free: 0 };
+        let tight = Policy { max_bytes: 1, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, None, &tight, None, false, None).unwrap();
         assert!(ran_dir.exists() && session_dir.exists() && nested_dir.exists(), "a directory in use was collected: {:?}", done);
         assert!(!idle_dir.exists(), "{:?}", done);
@@ -2444,7 +2572,7 @@ mod tests {
         let rest = s.total() - large_bytes;
         let max_bytes = (rest + 64 * 1024) / 9 * 10 + 10;
         assert!(s.total() > max_bytes && rest <= max_bytes / 10 * 9);
-        let done = collect(&c, None, &Policy { max_bytes, min_free: 0 }, None, false, None).unwrap();
+        let done = collect(&c, None, &Policy { max_bytes, min_free: 0, working_window_ns: 0 }, None, false, None).unwrap();
         assert_eq!(paths(&done), std::slice::from_ref(&large), "{:?}", done);
         assert!(small.exists() && !done.unmet, "{:?}", done);
         let named = &recent(&c, 1)[0]["named"];
@@ -2534,7 +2662,7 @@ mod tests {
         fs::write(&cargo, format!("#!/bin/sh\nrm '{}'\necho 'error: the package cache is broken' >&2\nexit 101\n", made[1].join("src/more.rs").display())).unwrap();
         fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         let d = Downloads { cargo_home: cargo_home.clone(), cargo: cargo.clone(), runs: CargoRuns { dir: home.join("cargo-runs") } };
-        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0, working_window_ns: 0 };
         let done = collect(&c, Some(&d), &roomy, None, false, None).unwrap();
         assert!(done.failed.as_deref().is_some_and(|e| e.contains("the package cache is broken")), "{:?}", done);
         assert!(!made[1].exists(), "the source Cargo's clean began to remove stays");

@@ -52,6 +52,7 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 | string | any string |
 | space | `auto`; a size (`40GiB`, `500MB`, `1024`; units `B`, `K`/`KB`/`KiB`, `M`/`MB`/`MiB`, `G`/`GB`/`GiB`, `T`/`TB`/`TiB`, all powers of 1024; more than zero); or a share of the disk (`10%`, more than 0 and at most 100) |
 | threads | `auto`, `off`, or a number of at least 2 |
+| duration | `off`, or a length of time with its unit: `8h`, `1.5h`, `90m`, `600s` (hours, minutes, seconds; more than zero). A string in TOML, never a bare number |
 
 ## Keys
 
@@ -75,7 +76,8 @@ Invalid configuration stops every command except `qrust upstream`, with exit sta
 | `cache.artifacts` | `on`, `off` | `on` | `QRUST_CACHE_ARTIFACTS` | fast mode: QuickRust's artifact cache |
 | `cache.artifacts-min-link-ms` | integer (milliseconds) | `300` | `QRUST_CACHE_ARTIFACTS_MIN_LINK_MS` | linked workspace outputs (binaries, tests, proc-macros) that compiled faster than this are not stored in the artifact cache |
 | `build.variant` | string | empty | `QRUST_BUILD_VARIANT` | a name for this configuration of the workspace: it builds into a directory of its own, `builds/<name>-<id>.<variant>`, so that configurations of one workspace keep their output apart ([How to find build outputs](../how-to/find-build-outputs.md#build-one-workspace-in-several-configurations)). At most 32 letters, digits, `-` or `_`; empty is the workspace's one build directory. No effect on a target directory you chose |
-| `cache.max-size` | space | `auto` | `QRUST_CACHE_MAX_SIZE` | the most QuickRust's cache uses; `auto` is 10% of the disk, between 10 GiB and 100 GiB |
+| `cache.max-size` | space | `auto` | `QRUST_CACHE_MAX_SIZE` | the most QuickRust's cache uses; `auto` is 10% of the disk, between 10 GiB and 100 GiB. The work in hand (`cache.working-window`) may keep the cache above it |
+| `cache.working-window` | duration | `8h` | `QRUST_CACHE_WORKING_WINDOW` | the work in hand: a build directory whose workspace is still there and that a command used within this long. A collection does not remove it to bring the cache under `cache.max-size`. It removes it only when the disk is below `cache.min-free` or `qrust gc --to` asks for the room, and then after everything outside the window ([Collection](files.md#collection)). `off`: no window |
 | `cache.gc` | `background`, `off` | `background` | `QRUST_CACHE_GC` | after a command, when a collection is due: start `qrust gc --background` (`background`), or start nothing (`off`), so that the command leaves no process running behind it. The collection stays due, and the next command that allows one starts it. A disk nearly full is still collected before a command, within it ([Collection](files.md#collection)) |
 | `cache.min-free` | space | `auto` | `QRUST_CACHE_MIN_FREE` | the free disk space QuickRust's cache leaves: below it, the cache gives back what the disk is short of and a quarter of this more, counting what it removed that the volume's snapshots keep ([Collection](files.md#collection)); `auto` is 5% of the disk, between 2 GiB and 20 GiB |
 | `fast.frontend-threads` | threads | `auto` | `QRUST_FAST_FRONTEND_THREADS` | fast mode: rustc's parallel frontend; `auto` is the number of cores, at most 8, on machines with 4 or more cores, and off below 4 |

@@ -1345,7 +1345,7 @@ fn test0348_a_build_with_cache_gc_off_starts_no_collection_that_is_due_and_the_n
     // The last count is two days old: a collection is due after the next command.
     let cache = sb.home.join("cache");
     let stale = now_ns() - 2 * 86_400 * 1_000_000_000;
-    fs::write(cache.join("usage.json"), serde_json::json!({ "format": 3, "scanned_ns": stale, "total_bytes": 0, "free_at_scan": 0, "kept_by_snapshots": [], "counted": true, "unmet": false }).to_string()).unwrap();
+    fs::write(cache.join("usage.json"), serde_json::json!({ "format": 4, "scanned_ns": stale, "total_bytes": 0, "free_at_scan": 0, "kept_by_snapshots": [], "counted": true, "unmet": false, "window_ends_ns": null }).to_string()).unwrap();
     let _ = fs::remove_file(cache.join("gc.log"));
     sb.file("p/src/lib.rs", "pub fn add(x: u32, y: u32) -> u32 { y + x }\n");
     ok(sb.cargo(&p).arg("build").env("QRUST_CACHE_GC", "off"));

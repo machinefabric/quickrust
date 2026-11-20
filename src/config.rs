@@ -35,6 +35,8 @@ enum Kind {
     Space,
     /// `auto`, `off`, or a thread count of at least 2.
     Threads,
+    /// `off`, or a length of time with its unit: `8h`, `90m`, `600s`.
+    Duration,
 }
 
 struct Key {
@@ -69,6 +71,7 @@ const KEYS: &[Key] = &[
     Key { name: "build.variant", kind: Kind::Str, default: "", env: Some("QRUST_BUILD_VARIANT"), help: "a name for this configuration of the workspace (another registry, feature set, channel): it builds into a directory of its own, `builds/<name>-<id>.<variant>`, so configurations do not overwrite each other's output; empty: the workspace's one build directory" },
     Key { name: "cache.max-size", kind: Kind::Space, default: "auto", env: Some("QRUST_CACHE_MAX_SIZE"), help: "the most disk QuickRust's cache (build directories, the artifact cache, compiler drivers, downloads) uses before it drops what is unused (see `qrust gc`): a size (40GiB), a share of the disk (10%), or auto (10% of the disk, between 10 and 100 GiB)" },
     Key { name: "cache.min-free", kind: Kind::Space, default: "auto", env: Some("QRUST_CACHE_MIN_FREE"), help: "the free disk QuickRust's cache leaves: below it, whatever its own size, the cache gives back what the disk is short of and a quarter of this more: a size, a share of the disk, or auto (5% of the disk, between 2 and 20 GiB)" },
+    Key { name: "cache.working-window", kind: Kind::Duration, default: "8h", env: None, help: "the work in hand: a build directory whose workspace is still there and was used within this long (8h, 90m, 600s; off: none) is kept though the cache is above cache.max-size; it goes only when the disk is below cache.min-free or `qrust gc --to` asks for the room, after everything outside the window" },
     Key { name: "cache.gc", kind: Kind::Enum(&["background", "off"]), default: "background", env: None, help: "after a command, when a collection of the cache is due: start `qrust gc --background` (background), or start nothing and leave the collection due for the next command that allows one (off), so that the command leaves no process running behind it; a disk nearly full is still collected before a command, within it" },
     Key { name: "cache.fail", kind: Kind::Enum(&["open", "closed"]), default: "open", env: None, help: "on cache unavailability: compile locally (open) or fail (closed)" },
     Key { name: "artifacts.inventory", kind: Kind::Bool, default: "true", env: None, help: "include a build-directory inventory when a run is analysed" },
@@ -144,6 +147,10 @@ fn parse_scalar(key: &Key, raw: &str, origin: &str) -> Result<Val, String> {
             "auto" | "off" => Ok(Val::Str(raw.to_string())),
             n => n.parse::<u32>().ok().filter(|n| *n >= 2).map(|_| Val::Str(raw.to_string())).ok_or_else(|| bad("auto, off, or a thread count of at least 2")),
         },
+        Kind::Duration => match raw {
+            "off" => Ok(Val::Str(raw.to_string())),
+            d => duration_ns(d).map(|_| Val::Str(raw.to_string())).ok_or_else(|| bad("off, or a length of time with its unit such as 8h, 90m or 600s")),
+        },
     }
 }
 
@@ -162,6 +169,18 @@ fn env_name(key: &Key) -> String {
         Some(name) => name.to_string(),
         None => format!("QRUST_{}", key.name.replace(['.', '-'], "_").to_ascii_uppercase()),
     }
+}
+
+/// The nanoseconds a `Kind::Duration` value other than `off` names: a positive number with its
+/// unit, `h`, `m` or `s`.
+pub fn duration_ns(raw: &str) -> Option<u64> {
+    let unit = match raw.chars().last()? {
+        'h' => 3_600e9,
+        'm' => 60e9,
+        's' => 1e9,
+        _ => return None,
+    };
+    raw[..raw.len() - 1].parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).map(|v| (v * unit) as u64)
 }
 
 /// Nearest ancestor of `start` that contains `.qrust/config.toml`.
@@ -306,6 +325,7 @@ mod tests {
         assert_eq!(c.str("incremental.local-dev"), "cargo-default");
         assert!(c.bool("measurement.enabled"));
         assert_eq!(c.origin("cache.fail"), "default");
+        assert_eq!(c.str("cache.working-window"), "8h");
     }
 
     // TEST0047: Rejects unknown keys and bad values
@@ -327,6 +347,19 @@ mod tests {
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("cache.artifacts-max-size"), "the old key is unknown");
         fs::write(&p, "[fast]\nfrontend-threads = 1\n").unwrap();
         assert!(Config::defaults().apply_file(&p).unwrap_err().contains("at least 2"));
+        for bad in ["8", "0h", "-1h", "8 hours", "eighth"] {
+            fs::write(&p, format!("[cache]\nworking-window = \"{}\"\n", bad)).unwrap();
+            let err = Config::defaults().apply_file(&p).unwrap_err();
+            assert!(err.contains("cache.working-window") && err.contains("off, or a length of time with its unit"), "{}: {}", bad, err);
+        }
+        fs::write(&p, "[cache]\nworking-window = 8\n").unwrap();
+        assert!(Config::defaults().apply_file(&p).unwrap_err().contains("invalid type for `cache.working-window`"), "a bare number has no unit");
+        for (good, ns) in [("90m", 90 * 60_000_000_000u64), ("1.5h", 90 * 60_000_000_000), ("600s", 600_000_000_000)] {
+            fs::write(&p, format!("[cache]\nworking-window = \"{}\"\n", good)).unwrap();
+            let mut c = Config::defaults();
+            c.apply_file(&p).unwrap();
+            assert_eq!(duration_ns(c.str("cache.working-window")), Some(ns), "{}", good);
+        }
         fs::write(&p, "mode = \"compat\"\n[cache]\nprovider = \"sccache\"\nmax-size = \"2GiB\"\nmin-free = \"7%\"\n[fast]\nfrontend-threads = 4\n[measurement]\nkeep-runs = 7\n").unwrap();
         let mut c = Config::defaults();
         c.apply_file(&p).unwrap();

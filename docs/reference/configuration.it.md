@@ -52,6 +52,7 @@ Una configurazione non valida ferma ogni comando tranne `qrust upstream`, con ex
 | string | qualsiasi stringa |
 | space | `auto`; una dimensione (`40GiB`, `500MB`, `1024`; unità `B`, `K`/`KB`/`KiB`, `M`/`MB`/`MiB`, `G`/`GB`/`GiB`, `T`/`TB`/`TiB`, tutte potenze di 1024; maggiore di zero); oppure una quota del disco (`10%`, maggiore di 0 e al massimo 100) |
 | threads | `auto`, `off`, oppure un numero non inferiore a 2 |
+| duration | `off`, oppure una durata con la sua unità: `8h`, `1.5h`, `90m`, `600s` (ore, minuti, secondi; maggiore di zero). Una stringa in TOML, mai un numero nudo |
 
 ## Chiavi {#keys}
 
@@ -75,7 +76,8 @@ Una configurazione non valida ferma ogni comando tranne `qrust upstream`, con ex
 | `cache.artifacts` | `on`, `off` | `on` | `QRUST_CACHE_ARTIFACTS` | fast mode: la cache degli artefatti di QuickRust |
 | `cache.artifacts-min-link-ms` | integer (millisecondi) | `300` | `QRUST_CACHE_ARTIFACTS_MIN_LINK_MS` | gli output linkati del workspace (binari, test, proc-macro) che sono stati compilati in meno di questo tempo non vengono memorizzati nella cache degli artefatti |
 | `build.variant` | string | vuoto | `QRUST_BUILD_VARIANT` | un nome per questa configurazione del workspace: compila in una directory propria, `builds/<name>-<id>.<variant>`, così che le configurazioni di uno stesso workspace tengano separati i loro output ([Come trovare gli output di build](../how-to/find-build-outputs.md#build-one-workspace-in-several-configurations)). Al massimo 32 lettere, cifre, `-` o `_`; vuoto indica l'unica directory di build del workspace. Nessun effetto su una directory target scelta da te |
-| `cache.max-size` | space | `auto` | `QRUST_CACHE_MAX_SIZE` | lo spazio massimo che la cache di QuickRust usa; `auto` è il 10% del disco, tra 10 GiB e 100 GiB |
+| `cache.max-size` | space | `auto` | `QRUST_CACHE_MAX_SIZE` | lo spazio massimo che la cache di QuickRust usa; `auto` è il 10% del disco, tra 10 GiB e 100 GiB. Il lavoro in corso (`cache.working-window`) può tenere la cache sopra questo valore |
+| `cache.working-window` | duration | `8h` | `QRUST_CACHE_WORKING_WINDOW` | il lavoro in corso: una directory di build il cui workspace esiste ancora e che un comando ha usato entro questo tempo. Una raccolta non la rimuove per riportare la cache sotto `cache.max-size`. La rimuove solo quando il disco è sotto `cache.min-free` o quando `qrust gc --to` chiede lo spazio, e allora dopo tutto ciò che è fuori dalla finestra ([Raccolta](files.md#collection)). `off`: nessuna finestra |
 | `cache.gc` | `background`, `off` | `background` | `QRUST_CACHE_GC` | dopo un comando, quando una raccolta è dovuta: avvia `qrust gc --background` (`background`), oppure non avvia nulla (`off`), così che il comando non lasci alcun processo in esecuzione dopo di sé. La raccolta resta dovuta, e il comando successivo che la consente la avvia. Un disco quasi pieno viene comunque raccolto prima di un comando, al suo interno ([Raccolta](files.md#collection)) |
 | `cache.min-free` | space | `auto` | `QRUST_CACHE_MIN_FREE` | lo spazio libero su disco che la cache di QuickRust lascia: sotto di esso, la cache restituisce quanto manca al disco più un quarto di questo valore, contando ciò che ha rimosso e che gli snapshot del volume conservano ([Raccolta](files.md#collection)); `auto` è il 5% del disco, tra 2 GiB e 20 GiB |
 | `fast.frontend-threads` | threads | `auto` | `QRUST_FAST_FRONTEND_THREADS` | fast mode: il frontend parallelo di rustc; `auto` è il numero di core, al massimo 8, sulle macchine con 4 o più core, e disattivato sotto i 4 |

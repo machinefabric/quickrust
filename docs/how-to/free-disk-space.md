@@ -36,12 +36,13 @@ qrust gc --to 5GiB          # collect until the cache is at most 5 GiB
 Each removal is listed with why it went; if the collection could not get the cache within its bounds, each thing it kept is listed with why it stayed; then one line sums it up:
 
 ```text
-     removed 4.5 MiB    build directories  /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 (the bounds needed room, and nothing had used it for 3 hours)
-     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/tool-f5025e19e2918129 (process 1261843 (sleep) works in /home/me/src/tool/src, in its workspace's checkout /home/me/src/tool)
-OK   Freed 4.5 MiB: QuickRust's cache 9.0 MiB -> 4.5 MiB (at most 37.6 GiB; keeps 18.8 GiB of the disk free, 153.4 GiB free now), short of its goal: 1 in use left alone [29ms]
+     removed 4.5 MiB    build directories  /home/me/.qrust/cache/builds/app-aa6b388726e8cac5 (the bounds needed room, and nothing had used it for 2 days)
+     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/srv-3c1d8e0b7a924f61 (process 799375 (sleep) works in /home/me/src/srv/src, in its workspace's checkout /home/me/src/srv)
+     kept    4.5 MiB    build directories  /home/me/.qrust/cache/builds/tool-f5025e19e2918129 (the work in hand: used 2 hours ago, within the 8 hours of cache.working-window)
+OK   Freed 4.5 MiB: QuickRust's cache 13.5 MiB -> 9.0 MiB (at most 5.0 MiB; keeps 2.0 GiB of the disk free, 6.6 GiB free now), short of its goal: 2 kept, in use or within the working window [7ms]
 ```
 
-A collection takes first what frees the most for how long it has gone unused: a large build directory nobody has built in for hours goes before a small one used half an hour ago. It never removes anything used in the last 15 minutes, nor a build directory that a running command or Cargo holds, that a running program was started from, or that a process works in: in the directory itself, or anywhere in its workspace's checkout (a shell, an editor or an agent's session open there). If it frees less than you expected, the `kept` lines say what holds each directory; end those processes, or run it again when those builds have finished. The rule in full is in [Files and directories](../reference/files.md#collection).
+A collection takes first what frees the most for how long it has gone unused: a large build directory nobody has built in for hours goes before a small one used half an hour ago. It never removes anything used in the last 15 minutes, nor a build directory that a running command or Cargo holds, that a running program was started from, or that a process works in: in the directory itself, or anywhere in its workspace's checkout (a shell, an editor or an agent's session open there). Nor does it remove the work in hand to keep the cache under its size: a build directory whose workspace is still there and that was built in within the last 8 hours stays until the disk runs short of free space or you ask for the room with `qrust gc --to` (see [Leave room for builds that run at once](#leave-room-for-builds-that-run-at-once)). If it frees less than you expected, the `kept` lines say what holds each directory; end those processes, or run it again when those builds have finished. The rule in full is in [Files and directories](../reference/files.md#collection).
 
 When a collection has removed a workspace's build directory, the next QuickRust command in that workspace says so, once:
 
@@ -64,6 +65,20 @@ min-free = "10%"     # the free space it leaves on the disk
 Both take a size (`500MB`, `40GiB`), a share of the disk (`10%`) or `auto`. The defaults are `auto`: at most 10% of the disk, between 10 and 100 GiB, and at least 5% of the disk free, between 2 and 20 GiB. This file is the place for a limit that holds on the machine: every command run as you reads it, whoever starts it (a script, an editor, another tool's build). For one shell or a CI job, use `QRUST_CACHE_MAX_SIZE` and `QRUST_CACHE_MIN_FREE`. `qrust policy explain` shows which one is in force and where it comes from.
 
 If the disk is shared with other large data, raise `min-free`; QuickRust then gives space back as the disk fills up, whatever its own size. It gives back what the disk is short of and a quarter of `min-free` more, and again when the disk has lost that margin. On a disk that is usually below `min-free` because of other data, lower `min-free` to what you want kept free: the cache otherwise stays smaller by the difference.
+
+## Leave room for builds that run at once
+
+On a machine where several workspaces build at once, such as a build server running a branch in each worktree, each workspace has a build directory of its own, often tens of GiB. While one of them is the work in hand (its workspace is still there, and a command used it within `cache.working-window`), `cache.max-size` does not remove it. So one workspace's build does not throw away another's between its builds, and none of them starts cold because the others filled the cache. What bounds them is the disk, through `cache.min-free`.
+
+1. Check that the disk the cache is on has room for the build directories in use at the same time, plus `cache.min-free`. `qrust cache status` shows the free space and the bounds. If it does not, [move the cache](#move-the-cache-to-another-disk) to a disk that does: on a disk that is too small, the free space takes the work in hand too, the largest and longest unused first.
+2. If a workspace often waits more than 8 hours between two builds and should keep its build directory, lengthen the window in `~/.qrust/config.toml`:
+
+   ```toml
+   [cache]
+   working-window = "24h"
+   ```
+
+   It takes `off` or a length of time with its unit (`90m`, `8h`). `working-window = "off"` puts every build directory back under `cache.max-size`.
 
 ## Keep a script's builds from starting a collection
 

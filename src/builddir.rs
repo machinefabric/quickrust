@@ -394,11 +394,14 @@ pub fn hold_of(file_name: &str) -> Option<(&str, u32)> {
 
 /// Held while a command uses a managed directory: QuickRust's cache never removes one in use.
 pub struct InUse {
-    _lock: Option<util::SharedLock>,
+    _lock: util::SharedLock,
 }
 
-pub fn in_use(dir: &Path) -> InUse {
-    InUse { _lock: util::SharedLock::acquire(&lock_path(dir)).ok() }
+/// `dir` held for as long as the answer lives; waits out a collection removing it. A command that
+/// cannot hold it does not run: a collection could remove it from under its build.
+pub fn in_use(dir: &Path) -> Result<InUse, String> {
+    let lock = lock_path(dir);
+    util::SharedLock::acquire(&lock).map(|l| InUse { _lock: l }).map_err(|e| format!("cannot hold the build directory {} against QuickRust's cache collections: cannot lock {}: {}", dir.display(), lock.display(), e))
 }
 
 /// The lock beside a managed directory: shared by the commands using it, exclusive for a

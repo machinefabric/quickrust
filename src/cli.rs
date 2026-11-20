@@ -1180,7 +1180,7 @@ fn cmd_gc(raw: &[OsString]) -> CmdResult {
     }
     let verb = if dry_run { "Would free" } else { "Freed" };
     let kept = if done.kept > 0 { format!(" and {} removed that a snapshot still keeps", human_bytes(done.kept)) } else { String::new() };
-    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.unmet { format!(", short of its goal: {} in use left alone", done.left_count()) } else { String::new() }));
+    phase.finish(failed.is_ok(), &format!("{} {}: QuickRust's cache {} -> {} (at most {}; keeps {} of the disk free, {} free now{}){}", verb, human_bytes(done.before.saturating_sub(done.after)), human_bytes(done.before), human_bytes(done.after), human_bytes(policy.max_bytes), human_bytes(policy.min_free), human_bytes(fs.available), kept, if done.unmet { format!(", short of its goal: {} kept, in use or within the working window", done.left_count()) } else { String::new() }));
     failed
 }
 
@@ -1315,7 +1315,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
                 println!("  {:<24} {:>10}  in files two kinds share (hard links), counted once in the total", "shared", human_bytes(kinds_sum - total));
             }
             if u["unmet"] == json!(true) {
-                println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes or is in use; `qrust gc --dry-run` lists it, and why", "short of its bounds");
+                println!("  {:<24} the last collection could not get within the bounds: what is left was used in the last 15 minutes, is in use, or is the work in hand (cache.working-window); `qrust gc --dry-run` lists it, and why", "short of its bounds");
             }
         }
         None => println!("QuickRust's cache: not counted yet, {}; it is counted in the background after the next command, or now by `qrust gc`", qrust_cache.display()),
@@ -1336,7 +1336,7 @@ fn cmd_cache(raw: &[OsString]) -> CmdResult {
         let count: u64 = c["removed"].as_array().into_iter().flatten().filter_map(|g| g["count"].as_u64()).sum();
         // A collection logged before what it kept was recorded says only that it fell short.
         let short = match (c["unmet"] == json!(true), c["left"].as_array()) {
-            (true, Some(left)) => format!(", short of its goal with {} in use", left.iter().filter_map(|g| g["count"].as_u64()).sum::<u64>()),
+            (true, Some(left)) => format!(", short of its goal with {} kept", left.iter().filter_map(|g| g["count"].as_u64()).sum::<u64>()),
             (true, None) => ", short of its goal".to_string(),
             (false, _) => String::new(),
         };
