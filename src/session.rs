@@ -176,8 +176,6 @@ struct Plan {
     frontend_threads: Option<u32>,
     /// The fast linker in use (fast mode).
     linker: Option<PathBuf>,
-    /// Early cut-off is on: the wrapper compiles with QuickRust's compiler driver when it is built.
-    early_cutoff: bool,
 }
 
 /// Decides wrapper composition and cache/incremental policy for one session.
@@ -194,7 +192,6 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
         warnings: Vec::new(),
         frontend_threads: None,
         linker: None,
-        early_cutoff: false,
     };
     let wants = cfg.bool("measurement.enabled") && (inv.family.builds() || (inv.family == Family::External && cfg.str("compatibility.unknown-command") == "instrument"));
     let wrapper = wrapper_binary();
@@ -315,7 +312,9 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     frontend_threads: threads,
                     min_link_store_ns: cfg.int("cache.artifacts-min-link-ms") * 1_000_000,
                     linker_dir: linker.as_ref().map(|(dir, _)| dir.clone()),
-                    early_cutoff: artifacts && crate::driver::wanted(cfg),
+                    // Early cut-off compiles with QuickRust's compiler driver: this build gets it
+                    // for its compiler first, and says so when it cannot.
+                    early_cutoff: artifacts && crate::driver::wanted(cfg) && crate::driver::prepare(&engine.rustc()).is_some(),
                     target_dir: engine.target.as_ref().map(|t| t.dir.clone()),
                 };
                 // The wrapper runs only with its settings in place; otherwise the build is uninstrumented.
@@ -333,7 +332,6 @@ fn plan(inv: &Invocation, cfg: &Config, subset: &resolve::CargoConfigSubset, sto
                     }
                     p.policy["cache"]["artifacts"] = json!(if artifacts { "on" } else if inner.is_some() { "off: a rustc wrapper is configured" } else { "off" });
                     p.frontend_threads = threads;
-                    p.early_cutoff = settings.early_cutoff;
                     p.linker = linker.map(|(_, wild)| wild);
                     p.events_dir = Some(dir);
                 }
@@ -656,18 +654,6 @@ pub fn execute(spec: &Spec) -> Result<Outcome, String> {
             crate::prebuilt::record(&store.dir, key, &built);
         }
         messages = Some(fin.messages);
-    }
-    // Early cut-off needs QuickRust's compiler driver for this toolchain: built once, in the
-    // background, after the build that found it missing (not alongside it, competing for the
-    // processor).
-    if plan.early_cutoff {
-        let rustc = engine.rustc();
-        let started = crate::driver::Compiler::of(&path_str(&rustc)).and_then(|c| crate::driver::start_build(&resolve::self_identity().0, &rustc, &c).map(|s| (s, c.version_verbose)));
-        match started {
-            Ok((true, vv)) if render => crate::ui::notice_driver_build(vv.lines().find_map(|l| l.strip_prefix("release: ")).unwrap_or("this toolchain")),
-            Err(e) if render => crate::ui::notice_driver_unavailable(&e),
-            _ => {}
-        }
     }
     // A newer QuickRust a background check found, then (once a day) the next check.
     if render {

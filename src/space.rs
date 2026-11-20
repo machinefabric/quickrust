@@ -782,15 +782,30 @@ pub fn scan(cache: &Path, now: u64, newest_snapshot: Option<u64>) -> Scan {
         let live = crate::artifact_cache::link_record_live(&artifacts, &p);
         add_unit(Kind::Memo, p.clone(), vec![], mtime(&p), (!live).then(|| "the library it describes is gone".to_string()), None);
     }
-    // Compiler drivers: for a toolchain that is gone, or builds that did not finish.
+    // Compiler drivers: for a toolchain that is gone, builds that did not finish, directories in
+    // which no driver was built, and why drivers could not be built, recorded by another QuickRust.
     for p in entries(&cache.join("drivers")) {
         let name = util::lossy(p.file_name().unwrap_or_default());
+        if name == crate::driver::COULD_NOT_BUILD {
+            for r in entries(&p) {
+                let by = util::read_json(&r).and_then(|v| v["quickrust"].as_str().map(str::to_string));
+                let orphan = match by {
+                    Some(v) if v == env!("CARGO_PKG_VERSION") => None,
+                    Some(v) => Some(format!("QuickRust {} recorded it", v)),
+                    None => Some("it is not a record QuickRust reads".to_string()),
+                };
+                add_unit(Kind::Driver, r.clone(), vec![], mtime(&r), orphan, None);
+            }
+            continue;
+        }
         let orphan = if name.starts_with("build-") {
             (mtime(&p) + DAY_NS < now).then(|| "an unfinished driver build".to_string())
         } else {
             match util::read_json(&p.join(crate::driver::COMPILER)).and_then(|v| v["sysroot"].as_str().map(PathBuf::from)) {
                 Some(sysroot) if !sysroot.exists() => Some(format!("its toolchain {} is gone", sysroot.display())),
-                _ => None,
+                Some(_) => None,
+                // A build holds it for as long as it builds the driver there.
+                None => (mtime(&p) + DAY_NS < now).then(|| "no driver was built in it".to_string()),
             }
         };
         add_unit(Kind::Driver, p.clone(), vec![], mtime(&p), orphan, None);
@@ -1687,6 +1702,48 @@ mod tests {
         assert!(usage(&c).is_some() && recent(&c, 5).len() == 2);
     }
 
+    // TEST0361: Why another QuickRust could not build a driver, and a driver directory left without one, go; this QuickRust's records stay
+    #[test]
+    fn test0361_why_another_quickrust_could_not_build_a_driver_and_a_driver_directory_left_without_one_go() {
+        let c = cache();
+        let drivers = c.join("drivers");
+        let toolchain = c.parent().unwrap().join("toolchains/1.100.0-x86_64-unknown-linux-gnu");
+        fs::create_dir_all(&toolchain).unwrap();
+        // A driver built for a toolchain that is here, and one whose directory no driver was built in
+        // (a build that failed, under QuickRust versions that recorded the failure there), a day ago.
+        let built = drivers.join("0ef1bc386059-x86_64-unknown-linux-gnu-08d64f8f00d5eae5");
+        file(&built.join("qrust-rustc-driver"), 100);
+        util::write_json(&built.join(crate::driver::COMPILER), &json!({ "sysroot": util::path_str(&toolchain) })).unwrap();
+        let empty = drivers.join("0ef1bc386059-x86_64-unknown-linux-gnu-202970d7a9cf5c47");
+        file(&empty.join("build-failed"), 100);
+        age(&empty, 2 * 86_400);
+        // One a build holds now, building its driver.
+        let building = drivers.join("0ef1bc386059-x86_64-unknown-linux-gnu-2b1e815cbc392d4d");
+        file(&building.join(".build.lock"), 0);
+        // Why the driver could not be built: recorded by this QuickRust, by another, and by none.
+        let records = drivers.join(crate::driver::COULD_NOT_BUILD);
+        let record = |name: &str, v: Value| {
+            let p = records.join(name);
+            fs::create_dir_all(&records).unwrap();
+            util::write_json(&p, &v).unwrap();
+            p
+        };
+        let ours = record("0ef1bc386059-x86_64-unknown-linux-gnu-aaaaaaaaaaaaaaaa", json!({ "quickrust": env!("CARGO_PKG_VERSION"), "release": "1.100.0", "toolchain": "1.100.0-x86_64-unknown-linux-gnu", "error": "e" }));
+        let theirs = record("0ef1bc386059-x86_64-unknown-linux-gnu-bbbbbbbbbbbbbbbb", json!({ "quickrust": "1.170.1590", "release": "1.100.0", "toolchain": "1.100.0-x86_64-unknown-linux-gnu", "error": "e" }));
+        let unreadable = records.join("0ef1bc386059-x86_64-unknown-linux-gnu-cccccccccccccccc");
+        file(&unreadable, 3);
+        // Written two hours ago: what was used in the last minutes waits out the protection.
+        for r in [&ours, &theirs, &unreadable] {
+            age(r, 2 * 3600);
+        }
+        let roomy = Policy { max_bytes: u64::MAX, min_free: 0 };
+        let done = collect(&c, None, &roomy, None, false, None).unwrap();
+        let mut removed: Vec<&Path> = done.removed.iter().map(|r| r.path.as_path()).collect();
+        removed.sort();
+        assert_eq!(removed, [empty.as_path(), theirs.as_path(), unreadable.as_path()]);
+        assert!(built.exists() && building.exists() && ours.exists());
+    }
+
     /// A process id that is no process: one that ran and was waited for.
     fn ended_process() -> u32 {
         let mut child = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
@@ -2298,10 +2355,24 @@ mod tests {
 
     impl Started {
         /// `program`, this test binary or a copy of it, sleeping for a minute in `cwd` (`sleeper`).
+        ///
+        /// A copy just written can be refused as busy (ETXTBSY): a process another test thread
+        /// forked while the copy was open for writing holds that descriptor until it runs its own
+        /// program, which it does within moments. Only that refusal is waited out, for at most
+        /// ten seconds.
         fn sleeping(program: &Path, cwd: &Path) -> Started {
             let mut cmd = std::process::Command::new(program);
             cmd.args(["--exact", "space::tests::sleeper", "--ignored", "--quiet"]).env("QRUSTTEST_SLEEPER", "1").current_dir(cwd);
-            Started(cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn().unwrap())
+            cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            let until = std::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match cmd.spawn() {
+                    Ok(child) => return Started(child),
+                    #[cfg(unix)]
+                    Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+                    Err(e) => panic!("{} could not be started: {}", program.display(), e),
+                }
+            }
         }
 
         fn pid(&self) -> String {

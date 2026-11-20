@@ -55,7 +55,8 @@ Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust ke
 | `builds/<name>-<id>.json`, `builds/<name>-<id>.lock` | which workspace a build directory belongs to and when it was last used; the lock a command holds while it uses the directory |
 | `builds/<name>-<id>/qrust-bench/` | benchmark and experiment build directories, each with a `.qrust-owned` marker and its own artifact cache (`.qrust-artifacts/`) |
 | `artifacts/` | the artifact cache |
-| `drivers/<commit>-<host>-<source>/` | QuickRust's compiler driver for one compiler and driver source (`qrust driver status`); `build-failed` says why it could not be built, `failed/` keeps the report of each crate it failed on |
+| `drivers/<commit>-<host>-<source>/` | QuickRust's compiler driver for one compiler, toolchain and driver source (`qrust driver status`); `failed/` keeps the report of each crate it failed on |
+| `drivers/could-not-build/<commit>-<host>-<key>` | why the driver could not be built for one compiler, toolchain and QuickRust version: builds do not try again while it is there (`qrust driver status` shows it, `qrust driver build` tries again) |
 | `src/` | sources of programs being or having been installed: crates copied from QuickRust's Cargo home (their published lockfile kept as `.qrust-published.lock`) and `--git` clones; `<copy>.lock` while an install uses one |
 | `downloads/` | toolchain archives being downloaded (resumed after an interruption) |
 | `memo/rustc/` | each compiler's `rustc -vV`, asked once per binary |
@@ -70,7 +71,7 @@ Everything in QuickRust's cache can be rebuilt or downloaded again. QuickRust ke
 
 A collection removes, in this order:
 
-1. whatever nothing can use any more: build directories of workspaces that are gone, drivers of toolchains that are gone, week-old unfinished downloads, month-old memos, leftovers in `tmp/`;
+1. whatever nothing can use any more: build directories of workspaces that are gone, drivers of toolchains that are gone, day-old driver directories in which no driver was built, records of drivers that could not be built kept by another QuickRust version, week-old unfinished downloads, month-old memos, leftovers in `tmp/`;
 2. while the cache is above `cache.max-size` or the disk below `cache.min-free`: build directories, artifact entries and sources of installed programs, until the cache is under 90% of `cache.max-size` and the disk has 125% of `cache.min-free` free. Each is weighed by its size times the time since it was last used, and the heaviest goes first: a 4 GiB directory unused for an hour goes before a 100 MiB one unused for two, and things of one size go oldest first;
 3. crates and git checkouts downloaded into QuickRust's Cargo home, removed by Cargo itself (`cargo -Zgc clean gc`): by Cargo's usual ages at every collection and, while the bounds are still exceeded, those unused for a month, a week, a day, an hour, 15 minutes in turn. Only while no QuickRust command is running a Cargo (`~/.qrust/cargo-runs/`). Otherwise they are left for the next collection, which `qrust gc` and `qrust cache status` report. Cargo's clean deletes its records of registries it does not find in the Cargo home, such as the temporary one `cargo package` builds against, and a running Cargo that holds one of those records stops with an internal error. A command that starts while Cargo's clean runs waits for it and says so.
 

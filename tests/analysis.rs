@@ -1531,32 +1531,155 @@ fn test0221_setup_prepares_the_compiler_driver_so_the_first_build_uses_it() {
     assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
 }
 
-// TEST0222: The compiler driver is built in the background once and then used
+// TEST0222: The compiler driver is built by the first build that compiles with it, before it compiles
 #[test]
-fn test0222_the_compiler_driver_is_built_in_the_background_once_and_then_used() {
-    let sb = Sandbox::new("driver-background");
+fn test0222_the_compiler_driver_is_built_by_the_first_build_that_compiles_with_it_before_it_compiles() {
+    let sb = Sandbox::new("driver-first-build");
     let p = sb.package("p", "p");
-    let Some(mut first) = sb.cargo_in_terminal(&p, "build") else { return };
-    first.env("QRUST_EARLY_CUTOFF", "auto");
-    let screen = String::from_utf8_lossy(&run(&mut first).stdout).into_owned();
-    assert!(screen.contains("building QuickRust's compiler driver for Rust") && screen.contains("in the background"), "{}", screen);
-    // Built once: a build while it runs, or after, starts no other.
-    let status = || stdout(&ok(sb.qrust(&p).args(["driver", "status"])));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
-    while !status().starts_with("built:") {
-        assert!(!status().starts_with("could not be built"), "{}", status());
-        assert!(std::time::Instant::now() < deadline, "the background build did not finish: {}", status());
-        std::thread::sleep(std::time::Duration::from_millis(200));
-    }
+    let build = || ok(sb.cargo(&p).arg("build").env("QRUST_EARLY_CUTOFF", "auto"));
+    let first = build();
+    assert!(stderr(&first).contains("OK   Compiler driver for Rust ") && stderr(&first).contains(" ready ["), "{}", stderr(&first));
+    // That build compiled every unit with it.
+    let compiled = |sb: &Sandbox| -> Vec<Value> {
+        let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
+        fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["kind"] == "compile").collect()
+    };
+    let units = compiled(&sb);
+    assert!(!units.is_empty() && units.iter().all(|ev| ev["driver"].is_string()), "{:#?}", units.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+    assert!(stdout(&ok(sb.qrust(&p).args(["driver", "status"]))).starts_with("built:"));
+    // Built once: the next build uses it and says nothing about it.
     let lib = p.join("src/lib.rs");
     fs::write(&lib, fs::read_to_string(&lib).unwrap().replace("x + y", "y + x")).unwrap();
-    let mut second = sb.cargo_in_terminal(&p, "build").unwrap();
-    second.env("QRUST_EARLY_CUTOFF", "auto");
-    let screen = String::from_utf8_lossy(&run(&mut second).stdout).into_owned();
-    assert!(!screen.contains("compiler driver"), "{}", screen);
+    let second = build();
+    assert!(!stderr(&second).contains("ompiler driver"), "{}", stderr(&second));
+    let units = compiled(&sb);
+    assert!(!units.is_empty() && units.iter().all(|ev| ev["driver"].is_string()), "{:#?}", units.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+}
+
+/// A toolchain at `at` (the directory's name is the toolchain's) that is the suite's toolchain in all
+/// but its `rustc-dev` component, which it lacks and which QuickRust adds to no toolchain it did not
+/// install: QuickRust's compiler driver cannot be built for it, at once and without the network.
+#[cfg(unix)]
+fn toolchain_without_rustc_dev(sb: &Sandbox, p: &std::path::Path, at: &std::path::Path) -> std::path::PathBuf {
+    let real = sb.toolchain_dir(p);
+    let vv = stdout(&ok(std::process::Command::new(real.join("bin/rustc")).arg("-vV")));
+    let host = vv.lines().find_map(|l| l.strip_prefix("host: ")).unwrap().trim().to_string();
+    fs::create_dir_all(at.join("bin")).unwrap();
+    fs::create_dir_all(at.join("lib/rustlib")).unwrap();
+    // rustc takes its sysroot from where it runs; told this one, it is this toolchain's compiler.
+    let rustc = at.join("bin/rustc");
+    fs::write(&rustc, format!("#!/bin/sh\nexec '{}' --sysroot '{}' \"$@\"\n", real.join("bin/rustc").display(), at.display())).unwrap();
+    make_executable(&rustc);
+    std::os::unix::fs::symlink(real.join("bin/cargo"), at.join("bin/cargo")).unwrap();
+    std::os::unix::fs::symlink(real.join("lib/rustlib").join(&host), at.join("lib/rustlib").join(&host)).unwrap();
+    let components: String = fs::read_to_string(real.join("lib/rustlib/components")).unwrap().lines().filter(|l| l.trim() != "rustc-dev").map(|l| format!("{}\n", l)).collect();
+    fs::write(at.join("lib/rustlib/components"), components).unwrap();
+    at.to_path_buf()
+}
+
+/// A name for `qrust toolchain link` that no other sandbox uses: the suites share one toolchain
+/// store, and the names linked in it.
+#[cfg(unix)]
+fn link_name(sb: &Sandbox, name: &str) -> String {
+    format!("{}-{}", name, sb.dir.file_name().unwrap().to_string_lossy())
+}
+
+/// Every file under `dir`, with its size and when it was written.
+#[cfg(unix)]
+fn listing(dir: &std::path::Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    let mut out = vec![];
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in fs::read_dir(&d).into_iter().flatten().flatten() {
+            let md = fs::symlink_metadata(e.path()).unwrap();
+            if md.is_dir() {
+                todo.push(e.path());
+            } else {
+                out.push((e.path().strip_prefix(dir).unwrap().display().to_string(), md.len(), md.modified().unwrap()));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+// TEST0359: A build that compiles with the compiler driver gets it first, says when it cannot, and leaves nothing running after it
+#[test]
+#[cfg(unix)]
+fn test0359_a_build_that_compiles_with_the_compiler_driver_gets_it_first_says_when_it_cannot_and_leaves_nothing_running() {
+    let sb = Sandbox::new("driver-unbuildable");
+    let p = sb.package("p", "p");
+    let tc = toolchain_without_rustc_dev(&sb, &p, &sb.dir.join("a/nodev"));
+    let nodev = link_name(&sb, "nodev");
+    ok(sb.qrust(&p).args(["toolchain", "link", &nodev]).arg(&tc));
+    let drivers = sb.home.join("cache/drivers");
+    // A build that does not compile with the driver builds none.
+    ok(sb.cargo(&p).args([&format!("+{}", nodev), "build"]).env("QRUST_CACHE_GC", "off"));
+    assert!(listing(&drivers).is_empty(), "{:?}", listing(&drivers));
+    // One that does tries first, and its own output says it could not: the toolchain and the error.
+    let lib = p.join("src/lib.rs");
+    fs::write(&lib, fs::read_to_string(&lib).unwrap().replace("x + y", "y + x")).unwrap();
+    let out = ok(sb.cargo(&p).args([&format!("+{}", nodev), "build"]).env("QRUST_EARLY_CUTOFF", "auto").env("QRUST_CACHE_GC", "off"));
+    let err = stderr(&out);
+    assert!(err.contains("WARN QuickRust's compiler driver could not be built for Rust 1.") && err.contains(" (nodev), so builds with it have no early cut-off: rustc-dev cannot be installed for nodev: the toolchain does not have it"), "{}", err);
+    assert!(err.contains("could-not-build/") && err.contains("`qrust driver build` tries now"), "{}", err);
     let s = sb.sessions().into_iter().rev().find(|s| s["instrumented"] == json!(true)).unwrap();
     let compiled: Vec<Value> = fs::read_dir(s["events_dir"].as_str().unwrap()).unwrap().filter_map(|e| serde_json::from_slice::<Value>(&fs::read(e.unwrap().path()).ok()?).ok()).filter(|ev| ev["kind"] == "compile").collect();
-    assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_string()), "{:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+    assert!(!compiled.is_empty() && compiled.iter().all(|ev| ev["driver"].is_null()), "the stock compiler: {:#?}", compiled.iter().map(|ev| &ev["driver"]).collect::<Vec<_>>());
+    // All of it happened in the build: when it ends, the failure is recorded, and nothing changes
+    // the drivers after it.
+    let ended = listing(&drivers);
+    assert!(ended.iter().any(|(path, _, _)| path.starts_with("could-not-build/")), "{:?}", ended);
+    assert!(!ended.iter().any(|(path, _, _)| path.starts_with("build-")), "a driver build is still running: {:?}", ended);
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(listing(&drivers), ended, "the drivers changed after the build ended");
+    ok(sb.qrust(&p).args(["toolchain", "unlink", &nodev]));
+}
+
+// TEST0360: A driver that could not be built is not tried again for that toolchain and QuickRust, wherever the toolchain is
+#[test]
+#[cfg(unix)]
+fn test0360_a_driver_that_could_not_be_built_is_not_tried_again_for_that_toolchain_and_quickrust_wherever_it_is() {
+    let sb = Sandbox::new("driver-not-again");
+    let p = sb.package("p", "p");
+    // A toolchain is named after its directory; the names it is linked by are this sandbox's own.
+    let link = |name: &str, dir: &std::path::Path| ok(sb.qrust(&p).args(["toolchain", "link", &link_name(&sb, name)]).arg(dir));
+    let build = |toolchain: &str| stderr(&ok(sb.cargo(&p).args([&format!("+{}", link_name(&sb, toolchain)), "build"]).env("QRUST_EARLY_CUTOFF", "auto").env("QRUST_CACHE_GC", "off")));
+    let tried = |err: &str, name: &str| err.contains("WARN QuickRust's compiler driver could not be built for Rust 1.") && err.contains(&format!(" ({}), so builds with it have no early cut-off: rustc-dev cannot be installed for {}", name, name));
+    let not_again = |err: &str, name: &str| !err.contains("WARN QuickRust's compiler driver") && err.contains(&format!(" ({}), so this build has no early cut-off: `qrust driver status` says why, and `qrust driver build` tries again", name)) && err.contains("NOTE QuickRust's compiler driver could not be built for Rust 1.");
+    let here = toolchain_without_rustc_dev(&sb, &p, &sb.dir.join("a/nodev"));
+    link("nodev", &here);
+    let err = build("nodev");
+    assert!(tried(&err, "nodev"), "{}", err);
+    let drivers = sb.home.join("cache/drivers");
+    let recorded = listing(&drivers);
+    let records: Vec<_> = recorded.iter().filter(|(path, _, _)| path.starts_with("could-not-build/")).collect();
+    assert_eq!(records.len(), 1, "{:?}", recorded);
+
+    // The next build says so, and does not try.
+    let err = build("nodev");
+    assert!(not_again(&err, "nodev"), "{}", err);
+    assert_eq!(listing(&drivers), recorded);
+    // Nor in a home that moved: the same toolchain somewhere else.
+    let moved = toolchain_without_rustc_dev(&sb, &p, &sb.dir.join("b/nodev"));
+    link("nodev", &moved);
+    let err = build("nodev");
+    assert!(not_again(&err, "nodev"), "{}", err);
+    assert_eq!(listing(&drivers), recorded);
+    let status = stdout(&ok(sb.qrust(&p).args(["driver", "status", "--rustc"]).arg(moved.join("bin/rustc"))));
+    assert!(status.starts_with("could not be built for rustc 1.") && status.contains("(nodev): rustc-dev cannot be installed for nodev") && status.contains("`qrust driver build` tries again"), "{}", status);
+
+    // Another toolchain is tried.
+    let other = toolchain_without_rustc_dev(&sb, &p, &sb.dir.join("c/other"));
+    link("other", &other);
+    let err = build("other");
+    assert!(tried(&err, "other"), "{}", err);
+    // `qrust driver build` tries at once, and fails saying why.
+    let again = run(sb.qrust(&p).args(["driver", "build", "--rustc"]).arg(moved.join("bin/rustc")));
+    assert!(!again.status.success() && stderr(&again).contains("rustc-dev cannot be installed for nodev: the toolchain does not have it"), "{}", stderr(&again));
+    for name in ["nodev", "other"] {
+        ok(sb.qrust(&p).args(["toolchain", "unlink", &link_name(&sb, name)]));
+    }
 }
 
 // TEST0223: Artifact cache restores dependencies across cleans and checkouts

@@ -75,7 +75,7 @@ QRUST_CACHE_GC=off qrust build
 
 A build with it starts no collection. A collection that was due stays due, and the next command run without it starts it, so the cache is still kept within its limits. A disk nearly full is still collected before a command, inside it, which leaves nothing behind. To turn the background collection off on a machine, put `gc = "off"` under `[cache]` in `~/.qrust/config.toml`, and run `qrust gc` yourself.
 
-Three other things QuickRust does in the background have switches of their own: `QRUST_EARLY_CUTOFF=off` (building the compiler driver for [early cut-off](../explanation/early-cutoff.md), which those builds then do without), `QRUST_TOOLCHAIN_AUTO_UPDATE=off` and `QRUST_SELF_UPDATE_CHECK=off`. A build with all four set leaves no process running behind it.
+Two other things QuickRust does in the background have switches of their own: `QRUST_TOOLCHAIN_AUTO_UPDATE=off` and `QRUST_SELF_UPDATE_CHECK=off`. A build with all three set leaves no process running behind it. The compiler driver for [early cut-off](../explanation/early-cutoff.md) is built inside the build that needs it, never behind it.
 
 Ending a collection part way, by a signal or by ending its process tree, never leaves the cache broken ([Ending a collection](../reference/files.md#ending-a-collection)).
 

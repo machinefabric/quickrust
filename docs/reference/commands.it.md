@@ -92,7 +92,7 @@ Viene salvato per ogni build che QuickRust ha reso in un terminale ([Output](out
 | `qrust report [--run REF] [--format text\|json\|html] [-o FILE]` | il report completo; `-o` (o `--output`) lo scrive in `FILE` invece che su stdout. `json` e `html` sono documenti esportati (percorsi tokenizzati, [Schema del report di esecuzione](report-schema.md)) |
 | `qrust runs [--limit N] [--format text\|json]` | le esecuzioni registrate di questo workspace, dalla più recente (predefinito 20) |
 | `qrust inspect [--format text\|json]` | il workspace, la toolchain e il fingerprint dell'ambiente, misurati in questo momento |
-| `qrust driver [status\|build] [--rustc PATH]` | il driver del compilatore di QuickRust per la toolchain usata qui (o per il compilatore in `PATH`): `status` (predefinito) indica se è compilato, `build` lo compila e ne stampa il percorso |
+| `qrust driver [status\|build] [--rustc PATH]` | il driver del compilatore di QuickRust per la toolchain usata qui (o per il compilatore in `PATH`): `status` (predefinito) indica se è compilato, o perché non è stato possibile; `build` lo compila e ne stampa il percorso, riprovando dove le build non riprovano |
 | `qrust compare <BASE> <CANDIDATE> [--format text\|json]` | le metriche di due esecuzioni, baseline o benchmark affiancate, con la loro confrontabilità |
 
 Sezioni di `qrust analyze`: `timing`, `rebuilds`, `duplication`, `scripts`, `proc-macros`, `codegen`, `cache`, `storage`, `recommendations` e `worktrees` (unità identiche compilate in altri worktree e workspace; non accetta `--run`, `--filter`, `--sort` né `--limit`).

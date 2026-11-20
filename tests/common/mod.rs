@@ -72,8 +72,8 @@ impl Sandbox {
             }
         }
         c.env("QRUST_HOME", &self.home).env("CARGO_TERM_COLOR", "never");
-        // Early cut-off builds QuickRust's compiler driver in the background when it is missing: the
-        // tests that need the driver turn it on and build it themselves.
+        // A build with early cut-off builds QuickRust's compiler driver first when it is missing: the
+        // tests that need the driver turn it on.
         c.env("QRUST_EARLY_CUTOFF", "off");
         // The suites' toolchains change only when a test changes them.
         c.env("QRUST_TOOLCHAIN_AUTO_UPDATE", "off");

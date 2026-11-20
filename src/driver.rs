@@ -5,8 +5,12 @@
 //! The compiler's internal API differs between releases, so the driver is built for each
 //! toolchain, against that toolchain's `rustc-dev` component, and only used once it reports
 //! exactly the compiler's own `rustc -vV`. It lives in `~/.qrust/cache/drivers/<key>/`, the key naming
-//! the compiler (commit, host) and the driver's source. A toolchain the driver cannot be built
-//! for keeps the stock compiler; the reason is recorded next to where the driver would be.
+//! the compiler (commit, host), its toolchain and the driver's source.
+//!
+//! Only a build that compiles with it builds it, and that build says how it went. A toolchain the
+//! driver cannot be built for keeps the stock compiler, and the reason is recorded in
+//! `drivers/could-not-build/`, once per compiler, toolchain and QuickRust version: builds do not
+//! try again until one of them changes (`qrust driver build` does).
 
 use crate::util;
 use std::fs;
@@ -32,10 +36,11 @@ const INTERFACE_BREAKS: &[u32] = &[99, 100];
 const NO_RUSTC_DEV: &str = "rustc-dev cannot be installed";
 /// In a driver's directory: the toolchain it was built for (`{"sysroot": …}`).
 pub const COMPILER: &str = "compiler.json";
-/// Next to where the driver would be: why it could not be built.
-const BUILD_FAILED: &str = "build-failed";
-/// Next to where the driver would be, while a background build runs.
-const BUILDING: &str = ".building";
+/// In `drivers/`: why a driver could not be built, one record per compiler, toolchain and QuickRust
+/// version (`failure_key`).
+pub const COULD_NOT_BUILD: &str = "could-not-build";
+/// The version of QuickRust whose driver a failure record is about.
+const QUICKRUST: &str = env!("CARGO_PKG_VERSION");
 
 /// A compiler as the driver is built for it: its own account (`rustc -vV`) and its toolchain
 /// (`--print sysroot`). Two toolchains can share a release and a commit (an installed release and
@@ -69,11 +74,6 @@ pub fn find(compiler: &Compiler) -> Option<PathBuf> {
     util::is_executable(&exe).then_some(exe)
 }
 
-/// Why the driver for this compiler could not be built, when it could not.
-pub fn build_failure(compiler: &Compiler) -> Option<String> {
-    fs::read_to_string(dir(compiler).ok()?.join(BUILD_FAILED)).ok()
-}
-
 /// Where failures of the driver at `exe` are recorded, per unit (see the wrapper).
 fn failures(exe: &Path) -> PathBuf {
     exe.with_file_name("failed")
@@ -100,42 +100,123 @@ fn release_minor(version_verbose: &str) -> Option<u32> {
     release.trim().split('.').nth(1)?.parse().ok()
 }
 
-/// Starts building the driver for the compiler at `rustc` (described by `compiler`) in the
-/// background, with `qrust` (QuickRust's own binary) running `qrust driver
-/// build`, unless it is built, being built, or could not be built before (`qrust driver build`
-/// tries again). Returns whether a build started.
-pub fn start_build(qrust: &Path, rustc: &Path, compiler: &Compiler) -> Result<bool, String> {
-    if find(compiler).is_some() {
-        return Ok(false);
+/// The release a compiler names (`1.100.0`), or its first line when it names none.
+fn release(version_verbose: &str) -> String {
+    version_verbose.lines().find_map(|l| l.strip_prefix("release: ")).or_else(|| version_verbose.lines().next()).unwrap_or_default().trim().to_string()
+}
+
+/// The toolchain a compiler is in, by name: its directory's (`1.100.0-x86_64-unknown-linux-gnu`,
+/// a linked toolchain's directory). The same wherever QuickRust's home is.
+fn toolchain_name(compiler: &Compiler) -> String {
+    util::lossy(compiler.sysroot.file_name().unwrap_or(compiler.sysroot.as_os_str()))
+}
+
+/// Which failure record answers for this compiler: its own account, its toolchain's name, and the
+/// driver QuickRust `quickrust` builds (its version and the driver's source). Not where the
+/// toolchain is: a home that moved (a cache carried to another machine) has the same toolchains,
+/// and the driver fails for them as it did.
+fn failure_key(version_verbose: &str, toolchain: &str, quickrust: &str) -> Result<String, String> {
+    let field = |k: &str| version_verbose.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).ok_or_else(|| format!("`rustc -vV` has no `{}` line", k.trim_end_matches(": ")));
+    let (commit, host) = (field("commit-hash: ")?, field("host: ")?);
+    let digest = util::digest_parts([version_verbose.to_string(), toolchain.to_string(), quickrust.to_string(), MANIFEST.to_string()].into_iter().chain(SOURCES.iter().flat_map(|(name, text)| [name.to_string(), text.to_string()])));
+    Ok(format!("{}-{}-{}", &commit[..commit.len().min(12)], host, &digest[..16]))
+}
+
+/// Where the failure record for this compiler is, built or not.
+fn failure_path(compiler: &Compiler) -> Result<PathBuf, String> {
+    Ok(util::cache_dir().join("drivers").join(COULD_NOT_BUILD).join(failure_key(&compiler.version_verbose, &toolchain_name(compiler), QUICKRUST)?))
+}
+
+/// Why the driver could not be built for a compiler, as recorded.
+#[derive(Clone, Debug)]
+pub struct Failure {
+    /// The compiler's release (`1.100.0`).
+    pub release: String,
+    /// Its toolchain, by name.
+    pub toolchain: String,
+    /// Everything the build said about it.
+    pub error: String,
+    /// Where it is recorded.
+    pub record: PathBuf,
+}
+
+impl Failure {
+    /// The error in a line: its first, and the first error the compiler reported with how many
+    /// more there were (a driver that does not compile says dozens of lines).
+    pub fn summary(&self) -> String {
+        summarize(&self.error)
     }
-    let target = dir(compiler)?;
-    if target.join(BUILD_FAILED).exists() {
-        return Ok(false);
+}
+
+fn summarize(error: &str) -> String {
+    let head = error.lines().next().unwrap_or_default().trim();
+    let errors: Vec<&str> = error.lines().skip(1).map(str::trim).filter(|l| (l.starts_with("error[") || l.starts_with("error:")) && !l.starts_with("error: could not compile") && !l.starts_with("error: aborting")).collect();
+    match errors.split_first() {
+        None => head.to_string(),
+        Some((first, [])) => format!("{} {}", head, first),
+        Some((first, rest)) => format!("{} {}, and {} more error{}", head, first, rest.len(), if rest.len() == 1 { "" } else { "s" }),
     }
-    util::create_private_dir(&target).map_err(|e| e.to_string())?;
-    // One build at a time. A marker older than an hour is from a build that did not finish.
-    let marker = target.join(BUILDING);
-    if let Ok(md) = fs::metadata(&marker) {
-        if util::mtime_ns(&md) + 3_600 * 1_000_000_000 > util::now_wall_ns() {
-            return Ok(false);
+}
+
+/// Why the driver for this compiler could not be built, when this QuickRust recorded that it could
+/// not.
+pub fn build_failure(compiler: &Compiler) -> Option<Failure> {
+    let record = failure_path(compiler).ok()?;
+    let v = util::read_json(&record)?;
+    let field = |k: &str| v[k].as_str().map(str::to_string);
+    Some(Failure { release: field("release")?, toolchain: field("toolchain")?, error: field("error")?, record })
+}
+
+/// How getting the driver for a compiler went.
+pub enum Outcome {
+    /// It was built before.
+    Found(PathBuf),
+    /// It is built now, for this release.
+    Built(PathBuf, String),
+    /// It could not be built now.
+    Failed(Failure),
+    /// It could not be built before, by this QuickRust for this compiler: not tried again.
+    FailedBefore(Failure),
+}
+
+/// The driver for the compiler at `rustc` (a toolchain's own binary): the one built, or built now
+/// and installed where `find` looks, one build at a time. Adds the `rustc-dev` component to a
+/// toolchain QuickRust installed when it is missing; any other compiler must have it. A failure is
+/// recorded; one recorded before is not tried again unless `force` (`qrust driver build`).
+pub fn obtain(rustc: &Path, force: bool) -> Result<Outcome, String> {
+    let compiler = Compiler::of(&util::path_str(rustc))?;
+    let target = dir(&compiler)?;
+    let record = failure_path(&compiler)?;
+    // Asked before the lock, so that a build finding either leaves the cache as it is, and again
+    // under it: another build may have just built it, or failed to.
+    let known = || match (find(&compiler), build_failure(&compiler)) {
+        (Some(exe), _) => Some(Outcome::Found(exe)),
+        (None, Some(failure)) if !force => Some(Outcome::FailedBefore(failure)),
+        _ => None,
+    };
+    if let Some(outcome) = known() {
+        return Ok(outcome);
+    }
+    util::create_private_dir(&target).map_err(|e| format!("cannot create {}: {}", target.display(), e))?;
+    let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
+    if let Some(outcome) = known() {
+        return Ok(outcome);
+    }
+    match build_locked(rustc, &compiler.version_verbose, &target) {
+        Ok(exe) => {
+            // Which toolchain it is for: once that is gone, QuickRust's cache removes the driver.
+            util::write_json_fast(&target.join(COMPILER), &serde_json::json!({ "sysroot": util::path_str(&compiler.sysroot) })).map_err(|e| format!("cannot write {}: {}", target.join(COMPILER).display(), e))?;
+            match fs::remove_file(&record) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("cannot remove {}: {}", record.display(), e)),
+                _ => {}
+            }
+            Ok(Outcome::Built(exe, release(&compiler.version_verbose)))
         }
-        let _ = fs::remove_file(&marker);
-    }
-    match fs::OpenOptions::new().write(true).create_new(true).open(&marker) {
-        Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => return Ok(false),
-        Err(e) => return Err(format!("cannot create {}: {}", marker.display(), e)),
-    }
-    let log = fs::File::create(target.join("build.log")).map_err(|e| e.to_string())?;
-    let mut c = crate::resolve::qrust_command(qrust);
-    c.args(["driver", "build", "--rustc", &util::path_str(rustc)]);
-    // It outlives the build that started it, and that build's terminal signals (Ctrl-C) do not
-    // reach it.
-    match crate::proc::spawn_detached(&mut c, log) {
-        Ok(()) => Ok(true),
-        Err(e) => {
-            let _ = fs::remove_file(&marker);
-            Err(format!("cannot start {}: {}", qrust.display(), e))
+        Err(error) => {
+            let failure = Failure { release: release(&compiler.version_verbose), toolchain: toolchain_name(&compiler), error, record: record.clone() };
+            let json = serde_json::json!({ "quickrust": QUICKRUST, "release": failure.release, "toolchain": failure.toolchain, "sysroot": util::path_str(&compiler.sysroot), "error": failure.error });
+            util::create_private_dir(record.parent().unwrap_or(&record)).and_then(|_| util::write_json_fast(&record, &json)).map_err(|e| format!("cannot record why the driver could not be built in {}: {}", record.display(), e))?;
+            Ok(Outcome::Failed(failure))
         }
     }
 }
@@ -146,51 +227,39 @@ pub fn wanted(cfg: &crate::config::Config) -> bool {
     cfg.str("mode") == "fast" && cfg.str("cache.artifacts") == "on" && cfg.str("fast.early-cutoff") == "auto"
 }
 
-/// Builds the driver for a toolchain just installed (`qrust setup`, a channel's new release),
-/// before any build uses the toolchain: the driver is part of what an artifact-cache entry is
-/// keyed by, so what builds store without it, builds with it never find. Shown as a phase. A
-/// failure is a note, not an error: the driver only saves time, and builds try again.
-pub fn prepare(tc: &crate::toolchain::Toolchain) {
-    let rustc = tc.dir.join("bin").join(if cfg!(windows) { "rustc.exe" } else { "rustc" });
-    let release = tc.record().map(|r| r.version).unwrap_or_else(|| tc.id.clone());
-    if Compiler::of(&util::path_str(&rustc)).ok().and_then(|c| find(&c)).is_some() {
-        return;
-    }
+/// The driver for the compiler at `rustc`, got now for a command about to compile with it (or to
+/// prepare a toolchain for builds), shown as a phase; the command's output says how it went. A
+/// recorded failure is not tried again (`obtain`).
+pub fn prepare(rustc: &Path) -> Option<PathBuf> {
     let mut phase = crate::ui::Phase::start();
-    phase.status(&format!("Preparing QuickRust's compiler driver for Rust {}", release), true);
-    match build(&rustc) {
-        Ok(_) => phase.finish(true, &format!("Compiler driver for Rust {} ready", release)),
-        Err(e) => {
-            phase.clear_line();
-            crate::ui::notice_driver_unavailable(&e);
+    if let Ok(c) = Compiler::of(&util::path_str(rustc)) {
+        if let Some(exe) = find(&c) {
+            return Some(exe);
         }
+        phase.status(&format!("Preparing QuickRust's compiler driver for Rust {}", release(&c.version_verbose)), true);
+    }
+    let outcome = obtain(rustc, false);
+    phase.clear_line();
+    report(&outcome, phase.elapsed_ns());
+    match outcome {
+        Ok(Outcome::Found(exe) | Outcome::Built(exe, _)) => Some(exe),
+        _ => None,
     }
 }
 
-/// Builds the driver for the compiler at `rustc` (a toolchain's own binary) and installs it where
-/// `find` looks; one build at a time. Adds the `rustc-dev` component to a toolchain QuickRust installed
-/// when it is missing; any other compiler must have it. A failure is recorded, and background builds
-/// (`start_build`) do not try again; this one always does.
-pub fn build(rustc: &Path) -> Result<PathBuf, String> {
-    let compiler = Compiler::of(&util::path_str(rustc))?;
-    let target = dir(&compiler)?;
-    let _lock = util::ExclusiveLock::acquire(&target.join(".build.lock")).map_err(|e| format!("cannot lock {}: {}", target.display(), e))?;
-    // Which toolchain it is for: once that is gone, QuickRust's cache removes the driver.
-    let _ = util::write_json_fast(&target.join(COMPILER), &serde_json::json!({ "sysroot": util::path_str(&compiler.sysroot) }));
-    let result = match find(&compiler) {
-        Some(exe) => Ok(exe),
-        None => build_locked(rustc, &compiler.version_verbose, &target),
-    };
-    match &result {
-        Ok(_) => {
-            let _ = fs::remove_file(target.join(BUILD_FAILED));
+/// Says how getting the driver went, in the output of the command that needed it.
+pub fn report(outcome: &Result<Outcome, String>, elapsed_ns: u64) {
+    use crate::ui::{message, say, Tag, INDENT};
+    match outcome {
+        Ok(Outcome::Found(_)) => {}
+        Ok(Outcome::Built(_, release)) => say(Tag::Ok, &message(&format!("Compiler driver for Rust {} ready", release), &[], Some(elapsed_ns))),
+        Ok(Outcome::Failed(f)) => {
+            say(Tag::Warn, &format!("QuickRust's compiler driver could not be built for Rust {} ({}), so builds with it have no early cut-off: {}", f.release, f.toolchain, f.summary()));
+            eprintln!("{}the whole report is in {}; builds try again with another Rust or another QuickRust, and `qrust driver build` tries now", INDENT, util::tilde(&f.record));
         }
-        Err(e) => {
-            let _ = fs::write(target.join(BUILD_FAILED), format!("{}\n", e));
-        }
+        Ok(Outcome::FailedBefore(f)) => say(Tag::Note, &format!("QuickRust's compiler driver could not be built for Rust {} ({}), so this build has no early cut-off: `qrust driver status` says why, and `qrust driver build` tries again", f.release, f.toolchain)),
+        Err(e) => say(Tag::Warn, &format!("QuickRust's compiler driver cannot be built, so this build has no early cut-off: {}", e)),
     }
-    let _ = fs::remove_file(target.join(BUILDING));
-    result
 }
 
 fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String> {
@@ -251,7 +320,7 @@ fn build_locked(rustc: &Path, vv: &str, target: &Path) -> Result<PathBuf, String
         .map_err(|e| format!("cannot run the toolchain's cargo: {}", e))?;
     if !out.status.success() {
         let _ = fs::remove_dir_all(&work);
-        return Err(format!("the driver does not build against {}: {}", name, String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("the driver does not compile against {}:\n{}", name, String::from_utf8_lossy(&out.stderr).trim()));
     }
     let built = work.join("target").join("release").join(format!("{}{}", BINARY, std::env::consts::EXE_SUFFIX));
     // It must be the compiler it was built against, by its own account.
@@ -293,6 +362,36 @@ mod tests {
         let at = |sysroot: &str| dir(&Compiler { version_verbose: vv.clone(), sysroot: PathBuf::from(sysroot) }).unwrap();
         assert_ne!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/dev"));
         assert_eq!(at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"), at("/qrust/toolchains/1.98.1-x86_64-unknown-linux-gnu"));
+    }
+
+    // TEST0357: A driver that could not be built is answered for by its compiler, toolchain and QuickRust, not by where they are
+    #[test]
+    fn test0357_a_driver_that_could_not_be_built_is_answered_for_by_its_compiler_toolchain_and_quickrust() {
+        let vv = |commit: &str, release: &str| format!("rustc {release} (0ef1bc386 2026-11-09)\nbinary: rustc\ncommit-hash: {commit}\ncommit-date: 2026-11-09\nhost: x86_64-unknown-linux-gnu\nrelease: {release}\nLLVM version: 21.1.3\n");
+        let v100 = vv("0ef1bc3860599d3b8f41c6c42c3e81d1d7e9b2a4", "1.100.0");
+        let key = failure_key(&v100, "1.100.0-x86_64-unknown-linux-gnu", "1.190.0").unwrap();
+        assert!(key.starts_with("0ef1bc386059-x86_64-unknown-linux-gnu-"), "{}", key);
+        // The same toolchain in a home that moved: its record is found where it was made. The
+        // driver itself is not shared (it loads the toolchain's libraries by their path).
+        let compiler = |sysroot: &str| Compiler { version_verbose: v100.clone(), sysroot: PathBuf::from(sysroot) };
+        let (here, moved) = (compiler("/home/a/.qrust/toolchains/1.100.0-x86_64-unknown-linux-gnu"), compiler("/home/b/.qrust/toolchains/1.100.0-x86_64-unknown-linux-gnu"));
+        assert_eq!(failure_key(&here.version_verbose, &toolchain_name(&here), QUICKRUST).unwrap(), failure_key(&moved.version_verbose, &toolchain_name(&moved), QUICKRUST).unwrap());
+        assert_ne!(dir(&here).unwrap(), dir(&moved).unwrap());
+        // Another QuickRust, another compiler, or another toolchain of the same release: tried again.
+        assert_ne!(failure_key(&v100, "1.100.0-x86_64-unknown-linux-gnu", "1.190.1").unwrap(), key);
+        assert_ne!(failure_key(&vv("0ef1bc3860599d3b8f41c6c42c3e81d1d7e9b2a5", "1.100.1"), "1.100.0-x86_64-unknown-linux-gnu", "1.190.0").unwrap(), key);
+        assert_ne!(failure_key(&v100, "dev", "1.190.0").unwrap(), key);
+        assert!(failure_key("rustc 1.100.0\n", "x", "1.190.0").unwrap_err().contains("commit-hash"));
+    }
+
+    // TEST0358: A driver that does not compile is summed up by its first error and how many more there are
+    #[test]
+    fn test0358_a_driver_that_does_not_compile_is_summed_up_by_its_first_error_and_how_many_more() {
+        let error = "the driver does not compile against 1.100.0-x86_64-unknown-linux-gnu:\nerror[E0407]: method `replaced_intrinsics` is not a member of trait `CodegenBackend`\n  --> src/early_link.rs:120:5\n    |\nwarning: unused import\nerror[E0603]: enum `CrateType` is private\nerror[E0053]: method `init` has an incompatible type for trait\nerror: aborting due to 3 previous errors\nerror: could not compile `qrust-rustc-driver` (bin \"qrust-rustc-driver\")";
+        assert_eq!(summarize(error), "the driver does not compile against 1.100.0-x86_64-unknown-linux-gnu: error[E0407]: method `replaced_intrinsics` is not a member of trait `CodegenBackend`, and 2 more errors");
+        assert_eq!(summarize("the driver does not compile against x:\nerror: linking with `cc` failed: exit status: 1"), "the driver does not compile against x: error: linking with `cc` failed: exit status: 1");
+        let one = "rustc-dev cannot be installed for mine: the toolchain does not have it, and QuickRust only adds components to toolchains it installed";
+        assert_eq!(summarize(one), one);
     }
 
     // TEST0051: The release names the interface the driver adapts to

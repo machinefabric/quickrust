@@ -179,7 +179,7 @@ pub fn color() -> bool {
 /// OK   Built: 12 compiled, 140 fresh [4.21s]
 /// WARN 2 warnings in app: unused_variables x2; `qrust warnings` shows them
 /// FAIL Build: 1 error in app (bin), first at src/main.rs:3:5 [1.20s]
-/// NOTE building QuickRust's compiler driver for Rust 1.99.0 in the background
+/// NOTE QuickRust's compiler driver could not be built for Rust 1.100.0 (1.100.0-x86_64-unknown-linux-gnu), so this build has no early cut-off: ...
 ///      Downloaded 38 crates, 5.6 MiB [1.84s]
 /// ```
 ///
@@ -584,11 +584,6 @@ pub fn notice_foreign_out_dir(units: u64) {
     let _ = util::create_private_dir(marker.parent().unwrap_or(&marker)).and_then(|_| util::write_atomic_fast(&marker, b""));
 }
 
-/// QuickRust started building its compiler driver for this toolchain (see `driver.rs`).
-pub fn notice_driver_build(release: &str) {
-    say(Tag::Note, &format!("building QuickRust's compiler driver for Rust {} in the background, once per toolchain (it installs the toolchain's rustc-dev component if needed). Later builds then skip rebuilding crates an edit cannot affect. (`fast.early-cutoff = \"off\"` turns this off.)", release));
-}
-
 /// A note shown at most once an hour (per QuickRust home and `key`).
 pub fn notice_hourly(key: &str, text: &str) {
     let marker = util::qrust_home().join("notices").join(key);
@@ -603,11 +598,6 @@ pub fn notice_hourly(key: &str, text: &str) {
 /// A note of QuickRust's own on stderr.
 pub fn note(text: &str) {
     say(Tag::Note, text);
-}
-
-/// QuickRust could not start building its compiler driver.
-pub fn notice_driver_unavailable(why: &str) {
-    say(Tag::Note, &format!("QuickRust's compiler driver cannot be built: {}", why));
 }
 
 /// The summary of a build QuickRust knows to be fresh without asking Cargo: the build phase of a

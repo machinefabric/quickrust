@@ -75,7 +75,7 @@ QRUST_CACHE_GC=off qrust build
 
 Una build con questa variabile non avvia alcuna raccolta. Una raccolta che era dovuta resta dovuta, e il comando successivo eseguito senza la variabile la avvia, così la cache resta comunque entro i suoi limiti. Un disco quasi pieno viene comunque raccolto prima di un comando, al suo interno, il che non lascia nulla dopo di sé. Per disattivare la raccolta in background su una macchina, metti `gc = "off"` sotto `[cache]` in `~/.qrust/config.toml`, ed esegui `qrust gc` tu stesso.
 
-Altre tre cose che QuickRust fa in background hanno interruttori propri: `QRUST_EARLY_CUTOFF=off` (la compilazione del driver del compilatore per l'[early cut-off](../explanation/early-cutoff.md), di cui quelle build fanno allora a meno), `QRUST_TOOLCHAIN_AUTO_UPDATE=off` e `QRUST_SELF_UPDATE_CHECK=off`. Una build con tutte e quattro impostate non lascia alcun processo in esecuzione dopo di sé.
+Altre due cose che QuickRust fa in background hanno interruttori propri: `QRUST_TOOLCHAIN_AUTO_UPDATE=off` e `QRUST_SELF_UPDATE_CHECK=off`. Una build con tutte e tre impostate non lascia alcun processo in esecuzione dopo di sé. Il driver del compilatore per l'[early cut-off](../explanation/early-cutoff.md) viene compilato dentro la build che ne ha bisogno, mai dopo di essa.
 
 Interrompere una raccolta a metà, con un segnale o terminando il suo albero di processi, non lascia mai la cache rotta ([Interrompere una raccolta](../reference/files.md#ending-a-collection)).
 

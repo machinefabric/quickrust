@@ -495,17 +495,19 @@ fn cmd_driver(raw: &[OsString]) -> CmdResult {
         None => toolchain_rustc()?,
     };
     match action.as_deref() {
-        Some("build") => {
-            let exe = crate::driver::build(&rustc)?;
-            println!("{}", exe.display());
-            Ok(0)
-        }
+        Some("build") => match crate::driver::obtain(&rustc, true)? {
+            crate::driver::Outcome::Found(exe) | crate::driver::Outcome::Built(exe, _) => {
+                println!("{}", exe.display());
+                Ok(0)
+            }
+            crate::driver::Outcome::Failed(f) | crate::driver::Outcome::FailedBefore(f) => Err(f.error),
+        },
         None | Some("status") => {
             let compiler = crate::driver::Compiler::of(&util::path_str(&rustc))?;
             let vv = &compiler.version_verbose;
             match (crate::driver::find(&compiler), crate::driver::build_failure(&compiler)) {
                 (Some(exe), _) => println!("built: {}", exe.display()),
-                (None, Some(why)) => println!("could not be built for {}: {}\n`qrust driver build` tries again", vv.lines().next().unwrap_or("this compiler"), why.trim()),
+                (None, Some(f)) => println!("could not be built for {} ({}): {}\n`qrust driver build` tries again", vv.lines().next().unwrap_or("this compiler"), f.toolchain, f.error.trim()),
                 (None, None) => println!("not built for {} (expected in {}); `qrust driver build` builds it", vv.lines().next().unwrap_or("this compiler"), crate::driver::dir(&compiler)?.display()),
             }
             Ok(0)
@@ -674,14 +676,7 @@ fn cmd_toolchain(raw: &[OsString]) -> CmdResult {
                 None => util::ExclusiveLock::acquire(&layout.toolchains().join(".locks").join("update.lock")).map_err(|e| e.to_string())?,
             };
             let mut progress = crate::ui::ToolchainProgress::new("update");
-            // A channel's new release gets QuickRust's compiler driver before builds use it.
-            let wanted = crate::driver::wanted(&Config::load(&std::env::current_dir().map_err(|e| e.to_string())?)?);
-            let mut prepare = |tc: &toolchain::Toolchain| {
-                if wanted {
-                    crate::driver::prepare(tc);
-                }
-            };
-            let moved = toolchain::update(&layout, &server, only.as_deref(), &mut prepare, &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
+            let moved = toolchain::update(&layout, &server, only.as_deref(), &mut progress).and_then(|m| toolchain::retire(&layout, &mut progress).map(|r| (m, r)));
             let (moved, retired) = match moved {
                 Ok(m) => m,
                 Err(e) => {
@@ -1636,7 +1631,7 @@ fn cmd_setup(raw: &[OsString]) -> CmdResult {
             }
         };
         if crate::driver::wanted(&cfg) {
-            crate::driver::prepare(&tc);
+            crate::driver::prepare(&tc.bin("rustc"));
         }
     }
     if modify_path && !done.path_edits.is_empty() && !cfg!(windows) {

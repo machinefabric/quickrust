@@ -76,7 +76,7 @@ How it works: [About the artifact cache](../explanation/artifact-cache.md).
 |---|---|
 | Key | `fast.early-cutoff`: `auto`, `off` (`QRUST_EARLY_CUTOFF`) |
 | Needs | the artifact cache, and QuickRust's compiler driver for the toolchain |
-| Driver | the toolchain's own rustc built against its `rustc-dev` component, once per toolchain: by `qrust setup` and when a channel moves to a new release; otherwise in the background after the first build that finds it missing (QuickRust says so in a `NOTE`). `qrust driver status` tells whether it is built, `qrust driver build` builds it |
+| Driver | the toolchain's own rustc built against its `rustc-dev` component, once per toolchain: by `qrust setup`, and by the first build that compiles with early cut-off and finds it missing, before it compiles (`OK   Compiler driver for Rust <release> ready`). A driver that cannot be built is said in a `WARN` by that build, recorded in `~/.qrust/cache/drivers/could-not-build/`, and not tried again for the same compiler, toolchain and QuickRust version (later builds say so in a `NOTE`). `qrust driver status` tells whether it is built, `qrust driver build` builds it |
 | Effect | a library's crate hash covers what its dependents can observe, so an edit its dependents cannot observe leaves their cache keys unchanged and they are restored; a binary or test whose own code is unchanged is linked again (`-Zlink-only`) instead of compiled |
 | Not applied | to a unit the driver failed on before (rustc compiles it from then on; the report is kept in `~/.qrust/cache/drivers/<key>/failed/`); when Cargo runs another program in rustc's place (`cargo clippy`'s clippy-driver) |
 

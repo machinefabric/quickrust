@@ -92,7 +92,7 @@ Stored for every build QuickRust rendered in a terminal ([Output](output.md#stor
 | `qrust report [--run REF] [--format text\|json\|html] [-o FILE]` | the whole report; `-o` (or `--output`) writes it to `FILE` instead of stdout. `json` and `html` are exported documents (tokenized paths, [Run report schema](report-schema.md)) |
 | `qrust runs [--limit N] [--format text\|json]` | the recorded runs of this workspace, newest first (default 20) |
 | `qrust inspect [--format text\|json]` | the workspace, toolchain and environment fingerprint, measured now |
-| `qrust driver [status\|build] [--rustc PATH]` | QuickRust's compiler driver for the toolchain used here (or the compiler at `PATH`): `status` (default) says whether it is built, `build` builds it and prints its path |
+| `qrust driver [status\|build] [--rustc PATH]` | QuickRust's compiler driver for the toolchain used here (or the compiler at `PATH`): `status` (default) says whether it is built, or why it could not be; `build` builds it and prints its path, trying again where builds do not |
 | `qrust compare <BASE> <CANDIDATE> [--format text\|json]` | the metrics of two runs, baselines or benchmarks side by side, with their comparability |
 
 Sections of `qrust analyze`: `timing`, `rebuilds`, `duplication`, `scripts`, `proc-macros`, `codegen`, `cache`, `storage`, `recommendations`, and `worktrees` (identical units built in other worktrees and workspaces; it takes no `--run`, `--filter`, `--sort` or `--limit`).
