@@ -148,10 +148,6 @@ mod imp {
         r == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
-    pub fn parent_pid() -> u32 {
-        unsafe { libc::getppid() as u32 }
-    }
-
     pub fn interrupted() -> Option<i32> {
         match INTERRUPTED.load(Ordering::SeqCst) {
             0 => None,
@@ -195,10 +191,6 @@ mod imp {
         pid != 0 && super::win::process_running(pid)
     }
 
-    pub fn parent_pid() -> u32 {
-        0
-    }
-
     pub fn interrupted() -> Option<i32> {
         None
     }
@@ -238,10 +230,6 @@ pub fn exec(cmd: &mut Command) -> io::Error {
 
 pub fn pid_alive(pid: u32) -> bool {
     imp::pid_alive(pid)
-}
-
-pub fn parent_pid() -> u32 {
-    imp::parent_pid()
 }
 
 /// A running process: its id, its name, the program it runs and its working directory, each as

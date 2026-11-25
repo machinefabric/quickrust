@@ -1018,6 +1018,97 @@ fn test0268_recursion_is_refused_with_a_diagnostic() {
     assert_eq!(b.status.code(), Some(2), "{}", stderr(&b));
     assert!(stderr(&b).contains("refusing to run Cargo"), "{}", stderr(&b));
     assert!(!sb.target_dir(&p).exists());
+    // A query, which QuickRust replaces itself with Cargo to run: the copy keeps QuickRust's
+    // process id, and is refused all the same instead of replacing itself with itself forever.
+    let c = run_within(sb.cargo(&p).args(["+loop", "metadata", "--format-version", "1"]), std::time::Duration::from_secs(60));
+    assert_eq!(c.status.code(), Some(2), "{}", stderr(&c));
+    assert!(stderr(&c).contains("refusing to run Cargo"), "{}", stderr(&c));
+}
+
+// TEST0343: Cargo fmt runs through QuickRust and calls Cargo back
+#[test]
+fn test0343_cargo_fmt_runs_through_quickrust_and_calls_cargo_back() {
+    // `cargo fmt` is QuickRust's `cargo-fmt` proxy running the toolchain's, which asks
+    // `cargo metadata` through `CARGO`, QuickRust again: that nested Cargo is not taken for
+    // recursion, whichever way `fmt` was asked for, and rustfmt formats every member.
+    let sb = Sandbox::new("fmt");
+    let ws = sb.workspace("ws");
+    // The fixture's `util` is written on one line; `app` is made so too.
+    let files = [
+        ("util/src/lib.rs", fs::read_to_string(ws.join("util/src/lib.rs")).unwrap(), "pub fn double(x: u32) -> u32 {\n    x * 2\n}\n"),
+        ("app/src/main.rs", "fn main(){println!(\"{}\",util::double(gen::GENERATED)+mac::answer!());}\n".to_string(), "fn main() {\n    println!(\"{}\", util::double(gen::GENERATED) + mac::answer!());\n}\n"),
+    ];
+    let mess = || {
+        for (file, messy, _) in &files {
+            fs::write(ws.join(file), messy).unwrap();
+        }
+    };
+    let ways: [(&str, fn(&Sandbox, &Path) -> Command); 3] = [
+        ("cargo fmt", |sb, p| {
+            let mut c = sb.cargo(p);
+            c.arg("fmt");
+            c
+        }),
+        ("qrust fmt", |sb, p| {
+            let mut c = sb.qrust(p);
+            c.arg("fmt");
+            c
+        }),
+        ("qrust upstream fmt", |sb, p| {
+            let mut c = sb.qrust(p);
+            c.args(["upstream", "fmt"]);
+            c
+        }),
+    ];
+    mess();
+    for (name, way) in ways {
+        let check = run_within(way(&sb, &ws).arg("--check"), std::time::Duration::from_secs(120));
+        assert_eq!(check.status.code(), Some(1), "{}: {}", name, stderr(&check));
+        for (file, messy, _) in &files {
+            assert!(stdout(&check).contains(&format!("Diff in {}", ws.join(file).display())), "{}: rustfmt reported no difference in {}\nstdout: {}\nstderr: {}", name, file, stdout(&check), stderr(&check));
+            assert_eq!(&fs::read_to_string(ws.join(file)).unwrap(), messy, "{}: --check changed nothing", name);
+        }
+    }
+    for (name, way) in ways {
+        mess();
+        ok(&mut way(&sb, &ws));
+        for (file, _, tidy) in &files {
+            assert_eq!(fs::read_to_string(ws.join(file)).unwrap(), *tidy, "{} formatted {}", name, file);
+        }
+        let clean = ok(way(&sb, &ws).arg("--check"));
+        assert_eq!(stdout(&clean), "", "{}", name);
+    }
+}
+
+// TEST0364: An external subcommand Cargo runs in QuickRusts place calls Cargo back
+#[test]
+fn test0364_an_external_subcommand_cargo_runs_in_quickrusts_place_calls_cargo_back() {
+    // QuickRust replaces itself with Cargo for a query (`cargo help x` runs `cargo-x --help`) and
+    // for `qrust upstream`, and Cargo replaces itself with the subcommand: the `cargo` that
+    // subcommand starts, through `$CARGO` or by name, is a child of the very process QuickRust
+    // started as Cargo. It is a nested Cargo, not recursion, as it is when QuickRust runs Cargo in
+    // a process of its own (`cargo x`).
+    let sb = Sandbox::new("callback");
+    let p = sb.package("p", "p");
+    for (sub, cargo) in [("x", "\"$CARGO\""), ("y", "cargo")] {
+        let script = sb.file(&format!("bin/cargo-{}", sub), &format!("#!/bin/sh\n{} metadata --format-version 1 --no-deps | grep -q '\"name\":\"p\"' || exit 9\necho called-back\n", cargo));
+        make_executable(&script);
+    }
+    let path = std::env::join_paths(std::iter::once(sb.dir.join("bin")).chain(std::env::split_paths(&sb.path_with_shim()))).unwrap();
+    let ways: [(&str, Command); 6] = [
+        ("cargo help x", sb.cargo(&p)),
+        ("cargo help y", sb.cargo(&p)),
+        ("cargo x", sb.cargo(&p)),
+        ("cargo y", sb.cargo(&p)),
+        ("qrust upstream x", sb.qrust(&p)),
+        ("qrust upstream y", sb.qrust(&p)),
+    ];
+    for (name, mut cmd) in ways {
+        cmd.args(name.split(' ').skip(1)).env("PATH", &path);
+        let out = run_within(&mut cmd, std::time::Duration::from_secs(120));
+        assert_eq!(out.status.code(), Some(0), "{}: {}", name, stderr(&out));
+        assert_eq!(stdout(&out).trim(), "called-back", "{}: {}", name, stderr(&out));
+    }
 }
 
 // TEST0269: An unreachable dist server is a clear error

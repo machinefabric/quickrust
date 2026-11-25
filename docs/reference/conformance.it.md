@@ -8,7 +8,7 @@ comportamento viene verificato.
 | Voce | Stato | Dove |
 |---|---|---|
 | Shim di compatibilità `cargo`; eseguibile di gestione `qrust` | fatto | `src/cli.rs`, `src/session.rs` · tests/compat.rs |
-| Engine sicuro contro la ricorsione (COMP-021, COMP-022) | fatto: il Cargo della toolchain stessa; una toolchain collegata il cui `cargo` è QuickRust viene rifiutata | `src/engine.rs` · `test0268_recursion_is_refused…`, `test0269_an_unreachable_dist_server…` |
+| Engine sicuro contro la ricorsione (COMP-021, COMP-022) | fatto: il Cargo della toolchain stessa; una toolchain collegata il cui `cargo` è QuickRust viene rifiutata | `src/engine.rs`, `src/resolve.rs` · `test0268_recursion_is_refused…`, `test0269_an_unreachable_dist_server…`, `test0343_cargo_fmt_runs_through_quickrust…`, `test0364_an_external_subcommand_cargo_runs_in_quickrusts_place…`, `test0344_the_session_guard_names_the_file_run_as_cargo` |
 | Toolchain: `+toolchain`, `RUSTUP_TOOLCHAIN`, file di toolchain, predefinita (COMP-012, COMP-020) | fatto: QuickRust installa e seleziona da sé le toolchain (deviazione 6) | `src/toolchain/` · `qa003_*`, `test0238_toolchain_programs_run_through_quickrusts_proxies`, `test0237_builds_and_their_build_scripts_get_quickrusts_toolchain…`, `test0271_environment_reaches_build_scripts_unchanged` |
 | Inoltro di argv / stdin / stdout / stderr / segnali, exit status esatto | fatto | `src/proc.rs` · `qa022`, `qa023`, `test0253_stdin_and_exit_codes…` |
 | Sottocomandi esterni, alias, flag sconosciuti | fatto | `qa019`, `qa020`, `qa030` |

@@ -440,7 +440,8 @@ fn metadata(engine: &crate::engine::Engine, manifest: &Path, no_deps: bool) -> R
         args.push("--no-deps".into());
     }
     let mut c = engine.command(&args, &resolve::classify(&[]));
-    c.stdin(std::process::Stdio::null()).env(crate::ENV_EXEC_GUARD, format!("{}:install", std::process::id()));
+    c.stdin(std::process::Stdio::null());
+    resolve::guard(&mut c, "install");
     let out = c.output().map_err(|e| format!("cannot run {}: {}", engine.program.display(), e))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
@@ -471,7 +472,8 @@ fn registry(name: &str, req: &Option<String>, r: &Request, inv: &Invocation, cfg
         let mut args: Vec<OsString> = ["-Zbindeps", "--config", "resolver.incompatible-rust-versions=\"fallback\"", "metadata", "--format-version", "1", "--manifest-path"].map(OsString::from).to_vec();
         args.push(probe.join("Cargo.toml").into_os_string());
         let mut c = engine.command(&args, &resolve::classify(&[]));
-        c.stdin(std::process::Stdio::null()).env("RUSTC_BOOTSTRAP", "1").env(crate::ENV_EXEC_GUARD, format!("{}:install", std::process::id()));
+        c.stdin(std::process::Stdio::null()).env("RUSTC_BOOTSTRAP", "1");
+        resolve::guard(&mut c, "install");
         let o = c.output().map_err(|e| format!("cannot run {}: {}", engine.program.display(), e))?;
         if !o.status.success() {
             let err = String::from_utf8_lossy(&o.stderr);
