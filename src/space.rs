@@ -2683,6 +2683,23 @@ mod tests {
 
     /// A command that waits a minute and says nothing, on every platform: a Cargo's clean that runs
     /// on, or a process started beside one.
+    /// Whether the lock at `path` is free, or freed within two seconds. A child another test's
+    /// thread is starting holds every descriptor of this process from its fork until its exec, a
+    /// few milliseconds; a process that kept the lock would hold it for the minute it sleeps
+    /// (`waiting_command`).
+    fn released(path: &Path) -> bool {
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if util::ExclusiveLock::try_acquire(path).unwrap().is_some() {
+                return true;
+            }
+            if std::time::Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     fn waiting_command() -> std::process::Command {
         #[cfg(unix)]
         let mut cmd = std::process::Command::new("sleep");
@@ -2710,7 +2727,7 @@ mod tests {
         assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_none(), "the lock went with the collection while its Cargo ran");
         cargo.kill().unwrap();
         cargo.wait().unwrap();
-        assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_some(), "the lock stayed held after Cargo ended");
+        assert!(released(&lock_path), "the lock stayed held after Cargo ended");
         other.kill().unwrap();
         other.wait().unwrap();
     }
@@ -2741,7 +2758,7 @@ mod tests {
             drop(lock);
             cargo.kill().unwrap();
             cargo.wait().unwrap();
-            assert!(util::ExclusiveLock::try_acquire(&lock_path).unwrap().is_some(), "round {}: a process started beside Cargo's clean holds the lock after Cargo ended", round);
+            assert!(released(&lock_path), "round {}: a process started beside Cargo's clean holds the lock after Cargo ended", round);
         }
     }
 }

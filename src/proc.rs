@@ -320,7 +320,62 @@ fn list_running() -> io::Result<Vec<Running>> {
     win::processes()
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+/// FreeBSD: the kernel's table of processes (`kern.proc.proc`), with each one's name (`ki_comm`),
+/// program (`kern.proc.pathname`) and current directory (`kern.proc.cwd`).
+#[cfg(target_os = "freebsd")]
+fn list_running() -> io::Result<Vec<Running>> {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+    /// What the sysctl `mib` answers: asked for its size, then read; asked again when it grew in
+    /// between (a process started).
+    fn sysctl(mib: &[libc::c_int]) -> io::Result<Vec<u8>> {
+        loop {
+            let mut len: libc::size_t = 0;
+            if unsafe { libc::sysctl(mib.as_ptr(), mib.len() as libc::c_uint, std::ptr::null_mut(), &mut len, std::ptr::null(), 0) } != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let mut buf = vec![0u8; len];
+            if unsafe { libc::sysctl(mib.as_ptr(), mib.len() as libc::c_uint, buf.as_mut_ptr().cast(), &mut len, std::ptr::null(), 0) } != 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(libc::ENOMEM) {
+                    continue;
+                }
+                return Err(e);
+            }
+            buf.truncate(len);
+            return Ok(buf);
+        }
+    }
+    let until_nul = |b: &[u8]| -> Option<std::path::PathBuf> {
+        let b = &b[..b.iter().position(|&c| c == 0).unwrap_or(b.len())];
+        (!b.is_empty()).then(|| std::path::PathBuf::from(OsStr::from_bytes(b)))
+    };
+    let table = sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PROC])?;
+    let record = std::mem::size_of::<libc::kinfo_proc>();
+    // The directory is one file record, whose path runs from `kf_path` to the record's end.
+    let at_path = std::mem::offset_of!(libc::kinfo_file, kf_path);
+    let mut out = vec![];
+    for at in (0..table.len()).step_by(record) {
+        let bytes = &table[at..];
+        // Each record begins with its size: a kernel whose records are of another size lays them
+        // out otherwise, and none of it is read as this layout.
+        let size = bytes.get(..4).map(|b| i32::from_ne_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        if size != Some(record) || bytes.len() < record {
+            let size = size.map_or_else(|| format!("{} bytes long", bytes.len()), |s| format!("{s} bytes"));
+            return Err(io::Error::other(format!("the kernel's process records are {size}, and QuickRust reads records of {record} bytes")));
+        }
+        let info: libc::kinfo_proc = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
+        let pid = info.ki_pid;
+        let name: Vec<u8> = info.ki_comm.iter().take_while(|&&c| c != 0).map(|&c| c as u8).collect();
+        // Another user's process, or one that ended since the table was read, answers neither.
+        let exe = sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_PATHNAME, pid]).ok().and_then(|b| until_nul(&b));
+        let cwd = sysctl(&[libc::CTL_KERN, libc::KERN_PROC, libc::KERN_PROC_CWD, pid]).ok().filter(|b| b.len() > at_path).and_then(|b| until_nul(&b[at_path..]));
+        out.push(Running { pid: pid as u32, name: String::from_utf8_lossy(&name).into_owned(), exe, cwd });
+    }
+    Ok(out)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "freebsd", windows)))]
 fn list_running() -> io::Result<Vec<Running>> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "QuickRust cannot list the running processes on this platform"))
 }
@@ -829,4 +884,41 @@ pub fn hold_signals() -> imp::Guard {
 /// Returns false when there is no child or the platform cannot signal it.
 pub fn terminate_child() -> bool {
     imp::terminate_child()
+}
+
+#[cfg(test)]
+mod running_tests {
+    use super::*;
+
+    // TEST0365: The running processes name a child with its program, its directory and its name, and leave this one out
+    #[test]
+    fn test0365_the_running_processes_name_a_child_with_its_program_its_directory_and_its_name_and_leave_this_one_out() {
+        let dir = std::env::temp_dir().join(format!("quickrust-running-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // The system names a process's directory and program by their real paths.
+        let real = |p: &std::path::Path| std::fs::canonicalize(p).unwrap();
+        let (real_dir, program) = (real(&dir), std::env::current_exe().unwrap());
+        // This test binary, sleeping in `dir` (`space::tests::sleeper`).
+        let mut child = Command::new(&program)
+            .args(["--exact", "space::tests::sleeper", "--ignored", "--quiet"])
+            .env("QRUSTTEST_SLEEPER", "1")
+            .current_dir(&dir)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let listed = running();
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+        let listed = listed.expect("the running processes are listed");
+        assert!(listed.iter().all(|p| p.pid != std::process::id()), "this process is left out");
+        let found = listed.iter().find(|p| p.pid == child.id()).unwrap_or_else(|| panic!("the child {} is not listed among {} processes", child.id(), listed.len()));
+        assert_eq!(found.exe.as_deref(), Some(real(&program).as_path()), "{found:?}");
+        assert_eq!(found.cwd.as_deref(), Some(real_dir.as_path()), "{found:?}");
+        // The system's name for it: its program's file name, cut short where the system cuts it.
+        let file = program.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(!found.name.is_empty() && file.starts_with(&found.name), "{found:?} is not named after {file}");
+    }
 }

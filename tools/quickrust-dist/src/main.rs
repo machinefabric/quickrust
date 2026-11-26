@@ -12,8 +12,9 @@
 //!   archive, whose path is printed.
 //!
 //! The macOS programs are linked by the host's toolchain, so they are built on a Mac. The Linux
-//! programs are static (musl) and the Windows ones are for the GNU ABI; both are linked by zig
-//! (`cargo zigbuild`), so one machine builds every platform.
+//! programs are static (musl), the Windows ones are for the GNU ABI and the FreeBSD ones link
+//! FreeBSD's C library; all three are linked by zig (`cargo zigbuild`), so one machine builds
+//! every platform.
 
 use std::fs;
 use std::io::Write;
@@ -29,6 +30,7 @@ pub const PLATFORMS: &[(&str, &str)] = &[
     ("linux-x86_64", "x86_64-unknown-linux-musl"),
     ("linux-arm64", "aarch64-unknown-linux-musl"),
     ("windows-x86_64", "x86_64-pc-windows-gnu"),
+    ("freebsd-x86_64", "x86_64-unknown-freebsd"),
 ];
 
 /// The directory every archive unpacks to.
@@ -139,6 +141,54 @@ fn release_line(get: &dyn Fn(&str) -> Option<String>) -> Result<String> {
     Ok(format!("{} {} {} {} {}", given[0].1, given[1].1, given[2].1, roots(3), roots(4)))
 }
 
+/// The shared libraries a FreeBSD program may need: those whose name (their library version) is
+/// the same on every FreeBSD the archive is for, 14 and later. libutil, for one, is libutil.so.9 on
+/// 14 and libutil.so.10 on 15, and a program that needs either does not start on the other.
+const FREEBSD_LIBRARIES: [&str; 3] = ["libc.so.7", "libthr.so.3", "libm.so.5"];
+
+/// The shared libraries the ELF program in `bytes` needs (its `DT_NEEDED` entries), in order: read
+/// from its dynamic section and the string table that section names. A 64-bit little-endian ELF
+/// file only, as every program QuickRust publishes for an ELF platform is.
+fn needed_libraries(bytes: &[u8]) -> Result<Vec<String>> {
+    let at = |offset: usize, len: usize| bytes.get(offset..offset + len).ok_or_else(|| "it ends inside its ELF headers".to_string());
+    let u16_at = |o: usize| at(o, 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
+    let u32_at = |o: usize| at(o, 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let u64_at = |o: usize| at(o, 8).map(|b| u64::from_le_bytes(b.try_into().expect("8 bytes")) as usize);
+    if at(0, 6)? != b"\x7fELF\x02\x01" {
+        return Err("it is not a 64-bit little-endian ELF file".into());
+    }
+    const SHT_DYNAMIC: usize = 6;
+    const DT_NULL: usize = 0;
+    const DT_NEEDED: usize = 1;
+    let (sections, size, count) = (u64_at(0x28)?, u16_at(0x3a)?, u16_at(0x3c)?);
+    let section = |i: usize| -> Result<(usize, usize, usize, usize)> {
+        let h = sections + i * size;
+        // Its type, the section it links to, where it is in the file and how long it is.
+        Ok((u32_at(h + 4)?, u32_at(h + 0x28)?, u64_at(h + 0x18)?, u64_at(h + 0x20)?))
+    };
+    let mut needed = vec![];
+    for i in 0..count {
+        let (kind, link, offset, len) = section(i)?;
+        if kind != SHT_DYNAMIC {
+            continue;
+        }
+        let (_, _, strings, strings_len) = section(link)?;
+        let names = at(strings, strings_len)?;
+        for entry in (offset..offset + len).step_by(16) {
+            match (u64_at(entry)?, u64_at(entry + 8)?) {
+                (DT_NULL, _) => break,
+                (DT_NEEDED, name) => {
+                    let name = names.get(name..).ok_or("a library's name is outside its string table")?;
+                    let name = &name[..name.iter().position(|&c| c == 0).ok_or("a library's name does not end")?];
+                    needed.push(String::from_utf8_lossy(name).into_owned());
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(needed)
+}
+
 /// Whether the program in `bytes` has `line` baked in.
 fn carries(bytes: &[u8], line: &str) -> bool {
     let line = line.as_bytes();
@@ -158,7 +208,7 @@ fn linker_for(target: &str) -> Result<Linker> {
         }
         return Ok(Linker::Host);
     }
-    for (tool, hint) in [("zig", "zig links the Linux and Windows programs"), ("cargo-zigbuild", "`cargo install --locked cargo-zigbuild`")] {
+    for (tool, hint) in [("zig", "zig links the Linux, Windows and FreeBSD programs"), ("cargo-zigbuild", "`cargo install --locked cargo-zigbuild`")] {
         let asked = Command::new(tool).arg(if tool == "zig" { "version" } else { "--version" }).output();
         if !asked.is_ok_and(|o| o.status.success()) {
             return Err(format!("{target} is linked by zig through `cargo zigbuild`, and {tool} is not installed ({hint})"));
@@ -281,6 +331,7 @@ fn host_platform() -> Option<&'static str> {
         ("linux", "x86_64") => "linux-x86_64",
         ("linux", "aarch64") => "linux-arm64",
         ("windows", "x86_64") => "windows-x86_64",
+        ("freebsd", "x86_64") => "freebsd-x86_64",
         _ => return None,
     })
 }
@@ -300,6 +351,16 @@ fn release(platform: &str, out_dir: &Path, work_dir: &Path) -> Result<()> {
     let entries = entries(&repo, &built, target);
     for entry in entries.iter().filter(|e| e.program) {
         let bytes = io(format!("cannot read {}", entry.from.display()), fs::read(&entry.from))?;
+        if target.ends_with("-freebsd") {
+            let needed = needed_libraries(&bytes).map_err(|e| format!("{}: {e}", entry.from.display()))?;
+            if let Some(other) = needed.iter().find(|l| !FREEBSD_LIBRARIES.contains(&l.as_str())) {
+                return Err(format!(
+                    "{} needs {other}, and a FreeBSD program of QuickRust's needs only the libraries every FreeBSD it runs on has under the same name ({})",
+                    entry.from.display(),
+                    FREEBSD_LIBRARIES.join(", ")
+                ));
+            }
+        }
         // Only `qrust` updates itself; the wrapper has no release line to carry.
         if entry.name.starts_with("qrust-rustc-wrapper") {
             continue;
@@ -421,6 +482,23 @@ mod tests {
         let here = quickrust::release::platform().expect("the tests run on a platform QuickRust is published for");
         assert!(PLATFORMS.iter().any(|(p, _)| *p == here), "{here}");
         assert_eq!(host_platform(), Some(here));
+    }
+
+    // TEST0367: The libraries an ELF program needs are read from its dynamic section
+    #[test]
+    fn test0367_the_libraries_an_elf_program_needs_are_read_from_its_dynamic_section() {
+        // This test program, as the system linked it: its C library is among what it needs.
+        let me = fs::read(std::env::current_exe().unwrap()).unwrap();
+        if cfg!(any(target_os = "linux", target_os = "freebsd")) {
+            let needed = needed_libraries(&me).unwrap();
+            let libc = if cfg!(target_os = "freebsd") { "libc.so.7" } else { "libc.so.6" };
+            assert!(needed.iter().any(|l| l == libc), "{needed:?}");
+            assert!(needed.iter().all(|l| l.contains(".so.")), "{needed:?}");
+            // Cut short before its section headers, it is refused rather than read past its end.
+            assert_eq!(needed_libraries(&me[..64]).unwrap_err(), "it ends inside its ELF headers");
+        }
+        assert_eq!(needed_libraries(b"MZ\x90\x00 a Windows program").unwrap_err(), "it is not a 64-bit little-endian ELF file");
+        assert_eq!(needed_libraries(b"\x7fELF\x01\x01 a 32-bit one").unwrap_err(), "it is not a 64-bit little-endian ELF file");
     }
 
     // TEST0290: A release line is whole and is the one the programs carry

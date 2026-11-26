@@ -11,27 +11,28 @@ Where QuickRust runs and is tested, what differs between platforms, and what can
 | macOS aarch64 | `darwin-arm64` | every test suite |
 | macOS x86_64 | `darwin-x86_64` | built for every release; the test suites are not run |
 | Windows x86_64 | `windows-x86_64` | a run sets QuickRust up from nothing (stable Rust from the dist server, the compiler driver), then creates, builds, runs and tests a project; the integration suites are Unix-only |
+| FreeBSD x86_64 | `freebsd-x86_64` (FreeBSD 14 and later) | a run on FreeBSD 15.1 installs QuickRust from its release archive, sets it up and builds a project, and runs the library's tests |
 
 An archive is `qrust-<version>-<platform>.tar.gz` (`.zip` for Windows), and unpacks to one directory, `quickrust/`, holding `qrust`, `qrust-rustc-wrapper`, the licence and the README. The release manifest (`https://release.machinefabric.com/quickrust/manifest`) lists, for every release, the platforms it was built for: a platform it does not list has no build of that release.
 
-QuickRust builds with Rust 1.80 or newer. The toolchains it installs are for the host it runs on; on Linux, `-gnu` or `-musl` after the system's C library, whatever QuickRust itself was built against.
+QuickRust builds with Rust 1.80 or newer. The toolchains it installs are for the host it runs on; on Linux, `-gnu` or `-musl` after the system's C library, whatever QuickRust itself was built against; on FreeBSD, `x86_64-unknown-freebsd`.
 
 ## Platform differences
 
-| Area | Linux | macOS | Windows |
-|---|---|---|---|
-| Toolchain programs in `~/.qrust/bin` | symbolic links | symbolic links | hard links |
-| `PATH` set up by `qrust setup` | shell startup files | shell startup files | the user's `PATH`, through PowerShell |
-| Toolchain libraries for its programs | `LD_LIBRARY_PATH` | `DYLD_FALLBACK_LIBRARY_PATH` | `PATH` |
-| The wild linker | glibc hosts | no | no |
-| Test runs (`cargo test`, `cargo bench`) | relayed terminal, totals line | relayed terminal, totals line | Cargo's lines |
-| Cargo's help names the program it runs | `cargo` | `cargo` | `.qrust-engine.exe` |
-| Termination signals | forwarded | forwarded | only what the console delivers to the whole process group |
-| `qrust benchmark --timeout` | yes | yes | no |
-| Inventory: hard-link de-duplication, allocated sizes | yes | yes | no |
-| Detection of a Cargo build in progress (inventory) | yes | yes | no |
-| Driver: linking before rustc saves its incremental state | yes | yes | no |
-| Filesystem type, CPU model, memory in reports | yes | yes | `null`, with a reason |
+| Area | Linux | macOS | Windows | FreeBSD |
+|---|---|---|---|---|
+| Toolchain programs in `~/.qrust/bin` | symbolic links | symbolic links | hard links | symbolic links |
+| `PATH` set up by `qrust setup` | shell startup files | shell startup files | the user's `PATH`, through PowerShell | shell startup files |
+| Toolchain libraries for its programs | `LD_LIBRARY_PATH` | `DYLD_FALLBACK_LIBRARY_PATH` | `PATH` | `LD_LIBRARY_PATH` |
+| The wild linker | glibc hosts | no | no | no |
+| Test runs (`cargo test`, `cargo bench`) | relayed terminal, totals line | relayed terminal, totals line | Cargo's lines | relayed terminal, totals line |
+| Cargo's help names the program it runs | `cargo` | `cargo` | `.qrust-engine.exe` | `cargo` |
+| Termination signals | forwarded | forwarded | only what the console delivers to the whole process group | forwarded |
+| `qrust benchmark --timeout` | yes | yes | no | yes |
+| Inventory: hard-link de-duplication, allocated sizes | yes | yes | no | yes |
+| Detection of a Cargo build in progress (inventory) | yes | yes | no | yes |
+| Driver: linking before rustc saves its incremental state | yes | yes | no | yes |
+| Filesystem type, CPU model, memory in reports | yes | yes | `null`, with a reason | yes |
 
 ## Limits of observation on a stable toolchain
 

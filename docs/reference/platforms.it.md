@@ -11,27 +11,28 @@ Dove QuickRust funziona e viene testato, che cosa differisce tra le piattaforme 
 | macOS aarch64 | `darwin-arm64` | ogni suite di test |
 | macOS x86_64 | `darwin-x86_64` | compilato per ogni release; le suite di test non vengono eseguite |
 | Windows x86_64 | `windows-x86_64` | un'esecuzione configura QuickRust da zero (Rust stable dal server di distribuzione, il driver del compilatore), poi crea, compila, esegue e testa un progetto; le suite di integrazione sono solo per Unix |
+| FreeBSD x86_64 | `freebsd-x86_64` (FreeBSD 14 e successivi) | un'esecuzione su FreeBSD 15.1 installa QuickRust dal suo archivio di release, lo configura e compila un progetto, ed esegue i test della libreria |
 
 Un archivio si chiama `qrust-<version>-<platform>.tar.gz` (`.zip` per Windows) e si estrae in un'unica directory, `quickrust/`, che contiene `qrust`, `qrust-rustc-wrapper`, la licenza e il README. Il manifest delle release (`https://release.machinefabric.com/quickrust/manifest`) elenca, per ogni release, le piattaforme per cui è stata compilata: una piattaforma che non vi compare non ha una build di quella release.
 
-QuickRust si compila con Rust 1.80 o più recente. Le toolchain che installa sono per l'host su cui gira; su Linux, `-gnu` o `-musl` a seconda della libreria C del sistema, quella con cui è stato compilato QuickRust stesso.
+QuickRust si compila con Rust 1.80 o più recente. Le toolchain che installa sono per l'host su cui gira; su Linux, `-gnu` o `-musl` a seconda della libreria C del sistema, quella con cui è stato compilato QuickRust stesso; su FreeBSD, `x86_64-unknown-freebsd`.
 
 ## Differenze tra le piattaforme {#platform-differences}
 
-| Ambito | Linux | macOS | Windows |
-|---|---|---|---|
-| Programmi della toolchain in `~/.qrust/bin` | link simbolici | link simbolici | hard link |
-| `PATH` configurato da `qrust setup` | file di avvio della shell | file di avvio della shell | il `PATH` dell'utente, tramite PowerShell |
-| Librerie della toolchain per i suoi programmi | `LD_LIBRARY_PATH` | `DYLD_FALLBACK_LIBRARY_PATH` | `PATH` |
-| Il linker wild | host glibc | no | no |
-| Esecuzioni dei test (`cargo test`, `cargo bench`) | terminale inoltrato, riga dei totali | terminale inoltrato, riga dei totali | le righe di Cargo |
-| L'help di Cargo indica il programma che esegue | `cargo` | `cargo` | `.qrust-engine.exe` |
-| Segnali di terminazione | inoltrati | inoltrati | solo ciò che la console consegna all'intero gruppo di processi |
-| `qrust benchmark --timeout` | sì | sì | no |
-| Inventario: deduplicazione degli hard link, dimensioni allocate | sì | sì | no |
-| Rilevamento di una build di Cargo in corso (inventario) | sì | sì | no |
-| Driver: link prima che rustc salvi il suo stato incrementale | sì | sì | no |
-| Tipo di filesystem, modello di CPU, memoria nei report | sì | sì | `null`, con un motivo |
+| Ambito | Linux | macOS | Windows | FreeBSD |
+|---|---|---|---|---|
+| Programmi della toolchain in `~/.qrust/bin` | link simbolici | link simbolici | hard link | link simbolici |
+| `PATH` configurato da `qrust setup` | file di avvio della shell | file di avvio della shell | il `PATH` dell'utente, tramite PowerShell | file di avvio della shell |
+| Librerie della toolchain per i suoi programmi | `LD_LIBRARY_PATH` | `DYLD_FALLBACK_LIBRARY_PATH` | `PATH` | `LD_LIBRARY_PATH` |
+| Il linker wild | host glibc | no | no | no |
+| Esecuzioni dei test (`cargo test`, `cargo bench`) | terminale inoltrato, riga dei totali | terminale inoltrato, riga dei totali | le righe di Cargo | terminale inoltrato, riga dei totali |
+| L'help di Cargo indica il programma che esegue | `cargo` | `cargo` | `.qrust-engine.exe` | `cargo` |
+| Segnali di terminazione | inoltrati | inoltrati | solo ciò che la console consegna all'intero gruppo di processi | inoltrati |
+| `qrust benchmark --timeout` | sì | sì | no | sì |
+| Inventario: deduplicazione degli hard link, dimensioni allocate | sì | sì | no | sì |
+| Rilevamento di una build di Cargo in corso (inventario) | sì | sì | no | sì |
+| Driver: link prima che rustc salvi il suo stato incrementale | sì | sì | no | sì |
+| Tipo di filesystem, modello di CPU, memoria nei report | sì | sì | `null`, con un motivo | sì |
 
 ## Limiti dell'osservazione su una toolchain stable {#limits-of-observation-on-a-stable-toolchain}
 

@@ -49,13 +49,13 @@ https://release.machinefabric.com/quickrust/release/<version>/qrust-<version>-<p
 https://release.machinefabric.com/quickrust/release/<version>/qrust-<version>-windows-x86_64.zip
 ```
 
-dove `<platform>` è uno tra `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-arm64` (entrambe le build Linux sono statiche e funzionano su qualsiasi distribuzione) (ciascuno un `.tar.gz`) e `windows-x86_64` (uno `.zip`). Scaricalo, confronta il suo SHA-256 con quello del manifest, estrailo ed esegui setup da lì:
+dove `<platform>` è uno tra `darwin-arm64`, `darwin-x86_64`, `linux-x86_64`, `linux-arm64` (entrambe le build Linux sono statiche e funzionano su qualsiasi distribuzione), `freebsd-x86_64` (FreeBSD 14 e successivi) (ciascuno un `.tar.gz`) e `windows-x86_64` (uno `.zip`). Scaricalo, confronta il suo SHA-256 con quello del manifest, estrailo ed esegui setup da lì:
 
 ```bash
 version=0.150.0          # l'ultima versione del canale release è nel manifest
 platform=linux-x86_64
 curl -fLO "https://release.machinefabric.com/quickrust/release/$version/qrust-$version-$platform.tar.gz"
-sha256sum "qrust-$version-$platform.tar.gz"      # confrontalo con lo sha256 del manifest (macOS: shasum -a 256)
+sha256sum "qrust-$version-$platform.tar.gz"      # confrontalo con lo sha256 del manifest (macOS: shasum -a 256, FreeBSD: sha256)
 tar xzf "qrust-$version-$platform.tar.gz"          # estrae quickrust/
 quickrust/qrust setup
 ```

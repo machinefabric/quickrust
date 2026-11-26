@@ -250,7 +250,7 @@ fn probe_toolchain(cfg: &Config, cwd: &Path, toolchain: Option<&str>, rustc_hint
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "freebsd"))]
 fn sysctl(name: &str) -> Option<Vec<u8>> {
     let cname = std::ffi::CString::new(name).ok()?;
     let mut len: libc::size_t = 0;
@@ -283,7 +283,13 @@ fn cpu_and_memory() -> (Option<String>, Option<u64>) {
             .map(|kb| kb * 1024);
         (cpu, mem)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(target_os = "freebsd")]
+    {
+        let cpu = sysctl("hw.model").map(|b| String::from_utf8_lossy(&b).trim_end_matches('\0').trim().to_string());
+        let mem = sysctl("hw.physmem").filter(|b| b.len() == 8).map(|b| u64::from_ne_bytes(b[..8].try_into().unwrap_or([0; 8])));
+        (cpu, mem)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd")))]
     {
         (std::env::var("PROCESSOR_IDENTIFIER").ok(), None)
     }
@@ -291,7 +297,7 @@ fn cpu_and_memory() -> (Option<String>, Option<u64>) {
 
 /// Filesystem type holding `path`, where the platform exposes it cheaply.
 pub fn filesystem_type(path: &Path) -> Option<String> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "freebsd"))]
     {
         use std::os::unix::ffi::OsStrExt;
         let existing = path.ancestors().find(|p| p.exists())?;
@@ -317,7 +323,7 @@ pub fn filesystem_type(path: &Path) -> Option<String> {
         }
         best.map(|(_, t)| t)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "freebsd")))]
     {
         let _ = path;
         None
@@ -439,5 +445,16 @@ mod tests {
         fs::write(dir.join("src/lib.rs"), "ab").unwrap();
         assert_ne!(source_snapshot(&dir, &[]).0, a.0);
         fs::remove_dir_all(&dir).ok();
+    }
+
+    // TEST0366: A report names the machine's CPU, memory and file system on Linux, macOS and FreeBSD
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+    #[test]
+    fn test0366_a_report_names_the_machines_cpu_memory_and_file_system_on_linux_macos_and_freebsd() {
+        let machine = environment_fingerprint(Some(&std::env::temp_dir()));
+        assert!(machine["cpu_model"].as_str().is_some_and(|c| !c.is_empty()), "{machine}");
+        assert!(machine["memory_bytes"].as_u64().is_some_and(|m| m > 1 << 28), "{machine}");
+        assert!(machine["filesystem"].as_str().is_some_and(|f| !f.is_empty()), "{machine}");
+        assert!(machine["unavailable"].as_object().map_or(true, |u| u.is_empty()), "{machine}");
     }
 }

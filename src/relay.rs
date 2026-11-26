@@ -43,21 +43,58 @@ pub struct Relaying {
 /// at least this often.
 const QUIET_MS: i32 = 50;
 
+/// A pseudo-terminal, `size` when given: its controlling side and the side the programs get.
+#[cfg(not(target_os = "freebsd"))]
+fn open_pty(size: Option<&mut libc::winsize>) -> io::Result<(File, OwnedFd)> {
+    let (mut m, mut s) = (-1, -1);
+    // Pointers to constants on Linux, to mutables on macOS: `*mut` serves both.
+    let modes: *mut libc::termios = std::ptr::null_mut();
+    let size: *mut libc::winsize = size.map_or(std::ptr::null_mut(), |s| s as *mut libc::winsize);
+    if unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), modes, size) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) })
+}
+
+/// FreeBSD: through the C library's own calls. Its `openpty` is in libutil, whose library version
+/// differs between FreeBSD 14 and 15, and a QuickRust linked against either would not start on the
+/// other; the C library's version is the same on both.
+#[cfg(target_os = "freebsd")]
+fn open_pty(size: Option<&mut libc::winsize>) -> io::Result<(File, OwnedFd)> {
+    let m = unsafe { libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC) };
+    if m < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let master = unsafe { File::from_raw_fd(m) };
+    if unsafe { libc::grantpt(m) } != 0 || unsafe { libc::unlockpt(m) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut name = [0 as libc::c_char; 128];
+    let r = unsafe { libc::ptsname_r(m, name.as_mut_ptr(), name.len()) };
+    if r != 0 {
+        return Err(io::Error::from_raw_os_error(r));
+    }
+    let s = unsafe { libc::open(name.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+    if s < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let slave = unsafe { OwnedFd::from_raw_fd(s) };
+    if let Some(size) = size {
+        if unsafe { libc::ioctl(s, libc::TIOCSWINSZ, size as *mut libc::winsize) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok((master, slave))
+}
+
 impl Relay {
     /// A pseudo-terminal the size of the terminal on stderr; `stdout_too` when stdout is that
     /// terminal as well (one stream keeps the order of what the programs write to both).
     pub fn open(stdout_too: bool) -> io::Result<Relay> {
         let mut size: libc::winsize = unsafe { std::mem::zeroed() };
         let sized = unsafe { libc::ioctl(2, libc::TIOCGWINSZ, &mut size) } == 0;
-        let (mut m, mut s) = (-1, -1);
-        // Pointers to constants on Linux, to mutables on macOS: `*mut` serves both.
-        let modes: *mut libc::termios = std::ptr::null_mut();
-        let size: *mut libc::winsize = if sized { &mut size } else { std::ptr::null_mut() };
-        let r = unsafe { libc::openpty(&mut m, &mut s, std::ptr::null_mut(), modes, size) };
-        if r != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        let (master, slave) = unsafe { (File::from_raw_fd(m), OwnedFd::from_raw_fd(s)) };
+        let (master, slave) = open_pty(if sized { Some(&mut size) } else { None })?;
+        let (m, s) = (master.as_raw_fd(), slave.as_raw_fd());
         // Bytes as the programs write them: no `\r` before each `\n` (the real terminal adds its own).
         let mut modes: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(s, &mut modes) } != 0 {

@@ -97,6 +97,7 @@ pub fn platform() -> Option<&'static str> {
         ("linux", "x86_64") => "linux-x86_64",
         ("linux", "aarch64") => "linux-arm64",
         ("windows", "x86_64") => "windows-x86_64",
+        ("freebsd", "x86_64") => "freebsd-x86_64",
         _ => return None,
     })
 }
