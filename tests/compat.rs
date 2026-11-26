@@ -1043,7 +1043,9 @@ fn test0343_cargo_fmt_runs_through_quickrust_and_calls_cargo_back() {
             fs::write(ws.join(file), messy).unwrap();
         }
     };
-    let ways: [(&str, fn(&Sandbox, &Path) -> Command); 3] = [
+    // How each way is run in a workspace.
+    type Way = fn(&Sandbox, &Path) -> Command;
+    let ways: [(&str, Way); 3] = [
         ("cargo fmt", |sb, p| {
             let mut c = sb.cargo(p);
             c.arg("fmt");

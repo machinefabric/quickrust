@@ -82,7 +82,7 @@ On a machine where several workspaces build at once, such as a build server runn
 
 ## Keep a script's builds from starting a collection
 
-After a command, QuickRust may start a collection in a process of its own, which goes on after the command has ended. A test harness that builds with QuickRust and then checks that its tests left no process running sees that collection as one of theirs. Set `QRUST_CACHE_GC=off` for those builds:
+After a command, QuickRust may start a collection in a process of its own, which goes on after the command has ended. It holds none of the command's standard input, output or error: a script can read a pipe from the build to its end, and append to or remove a file the build's output was redirected to, while the collection runs. A test harness that builds with QuickRust and then checks that its tests left no process running sees that collection as one of theirs. Set `QRUST_CACHE_GC=off` for those builds:
 
 ```sh
 QRUST_CACHE_GC=off qrust build

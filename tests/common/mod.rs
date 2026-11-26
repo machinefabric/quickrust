@@ -24,9 +24,10 @@ pub struct Sandbox {
 
 /// Where the suites' toolchains are kept between runs.
 pub fn toolchain_store() -> PathBuf {
+    let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
     match std::env::var_os("QRUSTTEST_TOOLCHAINS").filter(|v| !v.is_empty()) {
         Some(d) => PathBuf::from(d),
-        None => PathBuf::from(std::env::var_os("HOME").expect("HOME is set")).join(".cache/qrust-test-toolchains"),
+        None => PathBuf::from(std::env::var_os(home).unwrap_or_else(|| panic!("{} is set", home))).join(".cache").join("qrust-test-toolchains"),
     }
 }
 
@@ -46,12 +47,19 @@ impl Sandbox {
         let dir = std::env::temp_dir().join(format!("qrust-it-{}-{}-{}", name, std::process::id(), n));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        // Canonical so that paths printed by Cargo and paths built here agree (/tmp vs /private/tmp).
-        let dir = fs::canonicalize(&dir).unwrap();
+        // Canonical so that paths printed by Cargo and paths built here agree (/tmp vs /private/tmp),
+        // in the form QuickRust gives them: on Windows the path as written, not the verbatim form
+        // (`\\?\C:\...`), which cmd.exe does not take as its directory.
+        let dir = quickrust::util::canonical(&dir).unwrap();
         let shim_dir = dir.join("shim");
         fs::create_dir_all(&shim_dir).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_qrust"), shim_dir.join("cargo")).unwrap();
+        // Windows: QuickRust as `cargo.exe` is a copy, with its wrapper beside it, where it looks for it.
+        #[cfg(windows)]
+        for (from, to) in [(env!("CARGO_BIN_EXE_qrust"), "cargo.exe"), (env!("CARGO_BIN_EXE_qrust-rustc-wrapper"), "qrust-rustc-wrapper.exe")] {
+            fs::copy(from, shim_dir.join(to)).unwrap_or_else(|e| panic!("cannot copy {} into {}: {}", from, shim_dir.display(), e));
+        }
         let upstream_path = std::env::var_os("PATH").unwrap();
         let home = dir.join("qrust-home");
         fs::create_dir_all(&home).unwrap();
@@ -59,6 +67,15 @@ impl Sandbox {
         fs::create_dir_all(&store).unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink(&store, home.join("toolchains")).unwrap();
+        // Windows: a junction, which needs no privilege a symbolic link would. mklink is given the
+        // store as Windows writes it: a `/` in the path would read as one of its switches.
+        #[cfg(windows)]
+        {
+            let link = home.join("toolchains");
+            let store = quickrust::util::canonical(&store).unwrap();
+            let out = Command::new("cmd").arg("/c").arg("mklink").arg("/J").arg(&link).arg(&store).output().unwrap();
+            assert!(out.status.success(), "cannot make the junction {} to {}: {}{}", link.display(), store.display(), String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
         Sandbox { home, shim_dir, upstream_path, dir }
     }
 

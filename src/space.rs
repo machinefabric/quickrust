@@ -1891,7 +1891,7 @@ mod tests {
         let (running, recent, idle, _build) = three_cards(&c);
         let policy = Policy { max_bytes: 1_000_000, min_free: 0, working_window_ns: EIGHT_HOURS_NS };
         let done = collect(&c, None, &policy, None, false, None).unwrap();
-        assert_eq!(paths(&done), [idle.clone()], "{:?}", done);
+        assert_eq!(paths(&done), std::slice::from_ref(&idle), "{:?}", done);
         assert!(running.exists() && recent.exists() && !idle.exists());
         // Still above its size, and it says why each stays.
         assert!(done.unmet);
@@ -1909,7 +1909,7 @@ mod tests {
         assert!(due(&c, &policy, &disk(at_scan), now + 6 * 3_600 * 1_000_000_000), "the work in hand has left the window");
         // Without a working window the size takes the work in hand too, never the running build.
         let done = collect(&c, None, &Policy { working_window_ns: 0, ..policy }, None, false, None).unwrap();
-        assert_eq!(paths(&done), [recent.clone()], "{:?}", done);
+        assert_eq!(paths(&done), std::slice::from_ref(&recent), "{:?}", done);
         assert!(running.exists());
     }
 
@@ -2492,12 +2492,17 @@ mod tests {
             let mut cmd = std::process::Command::new(program);
             cmd.args(["--exact", "space::tests::sleeper", "--ignored", "--quiet"]).env("QRUSTTEST_SLEEPER", "1").current_dir(cwd);
             cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            // Unix refuses for a moment to start a program another process still has open to write
+            // (ETXTBSY); Windows has no such refusal to wait out.
+            #[cfg(unix)]
+            const BUSY: Option<i32> = Some(libc::ETXTBSY);
+            #[cfg(not(unix))]
+            const BUSY: Option<i32> = None;
             let until = std::time::Instant::now() + Duration::from_secs(10);
             loop {
                 match cmd.spawn() {
                     Ok(child) => return Started(child),
-                    #[cfg(unix)]
-                    Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+                    Err(e) if BUSY.is_some() && e.raw_os_error() == BUSY && std::time::Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
                     Err(e) => panic!("{} could not be started: {}", program.display(), e),
                 }
             }

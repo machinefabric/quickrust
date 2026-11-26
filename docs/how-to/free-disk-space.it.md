@@ -82,7 +82,7 @@ Su una macchina dove più workspace compilano insieme, come un server di build c
 
 ## Impedisci alle build di uno script di avviare una raccolta {#keep-a-scripts-builds-from-starting-a-collection}
 
-Dopo un comando, QuickRust può avviare una raccolta in un processo proprio, che continua dopo la fine del comando. Un harness di test che compila con QuickRust e poi controlla che i suoi test non abbiano lasciato processi in esecuzione vede quella raccolta come uno dei loro. Imposta `QRUST_CACHE_GC=off` per quelle build:
+Dopo un comando, QuickRust può avviare una raccolta in un processo proprio, che continua dopo la fine del comando. Non tiene aperti l'input, l'output o l'errore standard del comando: uno script può leggere fino in fondo una pipe dalla build, e aggiungere righe a un file in cui è stato rediretto l'output della build o rimuoverlo, mentre la raccolta è in corso. Un harness di test che compila con QuickRust e poi controlla che i suoi test non abbiano lasciato processi in esecuzione vede quella raccolta come uno dei loro. Imposta `QRUST_CACHE_GC=off` per quelle build:
 
 ```sh
 QRUST_CACHE_GC=off qrust build

@@ -330,21 +330,20 @@ pub fn interrupted() -> Option<i32> {
     imp::interrupted()
 }
 
-/// Holds termination signals for a longer operation (a benchmark) so that an
-/// interruption is observed through [`interrupted`] and cleanup can run, instead
-/// of the process dying between child runs.
-/// Starts `cmd` in the background, detached: a session of its own (it outlives this process,
-/// and Ctrl-C at this terminal does not reach it), at the lowest scheduling priority, with
-/// stdin from /dev/null and stdout and stderr to `log`, and nothing else of this process's open
-/// (a pipe that a script reads this process's output from stays this process's: the script is not
-/// kept waiting for the background work). Init reaps it.
+/// Starts `cmd` in the background, detached: it outlives this process, and Ctrl-C at this terminal
+/// does not reach it; it runs at the lowest scheduling priority, with stdin from the null device
+/// and stdout and stderr to `log`; and it is given nothing else of this process's open. A pipe a
+/// script reads this process's output from, or a file the script redirected it to, stays the
+/// script's: the script is not kept waiting for the background work, and can append to the file
+/// or remove it while that work runs. Unix: a session of its own, which init reaps; std opens
+/// everything else close-on-exec. Windows: see `win::spawn_detached`.
 // The process outlives this one on purpose.
 #[allow(clippy::zombie_processes)]
 pub fn spawn_detached(cmd: &mut Command, log: std::fs::File) -> io::Result<()> {
-    cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        cmd.stdin(std::process::Stdio::null()).stdout(log.try_clone()?).stderr(log);
         unsafe {
             cmd.pre_exec(|| {
                 libc::setsid();
@@ -356,17 +355,7 @@ pub fn spawn_detached(cmd: &mut Command, log: std::fs::File) -> io::Result<()> {
     }
     #[cfg(windows)]
     {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
-        cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | IDLE_PRIORITY_CLASS);
-        // Windows hands a new process every inheritable handle of this one, its standard handles
-        // included (those it got from whoever started it). The child's own are the log's (std
-        // gives every child inheritable copies of what it is to use), so this process's are kept
-        // from it while it is created.
-        let _kept = win::StandardHandlesKept::new();
-        cmd.spawn().map(|_| ())
+        win::spawn_detached(cmd, &log)
     }
 }
 
@@ -376,9 +365,6 @@ mod win {
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetStdHandle(which: u32) -> *mut c_void;
-        fn GetHandleInformation(handle: *mut c_void, flags: *mut u32) -> i32;
-        fn SetHandleInformation(handle: *mut c_void, mask: u32, flags: u32) -> i32;
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
         fn GetExitCodeProcess(process: *mut c_void, code: *mut u32) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
@@ -543,41 +529,298 @@ mod win {
         (!wide.is_empty()).then(|| std::path::PathBuf::from(std::ffi::OsString::from_wide(&wide)))
     }
 
-    const HANDLE_FLAG_INHERIT: u32 = 1;
-    // STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE: (DWORD)-10, -11, -12.
-    const STANDARD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> *mut c_void;
+        fn DuplicateHandle(source_process: *mut c_void, source: *mut c_void, target_process: *mut c_void, target: *mut *mut c_void, access: u32, inherit: i32, options: u32) -> i32;
+        fn CreateFileW(name: *const u16, access: u32, share: u32, security: *const SecurityAttributes, disposition: u32, flags: u32, template: *mut c_void) -> *mut c_void;
+        fn InitializeProcThreadAttributeList(list: *mut c_void, count: u32, flags: u32, size: *mut usize) -> i32;
+        fn UpdateProcThreadAttribute(list: *mut c_void, flags: u32, attribute: usize, value: *const c_void, size: usize, previous: *mut c_void, returned: *mut usize) -> i32;
+        fn DeleteProcThreadAttributeList(list: *mut c_void);
+        fn CreateProcessW(application: *const u16, command_line: *mut u16, process_security: *const c_void, thread_security: *const c_void, inherit: i32, flags: u32, environment: *const c_void, directory: *const u16, startup: *const StartupInfo, info: *mut ProcessInformation) -> i32;
+    }
 
-    /// While it lives, this process's standard handles are not inheritable; then as they were.
-    pub struct StandardHandlesKept(Vec<*mut c_void>);
+    /// SECURITY_ATTRIBUTES.
+    #[repr(C)]
+    struct SecurityAttributes {
+        length: u32,
+        descriptor: *mut c_void,
+        inherit: i32,
+    }
 
-    impl StandardHandlesKept {
-        pub fn new() -> StandardHandlesKept {
-            let mut cleared = Vec::new();
-            for which in STANDARD {
-                let h = unsafe { GetStdHandle(which) };
-                if h.is_null() || h as isize == -1 || cleared.contains(&h) {
-                    continue;
-                }
-                let mut flags = 0u32;
-                if unsafe { GetHandleInformation(h, &mut flags) } != 0 && flags & HANDLE_FLAG_INHERIT != 0 && unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0) } != 0 {
-                    cleared.push(h);
-                }
+    /// STARTUPINFOW.
+    #[repr(C)]
+    struct StartupInfo {
+        size: u32,
+        reserved: *mut u16,
+        desktop: *mut u16,
+        title: *mut u16,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        columns: u32,
+        rows: u32,
+        fill_attribute: u32,
+        flags: u32,
+        show_window: u16,
+        reserved2_size: u16,
+        reserved2: *mut u8,
+        input: *mut c_void,
+        output: *mut c_void,
+        error: *mut c_void,
+    }
+
+    /// STARTUPINFOEXW.
+    #[repr(C)]
+    struct StartupInfoEx {
+        info: StartupInfo,
+        attributes: *mut c_void,
+    }
+
+    /// PROCESS_INFORMATION.
+    #[repr(C)]
+    struct ProcessInformation {
+        process: *mut c_void,
+        thread: *mut c_void,
+        pid: u32,
+        tid: u32,
+    }
+
+    /// A process-and-thread attribute list, deleted when dropped.
+    struct Attributes(Vec<usize>);
+
+    impl Attributes {
+        /// A list with room for `count` attributes.
+        fn new(count: u32) -> std::io::Result<Attributes> {
+            let mut size = 0usize;
+            // Asked with no list, it says how large one is (and fails, for want of the room).
+            unsafe {
+                InitializeProcThreadAttributeList(std::ptr::null_mut(), count, 0, &mut size);
             }
-            StandardHandlesKept(cleared)
+            let mut words = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
+            if unsafe { InitializeProcThreadAttributeList(words.as_mut_ptr().cast(), count, 0, &mut size) } == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(Attributes(words))
+        }
+
+        fn as_ptr(&mut self) -> *mut c_void {
+            self.0.as_mut_ptr().cast()
         }
     }
 
-    impl Drop for StandardHandlesKept {
+    impl Drop for Attributes {
         fn drop(&mut self) {
-            for h in &self.0 {
-                unsafe {
-                    SetHandleInformation(*h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
-                }
+            unsafe {
+                DeleteProcThreadAttributeList(self.as_ptr());
             }
+        }
+    }
+
+    /// `super::spawn_detached` on Windows: no console, a process group of its own (Ctrl-C at this
+    /// terminal does not reach it), idle priority, stdin from the null device, and stdout and
+    /// stderr to `log`. Windows gives a new process every inheritable handle of its parent unless
+    /// it is told which, and this process holds inheritable handles it never asked for: every one
+    /// its starter had inheritable when it started it, passed down from process to process, which
+    /// need not be the handles that became this process's standard streams. The `cargo check`
+    /// Clippy runs through QuickRust holds so the file a script's `cmd /c "cargo clippy >> log
+    /// 2>&1"` opened, which only the outer QuickRust had as its standard streams. Each would stay
+    /// open for as long as the background process runs. So the process
+    /// is made with exactly the handles of its own standard streams, the null device and `log`,
+    /// listed as all it inherits (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), which std's spawn cannot ask
+    /// for. `cmd` gives the program, by its full path (no search of PATH finds it), its
+    /// arguments, its changes to this process's environment and its directory; its standard
+    /// streams are these.
+    pub fn spawn_detached(cmd: &std::process::Command, log: &std::fs::File) -> std::io::Result<()> {
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::AsRawHandle;
+        const GENERIC_READ: u32 = 0x8000_0000;
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2;
+        const OPEN_EXISTING: u32 = 3;
+        const DUPLICATE_SAME_ACCESS: u32 = 0x2;
+        const PROC_THREAD_ATTRIBUTE_HANDLE_LIST: usize = 0x0002_0002;
+        const STARTF_USESTDHANDLES: u32 = 0x0000_0100;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+        const IDLE_PRIORITY_CLASS: u32 = 0x0000_0040;
+        const CREATE_UNICODE_ENVIRONMENT: u32 = 0x0000_0400;
+        const EXTENDED_STARTUPINFO_PRESENT: u32 = 0x0008_0000;
+        let program = std::path::Path::new(cmd.get_program());
+        if !program.is_absolute() {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} is not a full path, and a detached process is started by its full path", program.display())));
+        }
+        let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let application = wide(program.as_os_str());
+        let mut line = command_line(program.as_os_str(), cmd.get_args());
+        let environment = environment_block(cmd);
+        let directory = cmd.get_current_dir().map(|d| wide(d.as_os_str()));
+        // What it inherits: inheritable handles of this process's own, closed here once it has its
+        // copies. Another thread starting a process meanwhile could take them too; nothing else
+        // of this process's is ever made inheritable for this one.
+        let inheritable = SecurityAttributes { length: std::mem::size_of::<SecurityAttributes>() as u32, descriptor: std::ptr::null_mut(), inherit: 1 };
+        let null_device = wide(std::ffi::OsStr::new("NUL"));
+        let input = unsafe { CreateFileW(null_device.as_ptr(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &inheritable, OPEN_EXISTING, 0, std::ptr::null_mut()) };
+        if input as isize == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let input = Handle(input);
+        let mut output = std::ptr::null_mut();
+        if unsafe { DuplicateHandle(GetCurrentProcess(), log.as_raw_handle(), GetCurrentProcess(), &mut output, 0, 1, DUPLICATE_SAME_ACCESS) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let output = Handle(output);
+        let inherited = [input.0, output.0];
+        let mut attributes = Attributes::new(1)?;
+        if unsafe { UpdateProcThreadAttribute(attributes.as_ptr(), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited.as_ptr().cast(), std::mem::size_of_val(&inherited), std::ptr::null_mut(), std::ptr::null_mut()) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut startup: StartupInfoEx = unsafe { std::mem::zeroed() };
+        startup.info.size = std::mem::size_of::<StartupInfoEx>() as u32;
+        startup.info.flags = STARTF_USESTDHANDLES;
+        startup.info.input = input.0;
+        startup.info.output = output.0;
+        startup.info.error = output.0;
+        startup.attributes = attributes.as_ptr();
+        let mut info: ProcessInformation = unsafe { std::mem::zeroed() };
+        let flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | IDLE_PRIORITY_CLASS | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT;
+        let directory = directory.as_ref().map_or(std::ptr::null(), |d| d.as_ptr());
+        if unsafe { CreateProcessW(application.as_ptr(), line.as_mut_ptr(), std::ptr::null(), std::ptr::null(), 1, flags, environment.as_ptr().cast(), directory, &startup.info, &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        drop((Handle(info.process), Handle(info.thread)));
+        Ok(())
+    }
+
+    /// The command line that gives a program built with Microsoft's C runtime (Rust's among them)
+    /// `args` as its arguments, after `program`, the program it runs (null-terminated UTF-16). A
+    /// program's path holds no quote, and is quoted whole; an argument is quoted when it is empty
+    /// or holds a space, a tab or a quote, its quotes escaped with a backslash and the backslashes
+    /// before a quote, or before the closing quote, doubled.
+    fn command_line<'a>(program: &std::ffi::OsStr, args: impl Iterator<Item = &'a std::ffi::OsStr>) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        const QUOTE: u16 = b'"' as u16;
+        const BACKSLASH: u16 = b'\\' as u16;
+        let mut line = vec![QUOTE];
+        line.extend(program.encode_wide());
+        line.push(QUOTE);
+        for arg in args {
+            line.push(b' ' as u16);
+            let arg: Vec<u16> = arg.encode_wide().collect();
+            if !arg.is_empty() && !arg.iter().any(|&c| c == b' ' as u16 || c == b'\t' as u16 || c == QUOTE) {
+                line.extend(arg);
+                continue;
+            }
+            line.push(QUOTE);
+            let mut backslashes = 0;
+            for c in arg {
+                if c == BACKSLASH {
+                    backslashes += 1;
+                } else {
+                    if c == QUOTE {
+                        line.extend(std::iter::repeat(BACKSLASH).take(backslashes + 1));
+                    }
+                    backslashes = 0;
+                }
+                line.push(c);
+            }
+            line.extend(std::iter::repeat(BACKSLASH).take(backslashes));
+            line.push(QUOTE);
+        }
+        line.push(0);
+        line
+    }
+
+    /// The environment `cmd` gives the program it runs, as CreateProcessW takes it: this process's,
+    /// with the variables `cmd` sets and removes, sorted by name without regard to case as Windows
+    /// keeps them, each `NAME=value` null-terminated, and a null after the last.
+    fn environment_block(cmd: &std::process::Command) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        let mut vars: std::collections::BTreeMap<String, (std::ffi::OsString, std::ffi::OsString)> = std::env::vars_os().map(|(k, v)| (k.to_string_lossy().to_uppercase(), (k, v))).collect();
+        for (k, v) in cmd.get_envs() {
+            let name = k.to_string_lossy().to_uppercase();
+            match v {
+                Some(v) => vars.insert(name, (k.to_os_string(), v.to_os_string())),
+                None => vars.remove(&name),
+            };
+        }
+        let mut block = Vec::new();
+        for (k, v) in vars.values() {
+            block.extend(k.encode_wide());
+            block.push(b'=' as u16);
+            block.extend(v.encode_wide());
+            block.push(0);
+        }
+        // An empty environment is two nulls.
+        if block.is_empty() {
+            block.push(0);
+        }
+        block.push(0);
+        block
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[link(name = "shell32")]
+        extern "system" {
+            fn CommandLineToArgvW(line: *const u16, count: *mut i32) -> *mut *mut u16;
+        }
+
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn LocalFree(memory: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+        }
+
+        /// The arguments Windows' own parser reads from `line`, the program first.
+        fn parsed(line: &[u16]) -> Vec<String> {
+            let mut count = 0;
+            let argv = unsafe { CommandLineToArgvW(line.as_ptr(), &mut count) };
+            assert!(!argv.is_null(), "{}", std::io::Error::last_os_error());
+            let args = (0..count as usize)
+                .map(|i| {
+                    let arg = unsafe { *argv.add(i) };
+                    let len = (0..).take_while(|&n| unsafe { *arg.add(n) } != 0).count();
+                    String::from_utf16(unsafe { std::slice::from_raw_parts(arg, len) }).unwrap()
+                })
+                .collect();
+            unsafe {
+                LocalFree(argv.cast());
+            }
+            args
+        }
+
+        // TEST0366: A detached process's command line gives the program every argument as it was
+        #[test]
+        fn test0366_a_detached_processs_command_line_gives_the_program_every_argument_as_it_was() {
+            let program = std::ffi::OsStr::new(r"C:\Program Files\q\cargo.exe");
+            let args = ["__qrust", "gc", "--background", "", "two words", "tab\there", r#"a"quote"#, r#"back\"slash"#, r"trailing\", r"two trailing\\", r#"\\""#, r"C:\dir with space\"];
+            let line = super::command_line(program, args.iter().map(std::ffi::OsStr::new));
+            let mut expected = vec![program.to_str().unwrap().to_string()];
+            expected.extend(args.iter().map(|a| a.to_string()));
+            assert_eq!(parsed(&line), expected);
+        }
+
+        // TEST0367: A detached process's environment is this process's with what its command sets and removes
+        #[test]
+        fn test0367_a_detached_processs_environment_is_this_processs_with_what_its_command_sets_and_removes() {
+            let mut c = std::process::Command::new(r"C:\x.exe");
+            let (kept, _) = std::env::vars_os().next().expect("this process has an environment");
+            c.env("QRUSTTEST_SET", "a=b").env_remove(&kept);
+            let block = super::environment_block(&c);
+            assert_eq!(block[block.len() - 2..], [0, 0]);
+            let vars: Vec<String> = String::from_utf16(&block[..block.len() - 2]).unwrap().split('\0').map(str::to_string).collect();
+            assert!(vars.contains(&"QRUSTTEST_SET=a=b".to_string()), "{:?}", vars);
+            assert!(!vars.iter().any(|v| v.to_uppercase().starts_with(&format!("{}=", kept.to_string_lossy().to_uppercase()))), "{:?} kept {:?}", vars, kept);
+            let names: Vec<String> = vars.iter().map(|v| v.split('=').next().unwrap().to_uppercase()).collect();
+            assert!(names.windows(2).all(|w| w[0] < w[1]), "not sorted by name: {:?}", names);
         }
     }
 }
 
+/// Holds termination signals for a longer operation (a benchmark) so that an
+/// interruption is observed through [`interrupted`] and cleanup can run, instead
+/// of the process dying between child runs.
 pub fn hold_signals() -> imp::Guard {
     imp::Guard::install()
 }

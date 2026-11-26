@@ -99,7 +99,7 @@ A collection that ends short of its goal (`unmet`) lists what it kept and why: `
 
 | Trigger | Collection |
 |---|---|
-| after every command, when the disk is below `cache.min-free` (counting what collections removed that the volume's snapshots keep), the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds. When the work in hand kept the cache above its size, the size counts only once the cache has lost a tenth of `cache.max-size` more free space, or the first of that work has left `cache.working-window` | `qrust gc --background`, detached, at the lowest priority; nothing with `cache.gc = "off"`, and the collection stays due for the next command |
+| after every command, when the disk is below `cache.min-free` (counting what collections removed that the volume's snapshots keep), the cache above `cache.max-size` by the free space lost since the last count, or a day has passed since the last count; not within 15 minutes of a collection that could not get within the bounds. When the work in hand kept the cache above its size, the size counts only once the cache has lost a tenth of `cache.max-size` more free space, or the first of that work has left `cache.working-window` | `qrust gc --background`, detached, at the lowest priority, holding none of the command's standard input, output or error; nothing with `cache.gc = "off"`, and the collection stays due for the next command |
 | before a command, when the disk is below a quarter of `cache.min-free` (counted the same way) | in the command, for at most ten seconds, with a `NOTE`; Cargo's downloads are left alone |
 | `qrust gc` | now |
 
