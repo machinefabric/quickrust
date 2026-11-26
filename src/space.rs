@@ -1670,12 +1670,16 @@ mod tests {
         f.unwrap().set_modified(t).unwrap();
     }
 
-    /// A managed build directory of a workspace at `root`, last used `ago_secs` ago.
+    /// A managed build directory of a workspace at `root`, last used `ago_secs` ago. Its record is
+    /// written in place: a file renamed into place on UFS changes again when soft updates finish
+    /// removing its temporary name, some time after the rename returns, which a test of what
+    /// changed before a snapshot would see as a change after it.
     fn build_dir(cache: &Path, name: &str, root: &Path, ago_secs: u64, bytes: usize) -> PathBuf {
         let d = cache.join("builds").join(name);
         file(&d.join("debug/deps/libx.rlib"), bytes);
         let used = util::now_wall_ns() - ago_secs * 1_000_000_000;
-        util::write_json(&d.with_file_name(format!("{}.json", name)), &json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(root), "created_ns": used, "last_used_ns": used })).unwrap();
+        let record = json!({ "format": "qrust-build-dir-1", "workspace_root": util::path_str(root), "created_ns": used, "last_used_ns": used });
+        fs::write(d.with_file_name(format!("{}.json", name)), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
         d
     }
 
