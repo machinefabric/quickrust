@@ -1917,10 +1917,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn test0363_the_work_in_hand_goes_for_the_free_space_or_gc_to_after_what_was_left_idle_and_a_running_build_stays() {
-        // The disk is short of its free space by more than what was left idle frees.
+        // The disk is short of its free space by more than all three directories free, whatever
+        // the file system allocates for their files (UFS's blocks are eight times ext4's).
         let c = cache();
         let (running, recent, idle, _build) = three_cards(&c);
-        let policy = Policy { max_bytes: u64::MAX, min_free: 1_000_000, working_window_ns: EIGHT_HOURS_NS };
+        let policy = Policy { max_bytes: u64::MAX, min_free: 10_000_000, working_window_ns: EIGHT_HOURS_NS };
         let disk = std::cell::Cell::new(0);
         let done = collect_on(&c, None, &policy, None, false, None, &fixed_volume(&disk, &[])).unwrap();
         assert_eq!(paths(&done), [idle.clone(), recent.clone()], "{:?}", done);
